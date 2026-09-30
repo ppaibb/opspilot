@@ -1,0 +1,107 @@
+# ── OpsPilot 根 .gitignore ──
+# 规则：源码与配置入库；密钥/运行时数据/离线镜像/构建产物一律忽略。
+
+# ── 密钥与环境 ──
+.env
+.env.*
+!.env.example
+backend/.env
+backend/.env.*
+!backend/.env.example
+deploy/offline/env.example
+!deploy/offline/env.example
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+*_rsa
+*_ed25519
+
+# ── 集群凭据（kubeconfig 含集群证书/密钥，禁止入库）──
+backend/app/kubeconfigs/
+**/kubeconfig*
+**/kubeconfig.yaml
+
+# ── Python ──
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+coverage.xml
+
+# ── Node / 前端构建 ──
+node_modules/
+frontend/dist/
+frontend/dist-ssr/
+.vite/
+*.local
+
+# ── 日志 ──
+*.log
+logs/
+backend/logs/
+backend_server.log
+scp_err.log
+scp_out.log
+uvicorn.log
+*.out
+
+# ── 运行时数据与密文 ──
+backend/storage/
+*.db
+*.sqlite
+*.sqlite3
+opspilot.db
+
+# ── 离线交付大体积（镜像 tar / agent 二进制，不在 Git 托管）──
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+deploy/offline/images/
+deploy/monitoring/agents/alloy*
+deploy/monitoring/agents/*.tar
+**/images/*.tar
+**/images/*.zip
+
+# ── 编辑器 / 系统 / 本机动效产物 ──
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+*.sw?
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+
+# ── 本机调试与临时工作区 ──
+.zcode/
+.pytest_cache/
+gui-test-screenshots/
+**/__pycache__/
+**/.pytest_cache/
+extract_pods_jars.sh
+gen_manage.sh
+selffix.tar.gz
+cred-*-fix-*.tar.gz
+provider-fix.tar.gz
+region-ping-fix-*.tar.gz
+host-audit-fixes.tar.gz
+frontend-dist-*.tar.gz
+opspilot-source-*.tar.gz
+backend-*.tar
+
+# ── Alembic / 测试产物 ──
+alembic/__pycache__/
+**/*.pyc
+htmlcov/
+.nox/

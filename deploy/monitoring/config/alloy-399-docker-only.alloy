@@ -1,0 +1,57 @@
+// OpsPilot Alloy — 产品决策：只采 Docker 容器日志
+// 测试链路：Docker -> Alloy -> VictoriaLogs (127.0.0.1:9428)
+// 目标主机：192.168.3.99
+
+prometheus.remote_write "vm" {
+  endpoint {
+    url = "http://127.0.0.1:8428/api/v1/write"
+  }
+}
+
+prometheus.exporter.unix "local" {
+}
+
+discovery.relabel "node" {
+  targets = prometheus.exporter.unix.local.targets
+  rule {
+    target_label = "instance"
+    replacement  = "192.168.3.99"
+  }
+  rule {
+    target_label = "host"
+    replacement  = "ubuntu"
+  }
+  rule {
+    target_label = "job"
+    replacement  = "opspilot-node"
+  }
+}
+
+prometheus.scrape "node" {
+  targets         = discovery.relabel.node.output
+  scrape_interval = "15s"
+  forward_to      = [prometheus.remote_write.vm.receiver]
+}
+
+loki.write "vlogs" {
+  endpoint {
+    url = "http://127.0.0.1:9428/insert/loki/api/v1/push"
+  }
+}
+
+// 唯一日志源：Docker 容器（需可读 /var/run/docker.sock）
+discovery.docker "dockers" {
+  host = "unix:///var/run/docker.sock"
+}
+
+loki.source.docker "docker_containers" {
+  host    = "unix:///var/run/docker.sock"
+  targets = discovery.docker.dockers.targets
+  labels = {
+    job      = "container",
+    service  = "docker",
+    host     = "ubuntu",
+    instance = "192.168.3.99",
+  }
+  forward_to = [loki.write.vlogs.receiver]
+}

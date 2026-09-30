@@ -1,0 +1,106 @@
+# OpsPilot 应用栈：PostgreSQL + 初始化容器 + 后端 + 前端
+# 由 install.sh 生成/覆盖环境变量后启动。
+name: opspilot-app
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: opspilot-db
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-opspilot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-opspilot}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U $${POSTGRES_USER:-opspilot} -d $${POSTGRES_DB:-opspilot}']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  # 初始化容器：等 DB 健康后执行 Alembic 迁移（生产 DB_AUTO_CREATE_TABLES=0）
+  init-db:
+    image: ${OPSPILOT_BACKEND_IMAGE:-opspilot/backend:1.0.0}
+    container_name: opspilot-init-db
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - path: ./.env
+        required: false
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-opspilot}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-opspilot}
+      DB_AUTO_CREATE_TABLES: '0'
+      SECRET_KEY: ${SECRET_KEY:-}
+      CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY:-}
+    working_dir: /app
+    # 0001 已按当前 ORM create_all；扩 alembic_version 后 stamp head，避免重复 ALTER
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        python - <<'PY'
+        from app.db.database import engine, Base
+        from app.db import models  # noqa: F401
+        from sqlalchemy import text
+        Base.metadata.create_all(bind=engine)
+        with engine.begin() as conn:
+            conn.execute(text(
+                "CREATE TABLE IF NOT EXISTS alembic_version ("
+                "version_num VARCHAR(64) NOT NULL, "
+                "PRIMARY KEY (version_num))"
+            ))
+            try:
+                conn.execute(text("ALTER TABLE alembic_version ALTER COLUMN version_num TYPE VARCHAR(64)"))
+            except Exception:
+                pass
+        print("CREATE_ALL_OK")
+        PY
+        alembic stamp head
+        echo INIT_DB_OK
+    restart: 'no'
+
+  backend:
+    image: ${OPSPILOT_BACKEND_IMAGE:-opspilot/backend:1.0.0}
+    container_name: opspilot-backend
+    depends_on:
+      db:
+        condition: service_healthy
+      init-db:
+        condition: service_completed_successfully
+    env_file:
+      # install.sh 会生成 app/.env；未安装时允许 config 校验通过
+      - path: ./.env
+        required: false
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-opspilot}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-opspilot}
+      DB_AUTO_CREATE_TABLES: '0'
+      MONITORING_HOST: ${MONITORING_HOST:-}
+      VM_URL: ${VM_URL:-}
+      VLOGS_URL: ${VLOGS_URL:-}
+      GRAFANA_URL: ${GRAFANA_URL:-}
+    ports:
+      - "${BACKEND_PORT:-8001}:8001"
+    volumes:
+      - backend-storage:/app/storage
+      - backend-logs:/app/logs
+    restart: unless-stopped
+
+  frontend:
+    image: ${OPSPILOT_FRONTEND_IMAGE:-opspilot/frontend:1.0.0}
+    container_name: opspilot-frontend
+    depends_on:
+      - backend
+    ports:
+      - "${FRONTEND_PORT:-8080}:80"
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+    name: ${OPSPILOT_PROJECT:-opspilot}-pgdata
+  backend-storage:
+    name: ${OPSPILOT_PROJECT:-opspilot}-backend-storage
+  backend-logs:
+    name: ${OPSPILOT_PROJECT:-opspilot}-backend-logs

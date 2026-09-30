@@ -1,0 +1,119 @@
+# OpsPilot 内置监控套件
+# 组件：VictoriaMetrics（指标）/ VictoriaLogs（日志）/ Grafana（可视化）/ Alloy（采集）
+# 保留策略：指标 30d、日志 7d；数据卷相互独立。
+# 启动：docker compose -f deploy/monitoring/docker-compose.yml up -d
+name: opspilot-monitoring
+
+services:
+  victoriametrics:
+    image: victoriametrics/victoria-metrics:v1.97.1
+    container_name: opspilot-victoriametrics
+    command:
+      - --storageDataPath=/storage
+      - --retentionPeriod=30d
+      - --httpListenAddr=:8428
+      - --selfScrapeInterval=30s
+    volumes:
+      - vmdata:/storage
+    ports:
+      - "8428:8428"
+    networks:
+      - monitoring
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8428/-/healthy || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  victorialogs:
+    image: victoriametrics/victoria-logs:v0.11.0
+    container_name: opspilot-victorialogs
+    command:
+      - --storageDataPath=/storage
+      - --retentionPeriod=7d
+      - --httpListenAddr=:9428
+    volumes:
+      - vlogsdata:/storage
+    ports:
+      - "9428:9428"
+    networks:
+      - monitoring
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9428/-/healthy || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:10.4.2
+    container_name: opspilot-grafana
+    environment:
+      GF_SERVER_ROOT_URL: /grafana
+      GF_SERVER_SERVE_FROM_SUB_PATH: "true"
+      GF_AUTH_PROXY_ENABLED: "true"
+      GF_AUTH_PROXY_HEADER_NAME: X-WEBAUTH-USER
+      GF_AUTH_PROXY_AUTO_SIGN_UP: "true"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+    volumes:
+      - grafanadata:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    networks:
+      - monitoring
+    depends_on:
+      - victoriametrics
+      - victorialogs
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/api/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  alloy:
+    image: grafana/alloy:v1.0.0
+    container_name: opspilot-alloy
+    command:
+      - run
+      - --server.http.listen-addr=0.0.0.0:12346
+      - /etc/alloy/config.alloy
+    environment:
+      # 与资产表本机 IP / 主机名对齐，供 host-metrics 与日志 host 过滤匹配
+      HOST_INSTANCE: ${MONITORING_HOST:-}
+      HOST_NAME: ${HOST_NAME:-}
+    volumes:
+      - ./config/alloy.alloy:/etc/alloy/config.alloy:ro
+      # Docker 日志采集必需：loki.source.docker 通过 docker.sock 读容器日志
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # 本机主机指标：exporter.unix 必须读宿主机 proc/sys/rootfs
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    ports:
+      - "12346:12346"
+    networks:
+      - monitoring
+    depends_on:
+      - victoriametrics
+      - victorialogs
+    restart: unless-stopped
+
+networks:
+  monitoring:
+    name: opspilot-monitoring
+    driver: bridge
+
+volumes:
+  # 指标数据（VictoriaMetrics，retention 30d）
+  vmdata:
+    name: opspilot-vmdata
+  # 日志数据（VictoriaLogs，retention 7d）
+  vlogsdata:
+    name: opspilot-vlogsdata
+  # Grafana 元数据（独立卷）
+  grafanadata:
+    name: opspilot-grafanadata

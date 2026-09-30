@@ -1,0 +1,124 @@
+@import "tailwindcss" layer(tailwind);
+
+@layer tailwind {
+  @theme {
+    --color-primary: #3b82f6;
+  }
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body, #root {
+  height: 100%;
+}
+
+/* ── 全局主题 token（浅色默认 / [data-theme=dark] 覆盖） ── */
+:root {
+  --bg: #f4f7fb;
+  --bg-card: #ffffff;
+  --bg-soft: #eef2f7;
+  --ink: #0f172a;
+  --ink-2: #475569;
+  --ink-3: #94a3b8;
+  --line: #e2e8f0;
+  --accent: #2563eb;
+  --ok: #16a34a;
+  --warn: #d97706;
+  --danger: #dc2626;
+  --chart-1: #2563eb;
+  --chart-2: #14b8a6;
+  --chart-3: #f59e0b;
+  --chart-4: #a855f7;
+  --shadow-card: 0 1px 2px rgba(15, 23, 42, 0.05);
+}
+
+[data-theme='dark'] {
+  --bg: #0b1220;
+  --bg-card: #111a2b;
+  --bg-soft: #172033;
+  --ink: #e8eefc;
+  --ink-2: #a8b3c7;
+  --ink-3: #6b778c;
+  --line: #243049;
+  --accent: #4ea3ff;
+  --ok: #3ddc97;
+  --warn: #f5a524;
+  --danger: #ff6b6b;
+  --chart-1: #4ea3ff;
+  --chart-2: #3ddc97;
+  --chart-3: #f5a524;
+  --chart-4: #c084fc;
+  --shadow-card: 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+
+body {
+  background: var(--bg);
+  color: var(--ink);
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* 侧边栏 hover 展开模式下不需要弹出子菜单 */
+.ant-menu-submenu-popup {
+  display: none !important;
+}
+
+/* 侧栏菜单独立滚动：暗色下默认滚动条几乎不可见，给一条常显细条 */
+.sider-menu-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.25) transparent;
+}
+
+/* 告警中心：critical 行左侧高亮条（配合 SeverityTag，不只靠颜色） */
+.alert-row-critical > td:first-child {
+  box-shadow: inset 3px 0 0 var(--danger, #dc2626);
+}
+.sider-menu-scroll::-webkit-scrollbar {
+  width: 6px;
+}
+.sider-menu-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.sider-menu-scroll::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.25);
+  border-radius: 3px;
+}
+.sider-menu-scroll:hover::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.4);
+}
+
+/* 🌟 保护 wterm 滚动条基础视觉 */
+.wterm-scrollbar::-webkit-scrollbar {
+  width: 6px;
+}
+.wterm-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+.wterm-scrollbar::-webkit-scrollbar-thumb {
+  background-color: #334155;
+  border-radius: 20px;
+}
+
+/* ── 登录页自动填充修复 ──
+   Chrome/Edge 在系统深色模式下会给自动填充的输入框强制灰底浅字，
+   与登录页（强制浅色主题）的白底卡片严重冲突。
+   只作用于登录页表单卡片：压回白底深色字；主应用深色主题不受影响。 */
+.login-form-card input:-webkit-autofill,
+.login-form-card input:-webkit-autofill:hover,
+.login-form-card input:-webkit-autofill:focus {
+  -webkit-text-fill-color: #0f172a;
+  -webkit-box-shadow: 0 0 0 1000px #ffffff inset;
+  caret-color: #0f172a;
+  /* 阻断 Chrome 对 autofill 背景色的过渡渲染 */
+  transition: background-color 5000s ease-in-out 0s;
+}

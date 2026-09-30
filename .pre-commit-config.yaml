@@ -1,0 +1,32 @@
+# 本地提交前门禁。执行：pre-commit install 后每次 git commit 自动跑。
+# 与 检查-全量.bat 口径对齐：pyflakes 未定义名 + eslint + 前端 tsc/build 由 CI 兜底。
+repos:
+  - repo: local
+    hooks:
+      - id: pyflakes-undefined
+        name: pyflakes undefined names (backend/app)
+        entry: .venv/Scripts/python.exe -m pyflakes backend/app
+        language: system
+        pass_filenames: false
+        files: ^backend/app/.*\.py$
+
+      - id: frontend-lint
+        name: frontend eslint
+        entry: pnpm --dir frontend run lint
+        language: system
+        pass_filenames: false
+        files: ^frontend/src/.*\.(ts|tsx)$
+
+      - id: frontend-test
+        name: frontend vitest smoke
+        entry: pnpm --dir frontend run test
+        language: system
+        pass_filenames: false
+        files: ^frontend/src/.*\.(ts|tsx)$
+
+      - id: backend-pytest-fast
+        name: backend pytest (changed contracts)
+        entry: cmd /c "cd backend && .venv\\Scripts\\python.exe -m pytest -q --tb=no -x"
+        language: system
+        pass_filenames: false
+        files: ^backend/.*\.py$

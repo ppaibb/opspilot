@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Install backend deps
+        working-directory: backend
+        run: |
+          python -m venv .venv
+          .venv\\Scripts\\python.exe -m pip install -r requirements.txt
+
+      - name: Install root tooling (pyflakes)
+        run: |
+          python -m venv .venv
+          .venv\\Scripts\\python.exe -m pip install pyflakes
+
+      - name: Install frontend deps
+        run: pnpm --dir frontend install --frozen-lockfile
+
+      - name: Backend pytest
+        working-directory: backend
+        run: .venv\\Scripts\\python.exe -m pytest -q
+
+      - name: Pyflakes undefined names
+        run: .venv\\Scripts\\python.exe -m pyflakes backend/app
+
+      - name: Frontend lint
+        run: pnpm --dir frontend run lint
+
+      - name: Frontend test
+        run: pnpm --dir frontend run test
+
+      - name: Frontend build
+        run: pnpm --dir frontend run build

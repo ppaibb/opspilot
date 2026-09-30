@@ -1,0 +1,105 @@
+# OpsPilot 监控栈：VictoriaMetrics + VictoriaLogs + Grafana + Alloy（本机内置采集）
+# 端口默认绑 0.0.0.0，便于分体部署时业务后端/浏览器访问（可用 MONITOR_BIND 控制）。
+# Alloy 负责：本机 host 指标（exporter.unix）+ Docker 容器日志（loki.source.docker）。
+# HOST_INSTANCE 必须与资产表本机 IP 一致，否则 host-metrics / 日志 host 过滤对不上。
+name: opspilot-monitoring
+
+services:
+  victoriametrics:
+    image: ${VM_IMAGE:-victoriametrics/victoria-metrics:v1.140.0}
+    container_name: opspilot-victoriametrics
+    command:
+      - --storageDataPath=/storage
+      - --retentionPeriod=${VM_RETENTION:-30d}
+      - --httpListenAddr=:8428
+      - --selfScrapeInterval=30s
+    volumes:
+      - vmdata:/storage
+    ports:
+      - "${MONITOR_BIND:-0.0.0.0}:${VM_PORT:-8428}:8428"
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -qO- http://127.0.0.1:8428/-/healthy || exit 1']
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  victorialogs:
+    image: ${VLOGS_IMAGE:-victoriametrics/victoria-logs:v1.50.0}
+    container_name: opspilot-victorialogs
+    command:
+      - --storageDataPath=/storage
+      - --retentionPeriod=${VLOGS_RETENTION:-7d}
+      - --httpListenAddr=:9428
+    volumes:
+      - vlogsdata:/storage
+    ports:
+      - "${MONITOR_BIND:-0.0.0.0}:${VLOGS_PORT:-9428}:9428"
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -qO- http://127.0.0.1:9428/-/healthy || exit 1']
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  grafana:
+    image: ${GRAFANA_IMAGE:-grafana/grafana:11.0.0}
+    container_name: opspilot-grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD}
+      GF_SERVER_ROOT_URL: ${GRAFANA_ROOT_URL:-http://localhost:3000/}
+      GF_SERVER_SERVE_FROM_SUB_PATH: "true"
+      GF_AUTH_PROXY_ENABLED: "true"
+      GF_AUTH_PROXY_HEADER_NAME: X-WEBAUTH-USER
+      GF_AUTH_PROXY_AUTO_SIGN_UP: "true"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+    volumes:
+      - grafanadata:/var/lib/grafana
+    ports:
+      - "${MONITOR_BIND:-0.0.0.0}:${GRAFANA_PORT:-3000}:3000"
+    depends_on:
+      victoriametrics:
+        condition: service_healthy
+      victorialogs:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -qO- http://127.0.0.1:3000/api/health || exit 1']
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # 本机内置采集：host 指标 + Docker 日志（provider=localhost 无需再装 Agent）
+  alloy:
+    image: ${ALLOY_IMAGE:-grafana/alloy:v1.16.3}
+    container_name: opspilot-alloy
+    command:
+      - run
+      - --server.http.listen-addr=0.0.0.0:12346
+      - /etc/alloy/config.alloy
+    environment:
+      HOST_INSTANCE: ${MONITORING_HOST:-}
+      HOST_NAME: ${HOST_NAME:-}
+    volumes:
+      - ./config/alloy.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    ports:
+      - "${MONITOR_BIND:-0.0.0.0}:12346:12346"
+    depends_on:
+      - victoriametrics
+      - victorialogs
+    restart: unless-stopped
+
+volumes:
+  vmdata:
+    name: opspilot-vmdata
+  vlogsdata:
+    name: opspilot-vlogsdata
+  grafanadata:
+    name: opspilot-grafanadata

@@ -1,0 +1,95 @@
+// OpsPilot Alloy 默认采集配置
+// 由 OpsPilot 托管的 target 区块会被自动合并进本文件。
+//
+// 安装前置条件：
+// 1. 主机可访问 VictoriaMetrics 写入地址（prometheus.remote_write endpoint）；
+// 2. 主机可访问 VictoriaLogs 写入地址（loki.write endpoint，insert/loki API）；
+// 3. Docker 日志采集必须把 /var/run/docker.sock 挂载进 Alloy 容器
+//    （本 compose 已挂载；自建 Alloy 请自行 -v /var/run/docker.sock:/var/run/docker.sock:ro），
+//    否则 loki.source.docker 会静默采不到数据；
+// 4. 本机主机指标依赖 host /proc、/sys、/ 只读挂载（见 docker-compose），
+//    否则 prometheus.exporter.unix 只能看到容器命名空间，采不到真主机 CPU/内存。
+//
+// 产品决策：只采 Docker 容器日志，不采 journald / syslog / messages。
+//
+// 环境变量（compose 注入）：
+//   HOST_INSTANCE — 与资产表本机 IP 一致，供 host-metrics / 日志 host 过滤匹配
+//   HOST_NAME     — 主机名，写入日志标签
+
+prometheus.remote_write "opspilot" {
+  endpoint {
+    url = "http://opspilot-victoriametrics:8428/api/v1/write"
+  }
+}
+
+loki.write "opspilot" {
+  endpoint {
+    url = "http://opspilot-victorialogs:9428/insert/loki/api/v1/push"
+  }
+}
+
+// ===== 本机主机指标（内置采集，无需再装 Agent）=====
+prometheus.exporter.unix "local" {
+  procfs_path = "/host/proc"
+  sysfs_path  = "/host/sys"
+  rootfs_path = "/rootfs"
+}
+
+discovery.relabel "node" {
+  targets = prometheus.exporter.unix.local.targets
+  rule {
+    target_label = "instance"
+    replacement  = sys.env("HOST_INSTANCE")
+  }
+  rule {
+    target_label = "host"
+    replacement  = sys.env("HOST_NAME")
+  }
+  rule {
+    target_label = "job"
+    replacement  = "opspilot-node"
+  }
+}
+
+prometheus.scrape "node" {
+  targets         = discovery.relabel.node.output
+  scrape_interval = "15s"
+  forward_to      = [prometheus.remote_write.opspilot.receiver]
+}
+
+// ===== OpsPilot managed targets begin =====
+prometheus.scrape "opspilot_node" {
+  targets = []
+  forward_to = [prometheus.remote_write.opspilot.receiver]
+}
+// ===== OpsPilot managed targets end =====
+
+// Docker 容器日志（唯一日志源）。需挂载 docker.sock。
+discovery.docker "docker_containers" {
+  host = "unix:///var/run/docker.sock"
+}
+
+loki.source.docker "docker" {
+  host       = "unix:///var/run/docker.sock"
+  targets    = discovery.docker.docker_containers.targets
+  labels     = {
+    job      = "container",
+    host     = sys.env("HOST_NAME"),
+    instance = sys.env("HOST_INSTANCE"),
+  }
+  forward_to = [loki.write.opspilot.receiver]
+}
+
+// 系统日志（syslog/messages）已按产品决策停用，只采 Docker。
+// 如需临时恢复，可取消注释；注意文件路径需挂载进容器。
+// local.file_match "system_logs" {
+//   path_targets = [
+//     { __path__ = "/var/log/syslog", job = "system" },
+//     { __path__ = "/var/log/messages", job = "system" },
+//   ]
+// }
+//
+// loki.source.file "system_logs" {
+//   targets    = local.file_match.system_logs.targets
+//   forward_to = [loki.write.opspilot.receiver]
+// }
