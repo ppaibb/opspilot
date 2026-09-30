@@ -662,7 +662,7 @@ export interface LoginPageConfig {
 }
 
 export interface MonitoringConfig {
-  /** 后端 → VictoriaMetrics（分体部署如 http://192.168.3.99:8428） */
+  /** 后端 → VictoriaMetrics（分体部署如 http://monitor-host:8428） */
   vm_url: string
   vmui_url?: string
   grafana_url?: string

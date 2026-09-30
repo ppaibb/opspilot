@@ -60,6 +60,10 @@ backend/storage/
 *.sqlite3
 opspilot.db
 
+# ── 一次性运维脚本（含内网地址，不入库）──
+deploy/offline/scripts/
+deploy/monitoring/config/alloy-399-*.alloy
+
 # ── 离线交付大体积（镜像 tar / agent 二进制，不在 Git 托管）──
 *.tar
 *.tar.gz

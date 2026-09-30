@@ -10,8 +10,8 @@
 **项目名称**：OpsPilot 前端重构  
 **项目路径**：`c:\workspace\newtime\frontend`  
 **性质**：企业级运维管理平台，约 30 个页面，6 大模块  
-**后端 API**：`http://192.168.3.99:8001`  
-**Swagger**：`http://192.168.3.99:8001/openapi.json`  
+**后端 API**：`http://127.0.0.1:8001`（开发代理目标见 `frontend/vite.config.ts`）  
+**Swagger**：`http://127.0.0.1:8001/openapi.json`  
 **页面清单**：`开发文档记录/frontend-pages.md`  
 **开发计划**：`开发文档记录/开发计划.md`  
 **页面记录**：`开发文档记录/页面开发记录/`（每个页面一个文档）
@@ -191,7 +191,7 @@ backend/app/api/clusters/       # 原 clusters.py（5920 行）
 ## 已完成功能清单
 
 - ✅ 工程脚手架（Vite + React 18 + TS + antd 5）
-- ✅ Vite proxy（`/api/*` → `http://192.168.3.99:8001`）
+- ✅ Vite proxy（`/api/*` → `http://127.0.0.1:8001`）
 - ✅ axios 实例（Bearer 注入 + 401 白名单跳转 + 全局错误提示）
 - ✅ Zustand 登录态（token 持久化）
 - ✅ 路由骨架（AuthGuard + GuestGuard + 全部占位路由）

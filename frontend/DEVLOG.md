@@ -9,8 +9,8 @@
 | 项 | 值 |
 |---|---|
 | 项目路径 | `c:\workspace\newtime\frontend` |
-| 后端 API | `http://192.168.3.99:8001` |
-| Swagger | `http://192.168.3.99:8001/openapi.json` |
+| 后端 API | `http://127.0.0.1:8001` |
+| Swagger | `http://127.0.0.1:8001/openapi.json` |
 | 页面清单 | `c:\workspace\newtime\frontend-pages.md` |
 
 ---
@@ -122,7 +122,7 @@ frontend/src/
 - axios 实例 baseURL `/api`
 - 请求拦截器：自动注入 `Bearer <token>`
 - 响应拦截器：401 自动清空 token 并跳转 `/login`
-- Vite proxy：`/api/*` → `http://192.168.3.99:8001`
+- Vite proxy：`/api/*` → `http://127.0.0.1:8001`
 
 ### 4.5 权限与安全 (`hooks/usePermission.ts` + `store/auth.ts` + `router/index.tsx`)
 
@@ -184,4 +184,4 @@ pnpm dev        # 启动开发服务器（http://localhost:5173）
 pnpm build      # 生产构建
 ```
 
-后端需在 `192.168.3.99:8001` 运行。前端 `/api/*` 请求通过 Vite proxy 转发。
+后端需在 `127.0.0.1:8001` 运行（或按 vite proxy 目标）。前端 `/api/*` 请求通过 Vite proxy 转发。

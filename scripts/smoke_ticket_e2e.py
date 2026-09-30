@@ -5,8 +5,14 @@
 - 票据缺失/错误/重放 → 守卫拦截 → 401/403。
 两种结果可区分，无需产生任何真实副作用。
 
-用法：backend/.venv/Scripts/python.exe scripts/smoke_ticket_e2e.py [base_url]
+用法：
+  SMOKE_ADMIN_USER=admin SMOKE_ADMIN_PASSWORD=<your-password> \
+    backend/.venv/Scripts/python.exe scripts/smoke_ticket_e2e.py [base_url]
+
+口令只从环境变量读取，不写死在脚本里。
 """
+import os
+import secrets
 import sys
 
 try:
@@ -16,6 +22,10 @@ except ImportError:  # pragma: no cover
     raise
 
 BASE = (sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:8019") + "/api"
+ADMIN_USER = os.environ.get("SMOKE_ADMIN_USER", "admin")
+ADMIN_PASSWORD = os.environ.get("SMOKE_ADMIN_PASSWORD", "")
+# 临时探针账号口令：随机生成，不入库、不写文档
+TEMP_PASSWORD = f"Smoke@{secrets.token_hex(6)}"
 OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 FAILED = []
 
@@ -98,7 +108,7 @@ PROBES = {
     "finance:create": ("finance:create", "POST", "/finance/accounts", {}),
     "finance:delete": ("finance:delete", "DELETE", "/finance/accounts/999999", None),
     "users:reset-password": ("users:reset-password", "POST",
-                             "/settings/users/999999/reset-password", {"new_password": "Xx@123456"}),
+                             "/settings/users/999999/reset-password", {"new_password": TEMP_PASSWORD}),
 }
 
 # 需要真实存在对象才能触发守卫的探针（不存在对象的 404 早于票据校验）。
@@ -137,9 +147,13 @@ def cleanup_temp_user() -> None:
 
 
 def main() -> int:
+    if not ADMIN_PASSWORD:
+        print("缺少环境变量 SMOKE_ADMIN_PASSWORD（登录口令），拒绝继续。")
+        print("示例：SMOKE_ADMIN_USER=admin SMOKE_ADMIN_PASSWORD=*** python scripts/smoke_ticket_e2e.py")
+        return 2
     print(f"冒烟目标：{BASE}")
 
-    st, resp = call("POST", "/auth/login", {"username": "admin", "password": "Admin@12345"})
+    st, resp = call("POST", "/auth/login", {"username": ADMIN_USER, "password": ADMIN_PASSWORD})
     check("真实登录", st == 200 and isinstance(resp, dict) and "access_token" in resp, f"(HTTP {st})")
     if st != 200:
         return 1
@@ -175,7 +189,7 @@ def main() -> int:
     # 跨动作票据：vms 的票不能用于 users 的路由（防串用）
     st, resp = call("POST", "/auth/risk-challenge", {"action_key": "vms:delete"}, headers=auth)
     st_cross, _ = call("POST", "/settings/users/999999/reset-password",
-                       body={"new_password": "Xx@123456"},
+                       body={"new_password": TEMP_PASSWORD},
                        headers={**auth, "X-Risk-Ticket": resp["ticket"]})
     check("跨动作票据被拒（vms 票打 users 路由）", st_cross in (401, 403), f"(HTTP {st_cross})")
 
@@ -186,7 +200,7 @@ def main() -> int:
     # ── 禁用真实用户：建临时账号，走完整"拒票/放行/重放"，再清理 ──
     print("── users:disable 真实对象闭环（临时账号） ──")
     st, resp = call("POST", "/settings/users",
-                    {"username": TEMP_USER, "password": "Smoke@12345", "name": "冒烟探针",
+                    {"username": TEMP_USER, "password": TEMP_PASSWORD, "name": "冒烟探针",
                      "role": "只读"},
                     headers=auth)
     if st != 200 or not isinstance(resp, dict) or "id" not in resp:

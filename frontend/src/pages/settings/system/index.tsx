@@ -508,17 +508,17 @@ function MonitoringTab() {
         <Row gutter={16}>
           <Col span={12}>
             <Form.Item name="vm_url" label="VictoriaMetrics">
-              <Input placeholder="http://192.168.3.99:8428" />
+              <Input placeholder="http://your-monitor-host:8428" />
             </Form.Item>
           </Col>
           <Col span={12}>
             <Form.Item name="vlogs_url" label="VictoriaLogs">
-              <Input placeholder="http://192.168.3.99:9428" />
+              <Input placeholder="http://your-monitor-host:9428" />
             </Form.Item>
           </Col>
           <Col span={12}>
             <Form.Item name="grafana_url" label="Grafana">
-              <Input placeholder="http://192.168.3.99:3002" />
+              <Input placeholder="http://your-monitor-host:3000" />
             </Form.Item>
           </Col>
           <Col span={12}>
