@@ -48,16 +48,31 @@ services:
     environment:
       GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD}
-      GF_SERVER_ROOT_URL: ${GRAFANA_ROOT_URL:-http://localhost:3000/}
+      # 相对地址：经 OpsPilot 后端 /grafana 反代访问时保持同源，
+      # 浏览器不会被 appUrl 带到 Grafana 裸端口而绕过 SSO。
+      GF_SERVER_ROOT_URL: ${GRAFANA_ROOT_URL:-/grafana}
       GF_SERVER_SERVE_FROM_SUB_PATH: "true"
+      # auth.proxy：OpsPilot 后端反代时注入 X-WEBAUTH-* 头完成免密登录
       GF_AUTH_PROXY_ENABLED: "true"
       GF_AUTH_PROXY_HEADER_NAME: X-WEBAUTH-USER
+      GF_AUTH_PROXY_HEADER_PROPERTY: username
       GF_AUTH_PROXY_AUTO_SIGN_UP: "true"
+      # 角色同步：OpsPilot 管理员 -> Grafana Admin，其余 -> Viewer
+      GF_AUTH_PROXY_ENABLE_ROLE_MAPPING: "true"
+      GF_AUTH_PROXY_HEADERS: Name:X-WEBAUTH-NAME Email:X-WEBAUTH-EMAIL Role:X-WEBAUTH-ROLE
+      GF_AUTH_PROXY_ENABLE_LOGIN_TOKEN: "true"
       GF_USERS_ALLOW_SIGN_UP: "false"
+      # VictoriaLogs 数据源插件（日志钻取用，uid opspilot-vlogs）不在 grafana.com
+      # 目录里（GF_INSTALL_PLUGINS 会 404），需要手动装：下载 VictoriaLogs releases
+      # 的 victoriametrics-logs-datasource-v*.zip 解压进 /var/lib/grafana/plugins/ 再重启，
+      # 详见 deploy/README.md。GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS 兜底未签名场景。
+      GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS: victoriametrics-logs-datasource
       GF_ANALYTICS_REPORTING_ENABLED: "false"
       GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
     volumes:
       - grafanadata:/var/lib/grafana
+      # 数据源 provisioning：启动即就绪，SSO 进来就能查指标
+      - ./config/grafana/provisioning:/etc/grafana/provisioning:ro
     ports:
       - "${MONITOR_BIND:-0.0.0.0}:${GRAFANA_PORT:-3000}:3000"
     depends_on:

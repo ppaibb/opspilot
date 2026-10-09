@@ -9,6 +9,7 @@ from __future__ import annotations
 import sqlalchemy as sa
 
 from alembic import op
+from app import alembic_guards as g
 
 revision = "20260921_cert_renew_cooldown"
 down_revision = "20260921_im_bindings"
@@ -17,11 +18,11 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column(
+    g.add_column_if_missing(op, 
         "certificates",
         sa.Column("last_renew_attempt_at", sa.String(length=30), nullable=False, server_default=""),
     )
 
 
 def downgrade() -> None:
-    op.drop_column("certificates", "last_renew_attempt_at")
+    g.drop_column_if_exists(op, "certificates", "last_renew_attempt_at")

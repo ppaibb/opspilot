@@ -65,14 +65,53 @@ prometheus.scrape "opspilot_node" {
 // ===== OpsPilot managed targets end =====
 
 // Docker 容器日志（唯一日志源）。需挂载 docker.sock。
+// loki.source.docker 的 targets 是必填属性（alloy v1.x 强校验，缺失直接启动失败），
+// 用 discovery.docker 发现容器后接入。
+//
+// 标签设计（与 OpsPilot 日志页的 host/service/job/level 筛选一一对应）：
+// - service ← 容器名（relabel __meta_docker_container_name），日志页「服务」下拉用；
+// - level   ← 从日志行解析（loki.process，默认 INFO），「级别」下拉用；
+// - job     = "container"（来源类型）；host/instance 由 compose 注入的
+//   HOST_NAME/HOST_INSTANCE 提供——HOST_NAME 缺失会让「主机」筛选空，见 install.sh。
+discovery.docker "containers" {
+  host = "unix:///var/run/docker.sock"
+}
+
+discovery.relabel "containers" {
+  targets = discovery.docker.containers.targets
+
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/(.*)"
+    target_label  = "service"
+  }
+}
+
+loki.process "containers" {
+  // 默认级别 INFO；日志行里出现大写级别词则覆盖（小写/无级别的行保持 INFO）
+  stage.template {
+    source   = "level"
+    template = "INFO"
+  }
+  stage.regex {
+    expression = "\\b(?P<level>DEBUG|INFO|NOTICE|WARN|WARNING|ERROR|ERR|CRIT|CRITICAL|FATAL|PANIC)\\b"
+  }
+  stage.labels {
+    values = { level = "" }
+  }
+
+  forward_to = [loki.write.opspilot.receiver]
+}
+
 loki.source.docker "docker" {
   host       = "unix:///var/run/docker.sock"
+  targets    = discovery.relabel.containers.output
   labels     = {
     job      = "container",
     host     = sys.env("HOST_NAME"),
     instance = sys.env("HOST_INSTANCE"),
   }
-  forward_to = [loki.write.opspilot.receiver]
+  forward_to = [loki.process.containers.receiver]
 }
 
 // 系统日志（syslog/messages）已按产品决策停用，只采 Docker。

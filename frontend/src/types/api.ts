@@ -1822,6 +1822,26 @@ export interface K8sSearchHit {
   [key: string]: unknown
 }
 
+/** 集群操作审计行（GET /clusters/{cid}/audit-logs 返回元素）。 */
+export interface ClusterAuditLog {
+  id: number
+  /** 服务器本地时间串（后端已由 naive UTC 转好） */
+  time: string
+  user: string
+  /** 方法标签：创建 / 更新 / 删除 / 读取 */
+  action: string
+  /** 去掉 /api/clusters/{cid} 前缀的资源路径 */
+  resource: string
+  /** 完整请求路径（悬浮展示用） */
+  path: string
+  /** 客户端 IP */
+  ip: string
+  result: string
+  risk_level: string
+  /** 风险判定依据（规则表命中原因） */
+  risk_reason: string
+}
+
 export interface K8sComponentHealth {
   name: string
   component: string

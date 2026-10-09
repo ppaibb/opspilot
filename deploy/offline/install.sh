@@ -179,6 +179,11 @@ INIT_ADMIN_DEPARTMENT=$INIT_ADMIN_DEPARTMENT
 MONITORING_HOST=$MONITORING_HOST
 DB_AUTO_CREATE_TABLES=0
 TERMINAL_SFTP_UPLOAD_MAX_MB=100
+# 监控连接三件套：后端启动时 bootstrap 写入 SystemConfig（已配置则不覆盖），
+# 装了监控栈就一并给上，省得再去设置页手填
+VM_URL=http://${MONITORING_HOST}:${VM_PORT}
+VLOGS_URL=http://${MONITORING_HOST}:${VLOGS_PORT}
+GRAFANA_URL=http://${MONITORING_HOST}:${GRAFANA_PORT}
 EOF
   log "已生成 $dest"
 }
@@ -224,6 +229,12 @@ start_monitoring() {
   if [[ -z "${HOST_NAME:-}" ]]; then
     export HOST_NAME="$(hostname 2>/dev/null || echo opspilot)"
   fi
+  # HOST_NAME 持久化进 .env：alloy 容器用它打 host 标签（日志页「主机」筛选的来源）。
+  # 只靠 shell 导出的话，后续任何一次手工 `docker compose up -d`（不带导出）都会把它
+  # 丢成空串——235 演练实际踩过，host 标签整体消失。
+  if ! grep -q '^HOST_NAME=' "$ENV_FILE" 2>/dev/null; then
+    printf 'HOST_NAME=%s\n' "$HOST_NAME" >> "$ENV_FILE"
+  fi
   "${COMPOSE[@]}" -f "$MON_COMPOSE" --env-file "$ENV_FILE" up -d
   wait_http "http://127.0.0.1:${VM_PORT}/-/healthy" "VictoriaMetrics" 40 || true
   wait_http "http://127.0.0.1:${VLOGS_PORT}/-/healthy" "VictoriaLogs" 40 || true
@@ -240,8 +251,8 @@ summary() {
   if [[ "${INSTALL_MONITORING}" == "true" ]]; then
     log "VM:          http://${MONITORING_HOST}:${VM_PORT}"
     log "VLogs:       http://${MONITORING_HOST}:${VLOGS_PORT}"
-    log "Grafana:     http://${MONITORING_HOST}:${GRAFANA_PORT}"
-    log "下一步: 登录后 系统设置→监控连接，填 VM/VLogs/Grafana，点测试连接"
+    log "Grafana:     http://${MONITORING_HOST}:${GRAFANA_PORT}（也可从 OpsPilot 监控页免密进入）"
+    log "下一步: 登录后 系统设置→监控连接，确认 VM/VLogs/Grafana 并点测试连接"
   fi
   log "配置文件:    $ENV_FILE"
   log "数据卷:      ${OPSPILOT_PROJECT}-pgdata 等"

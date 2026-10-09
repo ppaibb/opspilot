@@ -1,0 +1,21 @@
+# OpsPilot 内置 Grafana 数据源：VictoriaMetrics（指标查询）
+# 由 deploy/monitoring 与 deploy/offline/monitoring 两个 compose 挂载到
+# /etc/grafana/provisioning/datasources，Grafana 启动时自动创建。
+#
+# 注意：Grafana 的数据源 provisioning **不做 ${VAR} 环境变量插值**（实测写了会被
+# 静默忽略、继续用库里的旧值），所以这里只能写死地址。
+apiVersion: 1
+
+datasources:
+  - name: OpsPilot VictoriaMetrics
+    uid: opspilot-vm
+    type: prometheus
+    access: proxy
+    # 与监控栈同机同 compose 网络时用容器名即可解析。
+    # 若 Grafana 与 VictoriaMetrics 不在同一 Docker 网络（分体部署/手工改过网络），
+    # 改成宿主机可达地址，例如 http://192.168.3.99:8428。
+    url: http://victoriametrics:8428
+    isDefault: true
+    editable: false
+    jsonData:
+      httpMethod: POST

@@ -13,7 +13,8 @@
  * token 重连，指数上限 5 次防风暴；关闭抽屉即中止。
  *
  * 交互：暂停/继续（暂停只停渲染不停接收）、kind/namespace 过滤（变更即重连）、
- * 关键字过滤、事件计数统计、环形缓冲 500 条。
+ * 关键字过滤、事件计数统计、环形缓冲 500 条；每行带 Informer 摘要出的当前状态
+ * （Pod：状态/就绪/重启；负载：状态/就绪副本），自动重连耗尽后可手动「重新连接」。
  */
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
@@ -43,6 +44,8 @@ interface WatchEvent {
   namespace: string
   name: string
   resourceVersion?: string
+  /** SSE 帧里的 object_summary（Pod: status/ready/restarts；负载: status/ready）。 */
+  object?: { status?: string; ready?: string; restarts?: number }
   ts: number
 }
 
@@ -50,6 +53,29 @@ const EVENT_META: Record<string, { color: string; icon: ReactNode; label: string
   ADDED: { color: 'green', icon: <PlusOutlined />, label: '新增' },
   MODIFIED: { color: 'blue', icon: <EditOutlined />, label: '变更' },
   DELETED: { color: 'red', icon: <DeleteOutlined />, label: '删除' },
+}
+
+const STATUS_COLOR: Record<string, string> = {
+  Running: '#52c41a', Active: '#52c41a', Complete: '#52c41a', Succeeded: '#52c41a',
+  Pending: '#faad14', ContainerCreating: '#faad14', Starting: '#faad14', Terminating: '#faad14',
+  Failed: '#f5222d', Error: '#f5222d', CrashLoopBackOff: '#f5222d', Degraded: '#f5222d', Evicted: '#f5222d',
+  Suspended: '#8c8c8c',
+}
+
+/** 事件行状态摘要：Pod 给「状态 · 就绪 · 重启」，负载给「状态 · 就绪」。 */
+function eventSummary(evt: WatchEvent): { text: string; color: string } | null {
+  const o = evt.object
+  if (!o) return null
+  const color = STATUS_COLOR[o.status || ''] || '#8c8c8c'
+  if (evt.kind === 'Pod') {
+    const parts = [o.status || '未知', o.ready || '?']
+    if (o.restarts != null) parts.push(`重启 ${o.restarts}`)
+    return { text: parts.join(' · '), color }
+  }
+  if (evt.kind === 'Event') return null
+  const parts = [o.status || '未知']
+  if (o.ready) parts.push(o.ready)
+  return { text: parts.join(' · '), color }
 }
 
 interface ClusterLiveFeedProps {
@@ -69,6 +95,8 @@ export default function ClusterLiveFeed({ open, clusterId, namespaces, onClose }
   const [events, setEvents] = useState<WatchEvent[]>([])
   const [status, setStatus] = useState<'idle' | 'connecting' | 'live' | 'error'>('idle')
   const [snapshotCount, setSnapshotCount] = useState<number | null>(null)
+  // 手动重连：自增即重启主循环（换新 token，指数退避计数归零）。
+  const [reconnectKey, setReconnectKey] = useState(0)
 
   const pausedRef = useRef(false)
   const bufferRef = useRef<WatchEvent[]>([])
@@ -156,7 +184,7 @@ export default function ClusterLiveFeed({ open, clusterId, namespaces, onClose }
           await new Promise((r) => setTimeout(r, Math.min(1000 * attempts, 5000)))
         } else {
           setStatus('error')
-          message.error('实时连接多次失败，已停止重连（可关闭后重开）')
+          message.error('实时连接多次失败，已停止自动重连（可点「重新连接」重试）')
           return
         }
       }
@@ -170,7 +198,7 @@ export default function ClusterLiveFeed({ open, clusterId, namespaces, onClose }
       abortRef.current = null
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, clusterId, kinds, namespace])
+  }, [open, clusterId, kinds, namespace, reconnectKey])
 
   // 关闭抽屉清空状态，避免下次打开残留旧会话数据。
   // （复位延后到微任务，避免在 effect 内同步 setState 触发级联渲染）
@@ -239,6 +267,14 @@ export default function ClusterLiveFeed({ open, clusterId, namespaces, onClose }
               <Button size="small" icon={<PauseCircleOutlined />} onClick={() => setPaused(true)}>暂停</Button>
             </Tooltip>
           )}
+          {status === 'error' && (
+            <Tooltip title="重新尝试连接（自动换取新的一次性 token）">
+              <Button size="small" type="primary" icon={<ReloadOutlined />}
+                onClick={() => setReconnectKey((k) => k + 1)}>
+                重新连接
+              </Button>
+            </Tooltip>
+          )}
           <Tooltip title="清屏（不影响接收）">
             <Button size="small" icon={<ClearOutlined />} onClick={() => { setEvents([]); bufferRef.current = [] }} />
           </Tooltip>
@@ -268,12 +304,20 @@ export default function ClusterLiveFeed({ open, clusterId, namespaces, onClose }
 
         <div style={{ maxHeight: 'calc(100vh - 320px)', overflow: 'auto' }}>
           {visible.length === 0 ? (
-            <div style={{ textAlign: 'center', padding: '48px 0', color: '#8c8c8c' }}>
-              {status === 'live' ? '暂无变更事件——集群平静是好事' : '等待连接...'}
-            </div>
+            status === 'error' ? (
+              <Flex vertical align="center" gap={8} style={{ padding: '48px 0', color: '#8c8c8c' }}>
+                <span>连接已断开（退避重连 5 次仍未恢复）</span>
+                <Button icon={<ReloadOutlined />} onClick={() => setReconnectKey((k) => k + 1)}>重新连接</Button>
+              </Flex>
+            ) : (
+              <div style={{ textAlign: 'center', padding: '48px 0', color: '#8c8c8c' }}>
+                {status === 'live' ? '暂无变更事件——集群平静是好事' : '等待连接...'}
+              </div>
+            )
           ) : (
             visible.map((evt, idx) => {
               const meta = EVENT_META[evt.type] || { color: 'default', icon: <ReloadOutlined />, label: evt.type }
+              const summary = eventSummary(evt)
               return (
                 <Flex key={`${evt.ts}-${idx}`} gap={8} align="center" style={{ padding: '4px 4px', borderBottom: '1px solid #f5f5f5' }}>
                   <Tag color={meta.color} style={{ flexShrink: 0, margin: 0, minWidth: 52, textAlign: 'center' }}>
@@ -283,6 +327,13 @@ export default function ClusterLiveFeed({ open, clusterId, namespaces, onClose }
                   <Text strong style={{ fontSize: 12, flex: 1, minWidth: 0 }} ellipsis>
                     {evt.namespace ? `${evt.namespace}/` : ''}{evt.name}
                   </Text>
+                  {summary && (
+                    <Tooltip title={`${evt.kind} 当前状态（来自 Informer 摘要）`}>
+                      <Text style={{ fontSize: 11, flexShrink: 0, color: summary.color, maxWidth: 180 }} ellipsis>
+                        {summary.text}
+                      </Text>
+                    </Tooltip>
+                  )}
                   <Text type="secondary" style={{ fontSize: 11, flexShrink: 0 }}>
                     {new Date(evt.ts).toLocaleTimeString('zh-CN', { hour12: false })}
                   </Text>

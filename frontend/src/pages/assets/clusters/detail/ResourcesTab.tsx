@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useInfiniteQuery, useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Card, Table, Button, Space, Tag, Typography, Flex, Alert, Drawer, Modal, App,
   Select, Tooltip, Empty, Spin, Input, Popconfirm,
@@ -13,16 +13,16 @@ import axios from 'axios'
 import { clusterDetailApi, clusterOpsApi } from '@/api'
 import { usePermission, useRiskConfirm, extractAxiosDetail } from '@/hooks/usePermission'
 import ResourceEditDrawer, { type EditTarget } from '@/components/k8s/ResourceEditDrawer'
+import YamlPre from '@/components/k8s/YamlPre'
 import type { K8sResourceItem, K8sResourceEvent } from '@/types/api'
 import { statusTag } from './shared'
+import { BROWSABLE_KINDS } from './types'
+import { useUrlFilter, useUrlFocus, focusRowClass } from './useTabParams'
 
 const { Text } = Typography
 
-/** 资源浏览 Tab 提供的常用 Kind（后端 RESOURCE_MAP 支持约 40 种，这里挑高频的）。 */
-const BROWSABLE_KINDS = [
-  'Service', 'Ingress', 'ConfigMap', 'Secret', 'PVC', 'PV', 'ServiceAccount',
-  'NetworkPolicy', 'ResourceQuota', 'LimitRange', 'EndpointSlice', 'CRD',
-]
+/** 后端单页上限 500，取 100 兼顾首屏速度与翻页次数。 */
+const RESOURCE_PAGE_SIZE = 100
 
 // ───────────────────────── 资源浏览 Tab ─────────────────────────
 
@@ -33,8 +33,9 @@ export default function ResourcesTab({ clusterId, namespaces }: { clusterId: str
   const riskConfirm = useRiskConfirm()
   const canManage = has('action.assets.clusters.manage')
 
-  const [kind, setKind] = useState('Service')
-  const [namespace, setNamespace] = useState('_all')
+  // kind / ns 入 URL：搜索跳转带参数预填并高亮目标行，刷新不丢。
+  const [kind, setKind] = useUrlFilter('kind', 'Service')
+  const [namespace, setNamespace] = useUrlFilter('ns', '_all')
   const [yamlView, setYamlView] = useState<K8sResourceItem | null>(null)
   const [eventsView, setEventsView] = useState<K8sResourceItem | null>(null)
   const [resizeTarget, setResizeTarget] = useState<K8sResourceItem | null>(null)
@@ -46,16 +47,20 @@ export default function ResourcesTab({ clusterId, namespaces }: { clusterId: str
   // 可视化编辑目标（KubeSphere 式表单编辑，支持 Deployment/StatefulSet/DaemonSet/Service/ConfigMap）。
   const [editTarget, setEditTarget] = useState<EditTarget | null>(null)
 
-  const { data: resources = [], isLoading, refetch, isFetching } = useQuery({
-    queryKey: ['cluster-resources', clusterId, kind, namespace],
-    queryFn: async () => {
-      // 后端约定：namespace=_all 返回全部；具体 ns 只对 namespaced 资源生效。
-      // 「仅集群级」在前端按 namespace 字段为空裁剪。
-      const items = await clusterDetailApi.resources(clusterId, kind, namespace === '__none__' ? '_all' : namespace)
-      return namespace === '__none__' ? items.filter((i: K8sResourceItem) => !i.namespace) : items
-    },
+  // 后端 continue_token 分页：大集群不再被首屏 200 条截断，「加载更多」继续翻。
+  const nsParam = namespace === '__none__' ? '_all' : namespace
+  const {
+    data, isLoading, isFetching, refetch, fetchNextPage, hasNextPage, isFetchingNextPage,
+  } = useInfiniteQuery({
+    queryKey: ['cluster-resources', clusterId, kind, nsParam],
+    queryFn: ({ pageParam }) =>
+      clusterDetailApi.resourcesPage(clusterId, kind, nsParam, RESOURCE_PAGE_SIZE, pageParam),
+    initialPageParam: '',
+    getNextPageParam: (last) => last.continue_token || undefined,
     placeholderData: (prev) => prev,
   })
+  const resources = (data?.pages.flatMap((p) => p.items) ?? [])
+    .filter((i) => (namespace === '__none__' ? !i.namespace : true))
 
   const { data: yaml } = useQuery({
     queryKey: ['cluster-resource-yaml', clusterId, yamlView?.namespace, kind, yamlView?.name],
@@ -72,7 +77,7 @@ export default function ResourcesTab({ clusterId, namespaces }: { clusterId: str
   const deleteMutation = useMutation({
     mutationFn: (item: K8sResourceItem) =>
       clusterDetailApi.deleteResource(clusterId, item.namespace || 'default', kind, item.name),
-    onSuccess: () => { message.success('资源已删除'); refetch() },
+    onSuccess: () => { message.success('资源已删除'); queryClient.invalidateQueries({ queryKey: ['cluster-resources', clusterId] }) },
     onError: (error: unknown) => message.error(extractAxiosDetail(error) ?? '删除失败'),
   })
 
@@ -116,6 +121,8 @@ export default function ResourcesTab({ clusterId, namespaces }: { clusterId: str
   // 表单编辑支持的 Kind（与后端 _resource_edit_payload 的 fields 矩阵一致）。
   const VISUAL_EDIT_KINDS = ['Deployment', 'StatefulSet', 'DaemonSet', 'Service', 'ConfigMap']
 
+  const focus = useUrlFocus()
+
   const columns: ColumnsType<K8sResourceItem> = [
     {
       title: '名称', dataIndex: 'name', width: 260, ellipsis: true,
@@ -158,7 +165,8 @@ export default function ResourcesTab({ clusterId, namespaces }: { clusterId: str
           <Popconfirm
             title={`删除 ${record.name}？`} description="删除后不可恢复。"
             okText="删除" okButtonProps={{ danger: true }} cancelText="取消"
-            onConfirm={() => riskConfirm.confirm('clusters:delete', () => deleteMutation.mutate(record))}
+            onConfirm={() => riskConfirm.confirm('clusters:delete', () => deleteMutation.mutate(record),
+              `将删除 ${kind} ${namespace === '_all' ? '' : `${namespace}/`}${record.name}，删除后不可恢复`)}
             disabled={!canManage}
           >
             <Button size="small" type="text" danger icon={<DeleteOutlined />} disabled={!canManage} />
@@ -172,7 +180,7 @@ export default function ResourcesTab({ clusterId, namespaces }: { clusterId: str
     <Card size="small">
       <Flex justify="space-between" wrap gap="small" style={{ marginBottom: 12 }}>
         <Space wrap>
-          <Select value={kind} onChange={(v) => { setKind(v); setNamespace('_all') }} style={{ width: 170 }}
+          <Select value={kind} onChange={setKind} style={{ width: 170 }}
             options={BROWSABLE_KINDS.map((k) => ({ value: k, label: k }))} />
           <Select
             value={namespace} onChange={setNamespace} style={{ width: 170 }} showSearch
@@ -191,9 +199,17 @@ export default function ResourcesTab({ clusterId, namespaces }: { clusterId: str
         columns={columns}
         dataSource={resources}
         loading={isLoading}
+        rowClassName={(r) => focusRowClass(focus, kind, r.namespace || '', r.name)}
         pagination={{ pageSize: 20, showSizeChanger: false, showTotal: (t) => `共 ${t} 个` }}
         scroll={{ x: 940 }}
       />
+      {hasNextPage && (
+        <Flex justify="center" style={{ marginTop: 10 }}>
+          <Button loading={isFetchingNextPage} onClick={() => fetchNextPage()}>
+            加载更多（每页 {RESOURCE_PAGE_SIZE} 条）
+          </Button>
+        </Flex>
+      )}
 
       <Drawer
         title={
@@ -239,12 +255,9 @@ export default function ResourcesTab({ clusterId, namespaces }: { clusterId: str
             />
           </>
         ) : (
-          <pre style={{
-            background: '#fafafa', padding: 12, borderRadius: 6, fontSize: 12,
-            whiteSpace: 'pre-wrap', wordBreak: 'break-all', maxHeight: '75vh', overflow: 'auto',
-          }}>
-            {(typeof yaml === 'string' ? yaml : yaml?.yaml || yaml?.content || JSON.stringify(yaml, null, 2))}
-          </pre>
+          <YamlPre
+            text={typeof yaml === 'string' ? yaml : yaml?.yaml || yaml?.content || JSON.stringify(yaml, null, 2)}
+          />
         )}
       </Drawer>
 
@@ -274,12 +287,7 @@ export default function ResourcesTab({ clusterId, namespaces }: { clusterId: str
         width={720}
       >
         {related ? (
-          <pre style={{
-            background: '#fafafa', padding: 12, borderRadius: 6, fontSize: 12,
-            whiteSpace: 'pre-wrap', wordBreak: 'break-all', maxHeight: '75vh', overflow: 'auto',
-          }}>
-            {JSON.stringify(related, null, 2)}
-          </pre>
+          <YamlPre text={JSON.stringify(related, null, 2)} />
         ) : (
           <div style={{ textAlign: 'center', padding: '60px 0' }}><Spin tip="加载关联资源..." /></div>
         )}

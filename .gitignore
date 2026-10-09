@@ -91,6 +91,7 @@ Thumbs.db
 .zcode/
 .pytest_cache/
 gui-test-screenshots/
+.artifacts/
 **/__pycache__/
 **/.pytest_cache/
 extract_pods_jars.sh

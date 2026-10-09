@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
+from app.timefmt import to_local_str
 from app.models.user import User
 from app.models.audit import AuditLog
 from app.models.system_config import SystemConfig
@@ -429,7 +430,9 @@ def create_user(
     row = User(
         username=username,
         name=(payload.name or "").strip() or username,
-        email=email,
+        # 空邮箱存 NULL：email 列有唯一索引，空串会让"第二个无邮箱用户"必然撞
+        # ix_users_email 唯一约束 500（PostgreSQL 唯一索引对 NULL 不去重）。
+        email=email or None,
         role=role_name,
         department=(payload.department or "").strip(),
         status=status_value,
@@ -462,7 +465,10 @@ def get_audits(
     return [
         {
             "id": log.id,
-            "time": log.time.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S") if log.time else "-",
+            # AuditLog.time 以 datetime.utcnow() 落库（naive UTC），统一走 to_local_str
+            # 按 UTC 解释转本地展示；不能写 astimezone(timezone.utc)——那会把 naive 值
+            # 当成"本地时间"再转 UTC，在 UTC+8 机器上显示偏差数小时。
+            "time": to_local_str(log.time) or "-",
             "user": log.user,
             "action": log.action,
             "resource": log.resource,
@@ -768,9 +774,15 @@ def save_feature_toggles(
 
 @router.get("/rbac/metadata", response_model=RBACMetadataResponse)
 def get_rbac_metadata(
-    _=Depends(require_permissions("module.settings.users")),
+    _=Depends(get_current_user),
 ):
-    """返回前端用户授权界面所需的权限目录与角色模板。"""
+    """返回前端所需的权限目录与角色模板。
+
+    登录引导（AuthGuard bootstrap）对所有已登录用户都会调用本接口来解析
+    有效权限、渲染菜单/按钮，因此只要求"已登录"而非用户管理权限——
+    否则任何非管理员角色登录后初始化必然失败（普通账号进不了系统）。
+    数据本身不含敏感信息；授权管理页面另有页面级权限守卫。
+    """
     return {
         "permissions": PERMISSION_CATALOG,
         "role_templates": list_role_templates(),
@@ -866,8 +878,18 @@ def delete_role_template(
 def get_user_access(
     user_id: int,
     db: Session = Depends(get_db),
-    _=Depends(require_permissions("module.settings.users")),
+    current_user: User = Depends(get_current_user),
 ):
+    """读取用户的有效权限视图。
+
+    登录引导会对**自己**调用本接口解析权限矩阵，所以"查自己"只需登录；
+    查他人要求用户管理权限（不能用 require_permissions 依赖表达这种二分逻辑，
+    挂上去会让普通用户的 bootstrap 必然 403 → 权限矩阵为空 → 全站按钮消失）。
+    """
+    if current_user.id != user_id and not resolve_effective_permissions(current_user).get(
+        "module.settings.users"
+    ):
+        raise HTTPException(status_code=403, detail="只能查看自己的权限视图")
     row = db.query(User).filter(User.id == user_id).first()
     if not row:
         raise HTTPException(status_code=404, detail="用户不存在")
@@ -927,6 +949,48 @@ def update_user_status(
     db.commit()
     db.refresh(row)
     return serialize_user_row(row)
+
+
+@router.delete("/users/{user_id}")
+def delete_user(
+    user_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    _risk=Depends(require_risk_ack("action.settings.users.manage", "delete")),
+):
+    """删除用户（高危，需二次确认票据）。
+
+    删除是硬删除：审计日志引用该用户的历史记录以用户名字符串保留（audit_logs.user
+    冗余存名而非外键），但该账号无法再登录、不出现在用户列表。
+    保护规则：不能删自己；不能删最后一个管理员账号（防止把系统锁死在门外）。
+    """
+    row = db.query(User).filter(User.id == user_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    if current_user.id == row.id:
+        raise HTTPException(status_code=400, detail="不允许删除当前登录账号")
+    if (row.role or "") == "管理员":
+        admin_count = db.query(User).filter(User.role == "管理员", User.status == "active").count()
+        if admin_count <= 1:
+            raise HTTPException(status_code=400, detail="系统至少保留一个可用的管理员账号")
+
+    username = row.username
+    display_name = row.name or username
+    db.delete(row)
+    db.add(
+        AuditLog(
+            user=str(current_user.name or current_user.username or "未知用户"),
+            action="删除用户",
+            resource=f"/settings/users/{user_id}:{username}"[:255],
+            ip=str(request.client.host if request.client else "-"),
+            result="success",
+            risk_level="high",
+            risk_reason="删除用户账号（不可恢复）",
+        )
+    )
+    db.commit()
+    return {"message": f"用户 {display_name} 已删除", "id": user_id}
 
 
 @router.post("/users/{user_id}/reset-password")

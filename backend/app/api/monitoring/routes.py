@@ -17,7 +17,7 @@ import json
 import re
 from typing import Any
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
@@ -2103,13 +2103,24 @@ def _require_log_time_window(
 def _normalize_hits_ts_seconds(ts: Any) -> int:
     """把 VictoriaLogs hits 时间戳归一为 Unix 秒。
 
-    不同版本可能返回秒(1e9 量级)、毫秒(1e12)、微秒(1e15)或纳秒(1e18)，
-    按数量级判断后换算，避免前端 `* 1000` 画错时间轴。
+    不同版本可能返回秒(1e9 量级)、毫秒(1e12)、微秒(1e15)或纳秒(1e18)的数字，
+    也可能直接返回 RFC3339 字符串（如 2026-10-03T15:20:00Z，当前 9428 实测就是这种），
+    按数量级判断换算、字符串按 fromisoformat 解析，避免前端 `* 1000` 画错时间轴。
     """
     try:
         value = float(ts)
     except (TypeError, ValueError):
-        return 0
+        # 非数字：尝试按 RFC3339/ISO 解析；无时区按 UTC（与全站外部存储时间约定一致）
+        raw = str(ts or "").strip()
+        if not raw:
+            return 0
+        try:
+            dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            return 0
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return int(dt.timestamp())
     if value <= 0:
         return 0
     if value < 1e11:          # 秒
@@ -2152,7 +2163,9 @@ def list_log_fields(
         }
         path = "/field_values"
     else:
-        params = {"start": start_val, "end": end_val}
+        # VLogs 的 field_names 同样强制要求 query 参数（缺失直接 400），
+        # 枚举全部字段时带 match-all。
+        params = {"query": query, "start": start_val, "end": end_val}
         path = "/field_names"
 
     try:

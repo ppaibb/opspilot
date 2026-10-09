@@ -90,9 +90,34 @@ class RiskChallengeIssuerContract(unittest.TestCase):
         self.assertEqual(row.action_id, "delete")
 
     def test_short_key_unregistered_action_still_issuable(self):
-        # 未注册风险等级的动作（如 drain）也必须能拿票，否则对应路由会被永久 403。
-        result = challenge({"action_key": "clusters:drain"}, self.db)
+        # 未注册风险等级的动作也必须能拿票，否则对应路由会被永久 403。
+        # logs（查看日志，只读）挂了 require_risk_ack 链但未在 ACTION_RISK_LEVELS
+        # 注册等级。（patch_labels 2026-10-08 已登记 medium，不能再当未注册用例。）
+        result = challenge({"action_key": "clusters:logs"}, self.db)
         self.assertEqual(result["risk_level"], "low")
+
+    def test_short_key_second_round_registered_cluster_actions(self):
+        """2026-10-08 二轮补登记的四个动作必须落在注册等级上。
+
+        patch_labels / scale / create_namespace / exec_session 此前未登记 →
+        回落 low → 前端不弹确认、审计风险列不可信。
+        """
+        self.assertEqual(challenge({"action_key": "clusters:patch_labels"}, self.db)["risk_level"], "medium")
+        self.assertEqual(challenge({"action_key": "clusters:scale"}, self.db)["risk_level"], "medium")
+        self.assertEqual(challenge({"action_key": "clusters:create_namespace"}, self.db)["risk_level"], "medium")
+        self.assertEqual(challenge({"action_key": "clusters:exec_session"}, self.db)["risk_level"], "medium")
+
+    def test_short_key_registered_cluster_actions_take_registered_level(self):
+        """集群运维动作必须落在 ACTION_RISK_LEVELS 注册的等级上。
+
+        2026-10-08 巡检前 cordon/drain/set-image 等整族动作未注册 → 回落 low →
+        前端不弹确认、审计记 low，一次误点就把生产节点标记不可调度 / 驱逐全部 Pod。
+        """
+        self.assertEqual(challenge({"action_key": "clusters:cordon"}, self.db)["risk_level"], "high")
+        self.assertEqual(challenge({"action_key": "clusters:drain"}, self.db)["risk_level"], "high")
+        self.assertEqual(challenge({"action_key": "clusters:uncordon"}, self.db)["risk_level"], "medium")
+        self.assertEqual(challenge({"action_key": "clusters:set-image"}, self.db)["risk_level"], "high")
+        self.assertEqual(challenge({"action_key": "clusters:rollout-undo"}, self.db)["risk_level"], "high")
 
     def test_challenge_without_any_key_is_422(self):
         with self.assertRaises(HTTPException) as ctx:

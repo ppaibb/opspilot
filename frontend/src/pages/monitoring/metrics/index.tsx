@@ -290,7 +290,7 @@ export default function MetricsQueryPage() {
                   <EmptyState
                     kind="no-result"
                     title={submitted.mode === 'range' ? '区间查询无数据' : '即时查询无数据'}
-                    description="调整表达式或时间窗后重试；也可展开右侧指标浏览器点选指标名快速填入。"
+                    description="调整表达式或时间窗后重试。"
                   />
                 ) : submitted.mode === 'range' && chartData ? (
                   <MetricChart
@@ -310,27 +310,10 @@ export default function MetricsQueryPage() {
                 )}
               </Card>
             )}
-
-            {!submitted && (
-              <Card size="small">
-                <EmptyState
-                  kind="no-result"
-                  title="开始查询"
-                  description="点上方常用指标快捷按钮填入 PromQL，或手写表达式后执行查询。"
-                />
-              </Card>
-            )}
           </Space>
         }
         side={
           <Space direction="vertical" size={8} style={{ width: '100%' }}>
-            <SideCard title="说明">
-              <Text type="secondary" style={{ fontSize: 12 }}>
-                区间模式画多序列折线（MetricChart），即时模式出表格快照。
-                常用指标一键填 PromQL；指标浏览器默认收起，展开后点取值填入查询框。
-              </Text>
-            </SideCard>
-
             <Card size="small" title="指标浏览器" extra={<TagsOutlined />}>
               <Collapse
                 ghost

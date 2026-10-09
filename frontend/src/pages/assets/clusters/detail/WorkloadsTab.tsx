@@ -3,20 +3,24 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Card, Table, Button, Space, Tag, Typography, Flex, Drawer, Modal, App,
   InputNumber, Select, Tooltip, Empty, Spin, Input, Descriptions, Popconfirm,
+  Dropdown,
   Progress, Form,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
+import type { MenuProps } from 'antd'
 import {
   ReloadOutlined, SyncOutlined, RollbackOutlined, FileTextOutlined,
   DeleteOutlined, NodeIndexOutlined, RocketOutlined, DeploymentUnitOutlined,
   EyeOutlined, ClockCircleOutlined, PartitionOutlined, SendOutlined,
-  ExperimentOutlined,
+  ExperimentOutlined, MoreOutlined,
 } from '@ant-design/icons'
 import { clusterDetailApi, clusterOpsApi } from '@/api'
 import { usePermission, useRiskConfirm, extractAxiosDetail } from '@/hooks/usePermission'
 import ResourceEditDrawer, { type EditTarget } from '@/components/k8s/ResourceEditDrawer'
+import YamlPre from '@/components/k8s/YamlPre'
 import type { K8sWorkload } from '@/types/api'
 import { statusTag } from './shared'
+import { useUrlFilter, useUrlFocus, focusRowClass } from './useTabParams'
 
 const { Text } = Typography
 
@@ -24,6 +28,11 @@ const WORKLOAD_KIND_COLOR: Record<string, string> = {
   Deployment: 'blue', StatefulSet: 'purple', DaemonSet: 'cyan',
   ReplicaSet: 'geekblue', Job: 'orange', CronJob: 'gold',
 }
+
+/** 后端各写路由真实支持的 kind（见 backend/app/api/clusters/workloads.py 同名路由分支）。 */
+const SCALE_KINDS = ['Deployment', 'StatefulSet']
+const ROLLOUT_KINDS = ['Deployment', 'StatefulSet', 'DaemonSet']
+const DELETE_KINDS = ['Deployment', 'StatefulSet', 'DaemonSet']
 
 // ───────────────────────── 工作负载 Tab ─────────────────────────
 
@@ -34,9 +43,12 @@ export default function WorkloadsTab({ clusterId, namespaces }: { clusterId: str
   const riskConfirm = useRiskConfirm()
   const canManage = has('action.assets.clusters.manage')
 
-  const [kindFilter, setKindFilter] = useState<string>('_all')
-  const [nsFilter, setNsFilter] = useState('_all')
-  const [search, setSearch] = useState('')
+  // 默认只看 Deployment：列表由后端按 ns 全量返回，含大量历史 ReplicaSet，
+  // 全类型混排会把真正的控制器刷出首屏；需要时切「全部类型」。
+  // ns / 类型 / 关键字入 URL：搜索跳转带参数预填并高亮目标行，刷新不丢。
+  const [kindFilter, setKindFilter] = useUrlFilter('kind', 'Deployment')
+  const [nsFilter, setNsFilter] = useUrlFilter('ns', '_all')
+  const [search, setSearch] = useUrlFilter('q')
   const [scaleTarget, setScaleTarget] = useState<K8sWorkload | null>(null)
   const [scaleReplicas, setScaleReplicas] = useState(1)
   const [historyTarget, setHistoryTarget] = useState<K8sWorkload | null>(null)
@@ -113,7 +125,7 @@ export default function WorkloadsTab({ clusterId, namespaces }: { clusterId: str
     onError: (error: unknown) => message.error(extractAxiosDetail(error) ?? '删除失败'),
   })
 
-  const scalable = (w: K8sWorkload) => ['Deployment', 'StatefulSet', 'ReplicaSet'].includes(w.kind)
+  const isPaused = (w: K8sWorkload) => w.status === 'Suspended' || w.status === 'Paused'
 
   const setImageMutation = useMutation({
     mutationFn: () => clusterOpsApi.setWorkloadImage(
@@ -151,6 +163,8 @@ export default function WorkloadsTab({ clusterId, namespaces }: { clusterId: str
     return true
   })
 
+  const focus = useUrlFocus()
+
   const columns: ColumnsType<K8sWorkload> = [
     {
       title: '名称', dataIndex: 'name', width: 240,
@@ -176,74 +190,87 @@ export default function WorkloadsTab({ clusterId, namespaces }: { clusterId: str
     },
     { title: '创建', dataIndex: 'age', width: 100 },
     {
-      title: '操作', key: 'ops', width: 330, fixed: 'right',
-      render: (_, record) => (
-        <Space size={2}>
-          <Tooltip title="扩缩容">
-            <Button size="small" type="text" icon={<NodeIndexOutlined />}
-              disabled={!canManage || !scalable(record)}
-              onClick={() => { setScaleTarget(record); setScaleReplicas(parseInt(record.ready) || 1) }} />
-          </Tooltip>
-          <Tooltip title="滚动重启">
-            <Button size="small" type="text" icon={<SyncOutlined />}
-              disabled={!canManage || !scalable(record)}
-              onClick={() => riskConfirm.confirm('clusters:restart', () => restartMutation.mutate(record))} />
-          </Tooltip>
-          <Tooltip title="回滚上一版本">
-            <Button size="small" type="text" icon={<RollbackOutlined />}
-              disabled={!canManage || !scalable(record)}
-              onClick={() => riskConfirm.confirm('clusters:rollout-undo', () => undoMutation.mutate(record))} />
-          </Tooltip>
-          <Tooltip title="发布历史">
-            <Button size="small" type="text" icon={<RocketOutlined />}
-              disabled={!scalable(record)} onClick={() => setHistoryTarget(record)} />
-          </Tooltip>
-          <Tooltip title="修改镜像（滚动发布）">
-            <Button size="small" type="text" icon={<DeploymentUnitOutlined />}
-              disabled={!canManage || !scalable(record)}
-              onClick={() => { setImageTarget(record); setImageValues({ main: record.image || '' }) }} />
-          </Tooltip>
-          <Tooltip title={record.status === 'Suspended' || record.status === 'Paused' ? '恢复调度' : '暂停（缩到 0 副本）'}>
-            <Button size="small" type="text" icon={<PartitionOutlined />}
-              disabled={!canManage || !scalable(record)}
-              onClick={() => riskConfirm.confirm('clusters:pause', () =>
-                pauseMutation.mutate({ w: record, paused: !(record.status === 'Suspended' || record.status === 'Paused') }))} />
-          </Tooltip>
-          <Tooltip title="滚动发布状态">
-            <Button size="small" type="text" icon={<EyeOutlined />}
-              disabled={!scalable(record)} onClick={() => setRolloutTarget(record)} />
-          </Tooltip>
-          <Tooltip title="查看 YAML">
-            <Button size="small" type="text" icon={<FileTextOutlined />} onClick={() => setYamlTarget(record)} />
-          </Tooltip>
-          {record.kind === 'CronJob' && (
-            <>
+      title: '操作', key: 'ops', width: 235, fixed: 'right',
+      render: (_, record) => {
+        const paused = isPaused(record)
+        const moreItems: MenuProps['items'] = []
+        if (ROLLOUT_KINDS.includes(record.kind)) {
+          moreItems.push(
+            { key: 'rollback', icon: <RollbackOutlined />, label: '回滚上一版本', disabled: !canManage },
+            { key: 'history', icon: <RocketOutlined />, label: '发布历史与逐版回滚' },
+            { key: 'image', icon: <DeploymentUnitOutlined />, label: '修改镜像（滚动发布）', disabled: !canManage },
+          )
+        }
+        if (record.kind === 'Deployment') {
+          moreItems.push({ key: 'pause', icon: <PartitionOutlined />, label: paused ? '恢复调度（还原副本）' : '暂停（缩到 0 副本）', disabled: !canManage })
+        }
+        if (ROLLOUT_KINDS.includes(record.kind)) {
+          moreItems.push({ key: 'status', icon: <EyeOutlined />, label: '滚动发布状态' })
+        }
+        if (record.kind === 'CronJob') {
+          if (moreItems.length) moreItems.push({ type: 'divider' })
+          moreItems.push(
+            { key: 'suspend', icon: <ClockCircleOutlined />, label: record.status === 'Suspended' ? '恢复 CronJob 调度' : '挂起 CronJob', disabled: !canManage },
+            { key: 'jobs', icon: <ExperimentOutlined />, label: '执行记录（Jobs）' },
+          )
+        }
+        const onMore: MenuProps['onClick'] = ({ key }) => {
+          if (key === 'rollback') riskConfirm.confirm('clusters:rollout-undo', () => undoMutation.mutate(record),
+            `将把 ${record.namespace}/${record.name} 回滚到上一个版本，当前版本的配置与镜像将不再生效`)
+          if (key === 'history') setHistoryTarget(record)
+          if (key === 'image') { setImageTarget(record); setImageValues({ main: record.image || '' }) }
+          if (key === 'pause') riskConfirm.confirm('clusters:pause', () => pauseMutation.mutate({ w: record, paused: !paused }))
+          if (key === 'status') setRolloutTarget(record)
+          if (key === 'suspend') riskConfirm.confirm('clusters:suspend_cronjob', () =>
+            suspendCronMutation.mutate({ w: record, suspend: record.status !== 'Suspended' }))
+          if (key === 'jobs') setCronJobsTarget(record)
+        }
+        return (
+          <Space size={2}>
+            <Tooltip title={SCALE_KINDS.includes(record.kind) ? '扩缩容' : `${record.kind} 不支持扩缩容`}>
+              <Button size="small" type="text" icon={<NodeIndexOutlined />}
+                disabled={!canManage || !SCALE_KINDS.includes(record.kind)}
+                onClick={() => { setScaleTarget(record); setScaleReplicas(parseInt(record.ready) || 1) }} />
+            </Tooltip>
+            <Tooltip title={ROLLOUT_KINDS.includes(record.kind) ? '滚动重启' : `${record.kind} 不支持滚动重启`}>
+              <Button size="small" type="text" icon={<SyncOutlined />}
+                disabled={!canManage || !ROLLOUT_KINDS.includes(record.kind)}
+                onClick={() => riskConfirm.confirm('clusters:restart', () => restartMutation.mutate(record))} />
+            </Tooltip>
+            <Tooltip title="查看 YAML">
+              <Button size="small" type="text" icon={<FileTextOutlined />} onClick={() => setYamlTarget(record)} />
+            </Tooltip>
+            {record.kind === 'CronJob' && (
               <Tooltip title="手动触发一次">
                 <Button size="small" type="text" icon={<SendOutlined />}
-                  disabled={!canManage} onClick={() => riskConfirm.confirm('clusters:trigger_cronjob', () => triggerCronMutation.mutate(record))} />
-              </Tooltip>
-              <Tooltip title={record.status === 'Suspended' ? '恢复调度' : '挂起'}>
-                <Button size="small" type="text" icon={<ClockCircleOutlined />}
                   disabled={!canManage}
-                  onClick={() => riskConfirm.confirm('clusters:suspend_cronjob', () =>
-                    suspendCronMutation.mutate({ w: record, suspend: record.status !== 'Suspended' }))} />
+                  onClick={() => riskConfirm.confirm('clusters:trigger_cronjob', () => triggerCronMutation.mutate(record))} />
               </Tooltip>
-              <Tooltip title="执行记录（Jobs）">
-                <Button size="small" type="text" icon={<ExperimentOutlined />} onClick={() => setCronJobsTarget(record)} />
+            )}
+            <Tooltip title={DELETE_KINDS.includes(record.kind) ? undefined : `暂不支持删除 ${record.kind}（请用 YAML 工作台）`}>
+              <span>
+                <Popconfirm
+                  title={`删除 ${record.namespace}/${record.name}？`}
+                  description="该工作负载及其 Pod 将被删除，不可恢复。"
+                  okText="删除" okButtonProps={{ danger: true }} cancelText="取消"
+                  onConfirm={() => riskConfirm.confirm('clusters:delete', () => deleteMutation.mutate(record),
+                    `将删除 ${record.kind} ${record.namespace}/${record.name} 及其全部 Pod，不可恢复`)}
+                >
+                  <Button size="small" type="text" danger icon={<DeleteOutlined />}
+                    disabled={!canManage || !DELETE_KINDS.includes(record.kind)} />
+                </Popconfirm>
+              </span>
+            </Tooltip>
+            {moreItems.length > 0 && (
+              <Tooltip title="更多操作（回滚 / 镜像 / 暂停 / 发布状态 / 执行记录）">
+                <Dropdown menu={{ items: moreItems, onClick: onMore }} trigger={['click']}>
+                  <Button size="small" type="text" icon={<MoreOutlined />} />
+                </Dropdown>
               </Tooltip>
-            </>
-          )}
-          <Popconfirm
-            title={`删除 ${record.namespace}/${record.name}？`}
-            description="该工作负载及其 Pod 将被删除，不可恢复。"
-            okText="删除" okButtonProps={{ danger: true }} cancelText="取消"
-            onConfirm={() => riskConfirm.confirm('clusters:delete', () => deleteMutation.mutate(record))}
-            disabled={!canManage}
-          >
-            <Button size="small" type="text" danger icon={<DeleteOutlined />} disabled={!canManage} />
-          </Popconfirm>
-        </Space>
-      ),
+            )}
+          </Space>
+        )
+      },
     },
   ]
 
@@ -275,8 +302,9 @@ export default function WorkloadsTab({ clusterId, namespaces }: { clusterId: str
         columns={columns}
         dataSource={filtered}
         loading={isLoading}
+        rowClassName={(r) => focusRowClass(focus, r.kind, r.namespace, r.name)}
         pagination={{ pageSize: 15, showSizeChanger: false, showTotal: (t) => `共 ${t} 个` }}
-        scroll={{ x: 1150 }}
+        scroll={{ x: 1060 }}
       />
 
       <Modal
@@ -284,7 +312,8 @@ export default function WorkloadsTab({ clusterId, namespaces }: { clusterId: str
         open={!!imageTarget}
         onCancel={() => setImageTarget(null)}
         // 后端 set-image 守卫动作，需确认 + 一次性票据
-        onOk={() => riskConfirm.confirm('clusters:set-image', () => setImageMutation.mutate())}
+        onOk={() => riskConfirm.confirm('clusters:set-image', () => setImageMutation.mutate(),
+          `将对 ${imageTarget?.namespace}/${imageTarget?.name} 执行滚动发布，镜像替换为 ${imageValues.main || '空'}，旧版本 Pod 将被逐步替换`)}
         okText="提交滚动发布" cancelText="取消"
         confirmLoading={setImageMutation.isPending}
       >
@@ -414,7 +443,8 @@ export default function WorkloadsTab({ clusterId, namespaces }: { clusterId: str
                       title={`回滚到修订 #${rev.revision}？`}
                       description="将触发一次新的滚动发布到该版本的模板。"
                       okText="回滚" okButtonProps={{ danger: true }} cancelText="取消"
-                      onConfirm={() => riskConfirm.confirm('clusters:rollout-undo', () => undoRevisionMutation.mutate(rev.revision as number))}
+                      onConfirm={() => riskConfirm.confirm('clusters:rollout-undo', () => undoRevisionMutation.mutate(rev.revision as number),
+                        `将把 ${historyTarget?.namespace}/${historyTarget?.name} 回滚到修订 #${rev.revision}，并触发一次新的滚动发布`)}
                     >
                       <Button size="small" type="link" icon={<RollbackOutlined />}>回滚到此版本</Button>
                     </Popconfirm>
@@ -446,12 +476,7 @@ export default function WorkloadsTab({ clusterId, namespaces }: { clusterId: str
         {yamlTarget && yaml === undefined ? (
           <div style={{ textAlign: 'center', padding: '60px 0' }}><Spin tip="加载 YAML..." /></div>
         ) : (
-          <pre style={{
-            background: '#fafafa', padding: 12, borderRadius: 6, fontSize: 12,
-            whiteSpace: 'pre-wrap', wordBreak: 'break-all', maxHeight: '75vh', overflow: 'auto',
-          }}>
-            {typeof yaml === 'string' ? yaml : yaml?.yaml || yaml?.content || JSON.stringify(yaml, null, 2)}
-          </pre>
+          <YamlPre text={typeof yaml === 'string' ? yaml : yaml?.yaml || yaml?.content || JSON.stringify(yaml, null, 2)} />
         )}
       </Drawer>
     </Card>

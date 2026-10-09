@@ -39,7 +39,9 @@ const QUICK_ACTIONS = [
 export default function DashboardPage() {
   const navigate = useNavigate()
   const { has } = usePermission()
-  const canMonitoring = has('module.monitoring.live')
+  // 告警卡数据来自 /monitoring/alerts/stats（要求 module.monitoring.rules），
+  // 卡片显隐与接口权限保持一致——只按 live 开会把无 rules 的用户引到 403 兜底的 0 上
+  const canAlertCard = has('module.monitoring.rules')
   const canFinance = has('module.finance.overview')
   const canAI = has('module.ai.ops')
 
@@ -51,7 +53,7 @@ export default function DashboardPage() {
   const { data: alertStats } = useQuery({
     queryKey: ['cockpit-alert-stats'],
     queryFn: () => cockpitApi.alertStats(24),
-    enabled: canMonitoring,
+    enabled: canAlertCard,
     refetchInterval: 60 * 1000,
   })
 
@@ -111,7 +113,7 @@ export default function DashboardPage() {
     <Space direction="vertical" size="middle" style={{ width: '100%', padding: '0 0 24px 0' }}>
       {/* ── 态势总览 ── */}
       <Row gutter={[16, 16]}>
-        {canMonitoring && (
+        {canAlertCard && (
           <Col xs={24} sm={12} lg={6}>
             <Card hoverable loading={isLoading} onClick={() => navigate('/monitoring/alerts')}>
               <Statistic
@@ -137,9 +139,15 @@ export default function DashboardPage() {
               />
               <div style={{ marginTop: 4, minHeight: 22 }}>
                 {financeOverview && financeOverview.prev_total > 0 ? (
-                  <Text type={financeOverview.mom_delta > 0 ? 'danger' : 'success'}>
-                    环比 {financeOverview.mom_delta > 0 ? '+' : ''}{financeOverview.mom_delta.toFixed(2)}
-                  </Text>
+                  (() => {
+                    // 与费用总览页同口径：金额变动 + 百分比，避免只显示裸数字看不出量级
+                    const pct = ((financeOverview.mom_delta / financeOverview.prev_total) * 100).toFixed(1)
+                    return (
+                      <Text type={financeOverview.mom_delta > 0 ? 'danger' : 'success'}>
+                        环比 {financeOverview.mom_delta > 0 ? '+' : ''}{financeOverview.mom_delta.toFixed(2)}（{financeOverview.mom_delta > 0 ? '+' : ''}{pct}%）
+                      </Text>
+                    )
+                  })()
                 ) : <Text type="secondary">暂无环比数据</Text>}
               </div>
             </Card>
@@ -173,19 +181,17 @@ export default function DashboardPage() {
 
       {/* ── 告警趋势 + 快捷入口 ── */}
       <Row gutter={[16, 16]}>
-        <Col xs={24} lg={14}>
-          <Card title="告警触发趋势（24h）" size="small">
-            {canMonitoring ? (
-              alertTrendOption ? (
+        {canAlertCard && (
+          <Col xs={24} lg={14}>
+            <Card title="告警触发趋势（24h）" size="small">
+              {alertTrendOption ? (
                 <ReactECharts option={alertTrendOption} style={{ height: 140 }} notMerge />
               ) : (
                 <Empty description="暂无告警数据" image={Empty.PRESENTED_IMAGE_SIMPLE} style={{ padding: '30px 0' }} />
-              )
-            ) : (
-              <Empty description="无监控权限" image={Empty.PRESENTED_IMAGE_SIMPLE} style={{ padding: '30px 0' }} />
-            )}
-          </Card>
-        </Col>
+              )}
+            </Card>
+          </Col>
+        )}
         <Col xs={24} lg={10}>
           <Card title="快捷入口" size="small">
             <Flex wrap gap="small" >

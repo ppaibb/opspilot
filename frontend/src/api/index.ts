@@ -1,6 +1,6 @@
 import client from './client'
 import type { AxiosRequestConfig } from 'axios'
-import type { LoginRequest, TokenResponse, AssetResponse, AssetCreate, GroupResponse, GroupCreate, DashboardOverview, RBACMetadata, RiskLevelsResponse, RiskChallengeRequest, RiskChallengeResponse, NotificationSseTicketResponse, NotificationTemplateItem, IngressTlsStatusItem, VMResponse, VMCreate, VMNodeItem, VMStorageItem, VMIsoItem, VMBridgeItem, VMTemplateItem, CredentialResponse, CredentialCreate, CredentialUpdate, DomainResponse, DomainCreate, DomainUpdate, DomainDNSRecordResponse, DomainDNSRecordCreate, DomainProviderItem, DomainAccountItem, CertificateResponse, CertificateIssueRequest, CertificateUploadRequest, CertificateUpdateRequest, CertificateDeployRequest, CertificateAccountItem, NotificationListResponse, ClusterResponse, ClusterCreate, UserResponse, UserCreateRequest, UserAccessResponse, UserAccessUpdate, RoleTemplateItem, RoleTemplateCreateRequest, RoleTemplateUpdateRequest, AuditLogResponse, NotificationChannel, FeatureToggles, LoginPageConfig, MonitoringConfig, MonitoringTargetsResponse, LogTargetsResponse, AlertRuleItem, AlertRulesResponse, HostMetricsResponse, CloudSyncRequest, CloudSyncPreviewResponse, CloudSyncImportResponse, CloudRegionsResponse, K8sHealthSummary, K8sComponentHealth, K8sNode, K8sNodeDrainPreview, K8sWorkload, K8sPod, K8sResourceEvent, K8sResourceItem, K8sNodeDetail, K8sRolloutRevision, K8sRolloutStatus, K8sCronJobRun, K8sSearchHit, ImBinding, FeishuImConfig, ImUser, ScheduledTaskStatus } from '@/types/api'
+import type { LoginRequest, TokenResponse, AssetResponse, AssetCreate, GroupResponse, GroupCreate, DashboardOverview, RBACMetadata, RiskLevelsResponse, RiskChallengeRequest, RiskChallengeResponse, NotificationSseTicketResponse, NotificationTemplateItem, IngressTlsStatusItem, VMResponse, VMCreate, VMNodeItem, VMStorageItem, VMIsoItem, VMBridgeItem, VMTemplateItem, CredentialResponse, CredentialCreate, CredentialUpdate, DomainResponse, DomainCreate, DomainUpdate, DomainDNSRecordResponse, DomainDNSRecordCreate, DomainProviderItem, DomainAccountItem, CertificateResponse, CertificateIssueRequest, CertificateUploadRequest, CertificateUpdateRequest, CertificateDeployRequest, CertificateAccountItem, NotificationListResponse, ClusterResponse, ClusterCreate, UserResponse, UserCreateRequest, UserAccessResponse, UserAccessUpdate, RoleTemplateItem, RoleTemplateCreateRequest, RoleTemplateUpdateRequest, AuditLogResponse, NotificationChannel, FeatureToggles, LoginPageConfig, MonitoringConfig, MonitoringTargetsResponse, LogTargetsResponse, AlertRuleItem, AlertRulesResponse, HostMetricsResponse, CloudSyncRequest, CloudSyncPreviewResponse, CloudSyncImportResponse, CloudRegionsResponse, K8sHealthSummary, K8sComponentHealth, K8sNode, K8sNodeDrainPreview, K8sWorkload, K8sPod, K8sResourceEvent, K8sResourceItem, K8sNodeDetail, K8sRolloutRevision, K8sRolloutStatus, K8sCronJobRun, K8sSearchHit, ClusterAuditLog, ImBinding, FeishuImConfig, ImUser, ScheduledTaskStatus } from '@/types/api'
 
 // ── 个人 IM 渠道（飞书群 @ 通知） ──
 export const imApi = {
@@ -44,6 +44,15 @@ export const assetsApi = {
   resetHostKey: (assetId: string) =>
     client.post(`/assets/${assetId}/reset-host-key`).then((r) => r.data),
   list: () => client.get<AssetResponse[]>('/assets').then((r) => r.data),
+  /** 服务端分页/筛选列表（GET /assets 的 limit/offset/q/status/source/group_id 参数）。
+   *  返回当前页数据与 X-Total-Count 筛选总数；limit=0 等价全量（向后兼容）。 */
+  listPaged: (params: {
+    limit: number; offset: number; q?: string; status?: string; source?: string; group_id?: number
+  }) =>
+    client.get<AssetResponse[]>('/assets', { params }).then((r) => ({
+      items: r.data,
+      total: Number(r.headers?.['x-total-count'] ?? r.data.length),
+    })),
   getById: (id: string) => client.get<AssetResponse>(`/assets/detail/${id}`).then((r) => r.data),
   create: (data: AssetCreate) => client.post<AssetResponse>('/assets', data).then((r) => r.data),
   update: (id: string, data: AssetCreate) =>
@@ -76,6 +85,8 @@ export const usersApi = {
   getAccess: (id: number) => client.get<UserAccessResponse>(`/settings/users/${id}/access`).then((r) => r.data),
   updateAccess: (id: number, data: UserAccessUpdate) => client.put<UserAccessResponse>(`/settings/users/${id}/access`, data).then((r) => r.data),
   updateStatus: (id: number, status: string) => client.put(`/settings/users/${id}/status`, { status }).then((r) => r.data),
+  delete: (id: number, ticket: string) =>
+    client.delete(`/settings/users/${id}`, { headers: { 'X-Risk-Ticket': ticket } }).then((r) => r.data),
   resetPassword: (id: number, new_password: string) => client.post(`/settings/users/${id}/reset-password`, { new_password }).then((r) => r.data),
 }
 
@@ -664,6 +675,16 @@ export const clusterDetailApi = {
   resources: (cid: string, kind: string, namespace = '_all', limit = 200) =>
     client.get<K8sResourceItem[]>(`/clusters/${cid}/resources`, { params: { kind, namespace, limit } })
       .then((r) => (Array.isArray(r.data) ? r.data : (r.data as { items?: K8sResourceItem[] }).items || [])),
+  // continue_token 分页版（paginated=true envelope），供资源浏览 Tab 无限翻页。
+  resourcesPage: (cid: string, kind: string, namespace = '_all', limit = 100, continueToken = '') =>
+    client.get<{ items: K8sResourceItem[]; continue_token: string; limit: number; cached?: boolean }>(
+      `/clusters/${cid}/resources`,
+      { params: { kind, namespace, limit, continue_token: continueToken || undefined, paginated: true } },
+    ).then((r) => (
+      Array.isArray(r.data)
+        ? { items: r.data, continue_token: '', limit: r.data.length }
+        : { items: r.data?.items ?? [], continue_token: r.data?.continue_token ?? '', limit: r.data?.limit ?? 0 }
+    )),
   resourceYaml: (cid: string, ns: string, kind: string, name: string) =>
     client.get<{ yaml?: string; content?: string } | string>(`/clusters/${cid}/resources/${ns}/${kind}/${name}/yaml`).then((r) => r.data),
   resourceEvents: (cid: string, ns: string, kind: string, name: string) =>
@@ -693,11 +714,27 @@ export const clusterOpsApi = {
   patchNamespaceLabels: (cid: string, ns: string, labels: Record<string, string | null>) =>
     client.patch<{ message: string; applied: Record<string, string> }>(`/clusters/${cid}/namespaces/${ns}/labels`, { labels }).then((r) => r.data),
   // 审计与搜索
-  auditLogs: (cid: string, limit = 50) =>
-    client.get<Array<{ id: number; time: string; user: string; action: string; resource: string; result: string; risk_level: string }>>(
-      `/clusters/${cid}/audit-logs`, { params: { limit } }).then((r) => (Array.isArray(r.data) ? r.data : (r.data as { items?: Array<{ id: number; time: string; user: string; action: string; resource: string; result: string; risk_level: string }> }).items || [])),
-  search: (cid: string, q: string, namespace = '_all') =>
-    client.get<K8sSearchHit[]>(`/clusters/${cid}/search`, { params: { q, namespace } }).then((r) => r.data),
+  auditLogs: (cid: string, params: {
+    limit?: number
+    offset?: number
+    user?: string
+    action?: string
+    result?: string
+    risk_level?: string
+    q?: string
+    time_from?: string
+    time_to?: string
+  } = {}) =>
+    client.get<{ items: ClusterAuditLog[]; total: number }>(
+      `/clusters/${cid}/audit-logs`, { params }).then((r) => (
+        Array.isArray(r.data)
+          ? { items: r.data, total: r.data.length }
+          : { items: r.data?.items ?? [], total: r.data?.total ?? 0 }
+      )),
+  search: (cid: string, q: string, namespace = '_all', kinds?: string[]) =>
+    client.get<K8sSearchHit[]>(`/clusters/${cid}/search`, {
+      params: { q, namespace, kinds: kinds?.length ? kinds.join(',') : undefined },
+    }).then((r) => r.data),
   // 节点标签/污点（labels 值为 null 表示删除；taints 为替换式全量）。
   // 两条 PATCH 对应后端两个守卫动作（patch_labels / patch_taints），票据一次性消费，
   // 保存时通过 config 显式透传各自的 X-Risk-Ticket 头（见 NodeMetaEditor）。

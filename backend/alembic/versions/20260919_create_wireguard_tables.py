@@ -6,6 +6,7 @@ Create Date: 2026-09-19
 
 """
 from alembic import op
+from app import alembic_guards as g
 import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
@@ -16,7 +17,7 @@ depends_on = None
 
 
 def upgrade():
-    op.create_table(
+    g.create_table_if_missing(op, 
         'wg_networks',
         sa.Column('id', sa.Integer(), primary_key=True, autoincrement=True),
         sa.Column('name', sa.String(100), nullable=False, comment='组网名称'),
@@ -35,7 +36,7 @@ def upgrade():
         comment='WireGuard 虚拟组网',
     )
 
-    op.create_table(
+    g.create_table_if_missing(op, 
         'wg_peers',
         sa.Column('id', sa.Integer(), primary_key=True, autoincrement=True),
         sa.Column('network_id', sa.Integer(), nullable=False, comment='所属组网'),
@@ -50,9 +51,9 @@ def upgrade():
         sa.UniqueConstraint('network_id', 'allowed_ip', name='uq_wg_peer_ip'),
         comment='WireGuard 成员对端',
     )
-    op.create_index('idx_wg_peers_network', 'wg_peers', ['network_id'])
+    g.create_index_if_missing(op, 'idx_wg_peers_network', 'wg_peers', ['network_id'])
 
 
 def downgrade():
-    op.drop_table('wg_peers')
-    op.drop_table('wg_networks')
+    g.drop_table_if_exists(op, 'wg_peers')
+    g.drop_table_if_exists(op, 'wg_networks')

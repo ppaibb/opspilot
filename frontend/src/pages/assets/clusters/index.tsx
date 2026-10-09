@@ -92,10 +92,11 @@ export default function ClustersPage() {
     try {
       const res = await clustersApi.scan(yaml) as Record<string, unknown>
       setScanResult(res)
-      // 自动回填基本信息
+      // 自动回填基本信息（探测失败时这些字段留空，手动填也能提交）
       if (res) {
         form.setFieldsValue({
-          version:      String(res.server_version ?? ''),
+          // 后端 /scan 返回键是 version（server_version 是历史误读，永远落空导致版本必填卡死）
+          version:      String(res.version ?? res.server_version ?? ''),
           node_count:   Number(res.node_count ?? 0),
           pod_capacity: Number(res.pod_capacity ?? 0),
           pod_usage:    Number(res.pod_usage ?? 0),
@@ -105,7 +106,9 @@ export default function ClustersPage() {
         setScanStep('info')
       }
     } catch {
-      message.error('扫描失败，请确认 Kubeconfig 可访问目标集群')
+      // 探测失败不再卡死：进第二步手动填（版本等未知字段可留空，纳管后可「刷新」重探）
+      message.warning('探测失败，可手动填写后提交；未知字段（如版本）可留空')
+      setScanStep('info')
     } finally {
       setScanLoading(false)
     }
@@ -170,9 +173,11 @@ export default function ClustersPage() {
             <Tooltip title="健康摘要">
               <Button size="small" type="text" icon={<HeartOutlined />} onClick={() => setHealthCluster(r)} />
             </Tooltip>
-            <Dropdown menu={{ items: moreItems, onClick: onMore }} trigger={['click']}>
-              <Button size="small" type="text" icon={<MoreOutlined />} />
-            </Dropdown>
+            <Tooltip title="更多操作（编辑 / 解除纳管）">
+              <Dropdown menu={{ items: moreItems, onClick: onMore }} trigger={['click']}>
+                <Button size="small" type="text" icon={<MoreOutlined />} />
+              </Dropdown>
+            </Tooltip>
           </Space>
         )
       },
@@ -238,11 +243,11 @@ export default function ClustersPage() {
             />
           </Form.Item>
 
-          {/* 步骤 2：集群基本信息（探测后回填，仍可手动修改） */}
+          {/* 步骤 2：集群基本信息（探测后回填；探测失败可手动填，版本等可留空） */}
           {scanStep === 'info' && (
             <>
-              {scanResult && (
-                <Alert type="success" showIcon message="探测成功，已自动填入集群信息，可按需调整后提交。" style={{ marginBottom: 16 }} />
+              {!scanResult && (
+                <Alert type="warning" showIcon message="探测未成功：可手动填写后直接纳管，未知字段留空即可。" style={{ marginBottom: 16 }} />
               )}
               <Form.Item name="name" label="集群名称（别名）" rules={[{ required: true }]}>
                 <Input placeholder="例如 prod-k8s" />
@@ -251,27 +256,27 @@ export default function ClustersPage() {
                 <Form.Item name="provider" label="类型" style={{ flex: 1 }} initialValue="k8s" rules={[{ required: true }]}>
                   <Select options={PROVIDER_OPTIONS} />
                 </Form.Item>
-                <Form.Item name="version" label="K8s 版本" style={{ flex: 1 }} rules={[{ required: true }]}>
-                  <Input placeholder="v1.28.0" />
+                <Form.Item name="version" label="K8s 版本（可留空）" style={{ flex: 1 }}>
+                  <Input placeholder="探测自动填入，获取不到可留空" />
                 </Form.Item>
               </Flex>
               <Flex gap={16}>
-                <Form.Item name="node_count" label="节点数" style={{ flex: 1 }} rules={[{ required: true }]}>
-                  <InputNumber min={0} style={{ width: '100%' }} />
+                <Form.Item name="node_count" label="节点数" style={{ flex: 1 }}>
+                  <InputNumber min={0} style={{ width: '100%' }} placeholder="0" />
                 </Form.Item>
-                <Form.Item name="pod_capacity" label="Pod 容量" style={{ flex: 1 }} rules={[{ required: true }]}>
-                  <InputNumber min={0} style={{ width: '100%' }} />
+                <Form.Item name="pod_capacity" label="Pod 容量" style={{ flex: 1 }}>
+                  <InputNumber min={0} style={{ width: '100%' }} placeholder="0" />
                 </Form.Item>
-                <Form.Item name="pod_usage" label="Pod 已用" style={{ flex: 1 }} rules={[{ required: true }]}>
-                  <InputNumber min={0} style={{ width: '100%' }} />
+                <Form.Item name="pod_usage" label="Pod 已用" style={{ flex: 1 }}>
+                  <InputNumber min={0} style={{ width: '100%' }} placeholder="0" />
                 </Form.Item>
               </Flex>
               <Flex gap={16}>
-                <Form.Item name="cpu_cores" label="CPU(核)" style={{ flex: 1 }} rules={[{ required: true }]}>
-                  <InputNumber min={0} style={{ width: '100%' }} />
+                <Form.Item name="cpu_cores" label="CPU(核)" style={{ flex: 1 }}>
+                  <InputNumber min={0} style={{ width: '100%' }} placeholder="0" />
                 </Form.Item>
-                <Form.Item name="mem_gb" label="内存(GB)" style={{ flex: 1 }} rules={[{ required: true }]}>
-                  <InputNumber min={0} style={{ width: '100%' }} />
+                <Form.Item name="mem_gb" label="内存(GB)" style={{ flex: 1 }}>
+                  <InputNumber min={0} style={{ width: '100%' }} placeholder="0" />
                 </Form.Item>
               </Flex>
               {/* kubeconfig_ref 用 kubeconfig_yaml 计算 hash 或后端处理，前端只需传 yaml */}

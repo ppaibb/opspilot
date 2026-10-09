@@ -8,6 +8,7 @@
 4. 启动时幂等执行，避免重复创建或覆盖现有账号。
 """
 
+import os
 import socket
 
 from app.core.config import settings
@@ -113,17 +114,25 @@ def ensure_localhost_asset() -> None:
 
         # 获取本机信息
         hostname = socket.gethostname()
-        try:
-            # 用 UDP 连接获取默认出口 IP（不实际发包），比 gethostbyname 更准确
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.connect(("8.8.8.8", 80))
-            local_ip = s.getsockname()[0]
-            s.close()
-        except Exception:
+        # 后端跑在容器里时 UDP 探测只能拿到容器网桥 IP（172.x），
+        # 而 Alloy 的 HOST_INSTANCE 取的是安装脚本注入的 MONITORING_HOST——
+        # 两者必须一致 host-metrics 才能对上资产，所以 MONITORING_HOST 优先。
+        local_ip = ""
+        mon_host = (os.environ.get("MONITORING_HOST") or "").strip().rstrip("/")
+        if mon_host and mon_host not in ("127.0.0.1", "localhost") and not mon_host.startswith("http"):
+            local_ip = mon_host
+        if not local_ip:
             try:
-                local_ip = socket.gethostbyname(hostname)
-            except socket.gaierror:
-                local_ip = "127.0.0.1"
+                # 用 UDP 连接获取默认出口 IP（不实际发包），比 gethostbyname 更准确
+                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                s.connect(("8.8.8.8", 80))
+                local_ip = s.getsockname()[0]
+                s.close()
+            except Exception:
+                try:
+                    local_ip = socket.gethostbyname(hostname)
+                except socket.gaierror:
+                    local_ip = "127.0.0.1"
 
         db.add(
             Asset(

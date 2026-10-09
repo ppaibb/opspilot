@@ -1,7 +1,7 @@
 """
 资产查询接口
 """
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field
@@ -938,9 +938,52 @@ def reap_stale_collect_tasks(db: Session, assets: list[Asset], timeout_sec: int 
 def get_assets(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    response: Response = None,
+    limit: int = 0,
+    offset: int = 0,
+    q: str = "",
+    status: str = "",
+    source: str = "",
+    group_id: str = "",
 ):
-    """返回所有资产列表"""
-    assets = db.query(Asset).order_by(Asset.id.desc()).all()
+    """返回资产列表。
+
+    向后兼容的分页/筛选：默认 limit=0 返回全量（存量前端的全量+本地过滤行为不变）；
+    传 limit>0 时走服务端分页，筛选总数放响应头 X-Total-Count。
+    q=名称/IP 模糊；status=healthy/pending/...；source=物理机/阿里云/...；group_id=分组过滤。
+    """
+    query = db.query(Asset).order_by(Asset.id.desc())
+    if q.strip():
+        like = f"%{q.strip()}%"
+        query = query.filter(
+            (Asset.hostname.ilike(like)) | (Asset.private_ip.ilike(like)) | (Asset.instance_id.ilike(like))
+        )
+    if status.strip():
+        status_value = status.strip()
+        if status_value == "offline":
+            # 前端「离线」语义 = 非健康（含 pending/异常等中间态），与单值精确匹配不同
+            query = query.filter(Asset.type != "healthy")
+        else:
+            query = query.filter(Asset.type == status_value)
+    if source.strip():
+        query = query.filter(Asset.source == source.strip())
+    if group_id.strip():
+        member_asset_ids = (
+            db.query(ResourceGroupMember.asset_id)
+            .filter(
+                ResourceGroupMember.resource_type == RESOURCE_TYPE_HOST,
+                ResourceGroupMember.group_id == group_id.strip(),
+            )
+            .subquery()
+        )
+        query = query.filter(Asset.instance_id.in_(member_asset_ids))
+    total = query.count()
+    if response is not None:
+        response.headers["X-Total-Count"] = str(total)
+    if limit > 0:
+        assets = query.offset(max(0, offset)).limit(max(1, limit)).all()
+    else:
+        assets = query.all()
     reap_stale_collect_tasks(db, assets)
     return [serialize_asset(a) for a in assets]
 

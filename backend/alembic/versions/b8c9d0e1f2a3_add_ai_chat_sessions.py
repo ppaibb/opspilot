@@ -10,6 +10,7 @@ Create Date: 2026-06-25 23:05:00.000000
 完全新增、可逆;降级直接 drop 两张表。
 """
 from alembic import op
+from app import alembic_guards as g
 import sqlalchemy as sa
 
 revision = 'b8c9d0e1f2a3'
@@ -19,7 +20,7 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.create_table(
+    g.create_table_if_missing(op, 
         'ai_chat_sessions',
         sa.Column('id', sa.Integer(), primary_key=True),
         sa.Column('session_id', sa.String(length=64), nullable=False),
@@ -30,10 +31,10 @@ def upgrade() -> None:
         sa.Column('created_at', sa.String(length=30), nullable=False, server_default=''),
         sa.Column('updated_at', sa.String(length=30), nullable=False, server_default=''),
     )
-    op.create_index('ix_ai_chat_sessions_session_id', 'ai_chat_sessions', ['session_id'], unique=True)
-    op.create_index('ix_ai_chat_sessions_user_id', 'ai_chat_sessions', ['user_id'], unique=False)
+    g.create_index_if_missing(op, 'ix_ai_chat_sessions_session_id', 'ai_chat_sessions', ['session_id'], unique=True)
+    g.create_index_if_missing(op, 'ix_ai_chat_sessions_user_id', 'ai_chat_sessions', ['user_id'], unique=False)
 
-    op.create_table(
+    g.create_table_if_missing(op, 
         'ai_chat_messages',
         sa.Column('id', sa.Integer(), primary_key=True),
         sa.Column('session_id', sa.String(length=64), nullable=False),
@@ -42,12 +43,12 @@ def upgrade() -> None:
         sa.Column('meta_json', sa.Text(), nullable=False, server_default=''),
         sa.Column('created_at', sa.String(length=30), nullable=False, server_default=''),
     )
-    op.create_index('ix_ai_chat_messages_session_id', 'ai_chat_messages', ['session_id'], unique=False)
+    g.create_index_if_missing(op, 'ix_ai_chat_messages_session_id', 'ai_chat_messages', ['session_id'], unique=False)
 
 
 def downgrade() -> None:
     op.drop_index('ix_ai_chat_messages_session_id', table_name='ai_chat_messages')
-    op.drop_table('ai_chat_messages')
+    g.drop_table_if_exists(op, 'ai_chat_messages')
     op.drop_index('ix_ai_chat_sessions_user_id', table_name='ai_chat_sessions')
     op.drop_index('ix_ai_chat_sessions_session_id', table_name='ai_chat_sessions')
-    op.drop_table('ai_chat_sessions')
+    g.drop_table_if_exists(op, 'ai_chat_sessions')

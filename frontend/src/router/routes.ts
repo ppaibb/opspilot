@@ -109,10 +109,9 @@ export const appRoutes: AppRouteMeta[] = [
 
   // ── 监控中心 ──
   { path: '/monitoring/live', load: loadMonitoringDashboard, label: '实时看板', group: '监控中心', groupKey: 'monitoring', menu: true, permission: 'module.monitoring.live' },
-  // RBAC 无 module.monitoring.metrics / module.monitoring.alerts 键，不设防
-  { path: '/monitoring/metrics', load: loadMetricsQuery, label: '指标查询', group: '监控中心', groupKey: 'monitoring', menu: true },
+  { path: '/monitoring/metrics', load: loadMetricsQuery, label: '指标查询', group: '监控中心', groupKey: 'monitoring', menu: true, permission: 'module.monitoring.metrics' },
   { path: '/monitoring/alert-rules', load: loadAlertRules, label: '告警规则', group: '监控中心', groupKey: 'monitoring', menu: true, permission: 'module.monitoring.rules' },
-  { path: '/monitoring/alerts', load: loadAlerts, label: '告警中心', group: '监控中心', groupKey: 'monitoring', menu: true },
+  { path: '/monitoring/alerts', load: loadAlerts, label: '告警中心', group: '监控中心', groupKey: 'monitoring', menu: true, permission: 'module.monitoring.alerts' },
   { path: '/monitoring/logs', load: loadLogsQuery, label: '日志查询', group: '监控中心', groupKey: 'monitoring', menu: true, permission: 'module.monitoring.logs' },
   { path: '/monitoring/collectors', load: loadCollectors, label: '采集车队', group: '监控中心', groupKey: 'monitoring', menu: true, permission: 'module.monitoring.collector' },
 
@@ -123,15 +122,15 @@ export const appRoutes: AppRouteMeta[] = [
 
   // ── 运维工具 ──
   { path: '/tools/script', load: loadScriptExecute, label: '脚本执行', group: '运维工具', groupKey: 'tools', menu: true, permission: 'module.tools.scripts' },
-  { path: '/tools/changes', load: loadChangeTickets, label: '变更工单', group: '运维工具', groupKey: 'tools', menu: true },
+  { path: '/tools/changes', load: loadChangeTickets, label: '变更工单', group: '运维工具', groupKey: 'tools', menu: true, permission: 'module.tools.changes' },
 
   // ── 系统设置 ──
   { path: '/settings/system', load: loadSystem, label: '系统管理', group: '系统设置', groupKey: 'settings', menu: true, permission: 'module.settings.system' },
-  // RBAC 无 module.settings.im / module.settings.scheduled / module.settings.permissions 键，不设防
-  { path: '/settings/im', load: loadPersonalIm, label: '个人 IM 通知', group: '系统设置', groupKey: 'settings', menu: true },
-  { path: '/settings/scheduled-tasks', load: loadScheduledTasks, label: '定时任务', group: '系统设置', groupKey: 'settings', menu: true },
+  // 个人 IM / 定时任务 / 权限管理的 RBAC 键见 PERMISSION_CATALOG（个人 IM 为自助能力，模板默认全员开）
+  { path: '/settings/im', load: loadPersonalIm, label: '个人 IM 通知', group: '系统设置', groupKey: 'settings', menu: true, permission: 'module.settings.im' },
+  { path: '/settings/scheduled-tasks', load: loadScheduledTasks, label: '定时任务', group: '系统设置', groupKey: 'settings', menu: true, permission: 'module.settings.scheduled' },
   { path: '/settings/users', load: loadUsers, label: '用户管理', group: '系统设置', groupKey: 'settings', menu: true, permission: 'module.settings.users' },
-  { path: '/settings/permissions', load: loadPermissions, label: '权限管理', group: '系统设置', groupKey: 'settings', menu: true },
+  { path: '/settings/permissions', load: loadPermissions, label: '权限管理', group: '系统设置', groupKey: 'settings', menu: true, permission: 'module.settings.permissions' },
   { path: '/settings/audit', load: loadAudit, label: '审计日志', group: '系统设置', groupKey: 'settings', menu: true, permission: 'module.settings.audit' },
 
   // ── 站内通知（不在侧边栏，铃铛「查看全部」跳入） ──

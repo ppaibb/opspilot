@@ -6,6 +6,7 @@ Create Date: 2026-08-20
 
 """
 from alembic import op
+from app import alembic_guards as g
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
@@ -17,7 +18,7 @@ depends_on = None
 
 
 def upgrade():
-    op.create_table(
+    g.create_table_if_missing(op, 
         'application_deployment_tasks',
         sa.Column('task_id', sa.String(36), primary_key=True, comment='任务 ID（UUID）'),
         sa.Column('app_id', sa.String(36), sa.ForeignKey('applications.app_id', ondelete='CASCADE'), nullable=False, index=True, comment='关联应用 ID'),
@@ -37,10 +38,10 @@ def upgrade():
     )
     
     # 创建索引
-    op.create_index('idx_deployment_tasks_status', 'application_deployment_tasks', ['status'])
-    op.create_index('idx_deployment_tasks_app_id', 'application_deployment_tasks', ['app_id'])
-    op.create_index('idx_deployment_tasks_created_at', 'application_deployment_tasks', ['created_at'])
+    g.create_index_if_missing(op, 'idx_deployment_tasks_status', 'application_deployment_tasks', ['status'])
+    g.create_index_if_missing(op, 'idx_deployment_tasks_app_id', 'application_deployment_tasks', ['app_id'])
+    g.create_index_if_missing(op, 'idx_deployment_tasks_created_at', 'application_deployment_tasks', ['created_at'])
 
 
 def downgrade():
-    op.drop_table('application_deployment_tasks')
+    g.drop_table_if_exists(op, 'application_deployment_tasks')

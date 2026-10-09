@@ -217,12 +217,22 @@ class FinanceBudgetAndInstanceCostContract(unittest.TestCase):
         from app.models.system_config import SystemConfig as SC
         self.db.query(SC).filter(SC.config_key == "finance_budget_config").delete()
         self.db.commit()
-        # 造数：i-123 实例 9 月两笔、8 月一笔。
+        # 造数按「当月 / 上月」相对生成，避免月份写死后跨月失败
+        from datetime import date
+        today = date.today()
+        this_m = today.strftime("%Y-%m")
+        if today.month == 1:
+            prev_m = f"{today.year - 1:04d}-12"
+        else:
+            prev_m = f"{today.year:04d}-{today.month - 1:02d}"
+        self.this_month = this_m
+        self.prev_month = prev_m
+        # 造数：i-123 实例当月两笔、上月一笔。
         self.db.add(CloudAccount(id=9, name="测试账号", provider="aliyun", credential_ref="cred-ak", status="active"))
         for date, item, amount in [
-            ("2026-09-01", "CPU 费用", 60.0),
-            ("2026-09-02", "磁盘费用", 40.0),
-            ("2026-08-15", "CPU 费用", 80.0),
+            (f"{this_m}-01", "CPU 费用", 60.0),
+            (f"{this_m}-02", "磁盘费用", 40.0),
+            (f"{prev_m}-15", "CPU 费用", 80.0),
         ]:
             self.db.add(CloudBill(
                 account_id=9, billing_cycle=date[:7], billing_date=date, instance_id="i-123",
@@ -239,7 +249,7 @@ class FinanceBudgetAndInstanceCostContract(unittest.TestCase):
     def test_instance_cost_summary(self):
         data = finance.get_instance_cost("i-123", months=2, db=self.db, current_user=ADMIN)
         self.assertTrue(data.matched)
-        self.assertEqual(data.current_month, "2026-09")
+        self.assertEqual(data.current_month, self.this_month)
         self.assertAlmostEqual(data.current_month_amount, 100.0, places=2)
         self.assertAlmostEqual(data.previous_month_amount, 80.0, places=2)
         self.assertEqual(len(data.monthly), 2)

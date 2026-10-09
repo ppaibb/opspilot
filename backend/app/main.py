@@ -13,7 +13,7 @@ from app.api.changes import router as changes_router
 from app.api.groups import router as groups_router
 from app.api.dashboard import router as dashboard_router
 from app.api.domains import router as domains_router
-from app.api.grafana_sso import router as grafana_sso_router
+from app.api.grafana_sso import grafana_proxy_router, router as grafana_sso_router
 from app.api.credentials import router as creds_router
 from app.api.clusters import router as clusters_router
 from app.api.clusters import ws_router as clusters_ws_router
@@ -288,6 +288,8 @@ app.include_router(monitoring_router, prefix="/api/monitoring", tags=["Monitorin
 app.include_router(collector_router, prefix="/api/monitoring/collector", tags=["Collector Fleet"])
 app.include_router(collector_agent_router, prefix="/api/monitoring/collector/agent", tags=["Collector Agent"])
 app.include_router(grafana_sso_router, tags=["Grafana SSO"])
+# Grafana UI 反代：不带 get_current_user，靠一次性 SSO 票据或 Grafana 会话 Cookie 放行。
+app.include_router(grafana_proxy_router, tags=["Grafana SSO"])
 app.include_router(monitoring_webhooks_router, prefix="/api/monitoring/webhooks", tags=["Monitoring Webhooks"])
 app.include_router(alert_center_router, prefix="/api/monitoring/alerts", tags=["Alert Center"])
 # 登录页配置接口需要在未登录时访问，单独挂载公开路由（无 get_current_user 依赖）。
@@ -334,9 +336,13 @@ app.include_router(changes_router, prefix="/api/changes", tags=["Change Tickets"
 AUDIT_METHOD_ACTION_MAP = {
     "POST": "创建",
     "PUT": "更新",
+    "PATCH": "更新",
     "DELETE": "删除",
 }
 
+# 集群子资源写操作的风险规则：此前只有删除集群一条规则，cordOn/drain/apply 等
+# 高危动作在审计里一律记 low，审计页的"高危高亮"对集群操作完全失效。
+# 规则与 rbac.ACTION_RISK_LEVELS 共用同一注册表，等级改动只需改一处。
 AUDIT_RISK_ROUTE_RULES = (
     ("GET", re.compile(r"^/api/credentials/[^/]+/export$"), "action.assets.credentials.export", "export"),
     ("POST", re.compile(r"^/api/credentials/batch-export$"), "action.assets.credentials.export", "export"),
@@ -345,6 +351,34 @@ AUDIT_RISK_ROUTE_RULES = (
     ("POST", re.compile(r"^/api/certificates/batch-delete$"), "action.assets.certificates.manage", "delete"),
     ("DELETE", re.compile(r"^/api/certificates/[^/]+$"), "action.assets.certificates.manage", "delete"),
     ("DELETE", re.compile(r"^/api/clusters/[^/]+$"), "action.assets.clusters.manage", "delete"),
+    ("PUT", re.compile(r"^/api/clusters/[^/]+$"), "action.assets.clusters.manage", "edit"),
+    # ── 集群运维子路径（action 幂等：与后端 require_risk_ack 实参逐字符一致）──
+    ("POST", re.compile(r"^/api/clusters/[^/]+/nodes/[^/]+/cordon$"), "action.assets.clusters.manage", "cordon"),
+    ("POST", re.compile(r"^/api/clusters/[^/]+/nodes/[^/]+/uncordon$"), "action.assets.clusters.manage", "uncordon"),
+    ("POST", re.compile(r"^/api/clusters/[^/]+/nodes/[^/]+/drain$"), "action.assets.clusters.manage", "drain"),
+    ("PATCH", re.compile(r"^/api/clusters/[^/]+/nodes/[^/]+/labels$"), "action.assets.clusters.manage", "patch_labels"),
+    ("PATCH", re.compile(r"^/api/clusters/[^/]+/nodes/[^/]+/taints$"), "action.assets.clusters.manage", "patch_taints"),
+    ("POST", re.compile(r"^/api/clusters/[^/]+/apply$"), "action.assets.clusters.manage", "apply"),
+    ("PATCH", re.compile(r"^/api/clusters/[^/]+/workloads/[^/]+/[^/]+/[^/]+/scale$"), "action.assets.clusters.manage", "scale"),
+    ("PATCH", re.compile(r"^/api/clusters/[^/]+/workloads/[^/]+/[^/]+/[^/]+/restart$"), "action.assets.clusters.manage", "restart"),
+    ("PATCH", re.compile(r"^/api/clusters/[^/]+/workloads/[^/]+/[^/]+/[^/]+/set-image$"), "action.assets.clusters.manage", "set-image"),
+    ("PATCH", re.compile(r"^/api/clusters/[^/]+/workloads/[^/]+/[^/]+/[^/]+/pause$"), "action.assets.clusters.manage", "pause"),
+    ("POST", re.compile(r"^/api/clusters/[^/]+/workloads/[^/]+/[^/]+/[^/]+/rollout-undo$"), "action.assets.clusters.manage", "rollout-undo"),
+    ("DELETE", re.compile(r"^/api/clusters/[^/]+/workloads/[^/]+/[^/]+/[^/]+$"), "action.assets.clusters.manage", "delete"),
+    ("DELETE", re.compile(r"^/api/clusters/[^/]+/pods/[^/]+/[^/]+$"), "action.assets.clusters.manage", "delete"),
+    ("POST", re.compile(r"^/api/clusters/[^/]+/cronjobs/[^/]+/[^/]+/trigger$"), "action.assets.clusters.manage", "trigger_cronjob"),
+    ("PATCH", re.compile(r"^/api/clusters/[^/]+/cronjobs/[^/]+/[^/]+/suspend$"), "action.assets.clusters.manage", "suspend_cronjob"),
+    ("PATCH", re.compile(r"^/api/clusters/[^/]+/pvc/[^/]+/[^/]+/resize$"), "action.assets.clusters.manage", "resize_pvc"),
+    # 通用资源读写（resources.py）：表单化编辑与 kubectl delete 同款。
+    # 这两条此前不在规则表里——后端已挂 require_risk_ack，审计却记 low。
+    ("PATCH", re.compile(r"^/api/clusters/[^/]+/resources/[^/]+/[^/]+/[^/]+/edit$"), "action.assets.clusters.manage", "edit"),
+    ("DELETE", re.compile(r"^/api/clusters/[^/]+/resources/[^/]+/[^/]+/[^/]+$"), "action.assets.clusters.manage", "delete"),
+    # Pod 终端入口（pods.py exec/session）：进入 Pod shell 等同远程登录，记 medium；
+    # logs/session 只是读日志，低敏，不补规则。
+    ("POST", re.compile(r"^/api/clusters/[^/]+/pods/[^/]+/[^/]+/exec/session$"), "action.assets.clusters.manage", "exec_session"),
+    ("POST", re.compile(r"^/api/clusters/[^/]+/namespaces$"), "action.assets.clusters.manage", "create_namespace"),
+    ("DELETE", re.compile(r"^/api/clusters/[^/]+/namespaces/[^/]+$"), "action.assets.clusters.manage", "delete"),
+    ("PATCH", re.compile(r"^/api/clusters/[^/]+/namespaces/[^/]+/labels$"), "action.assets.clusters.manage", "patch_labels"),
 )
 
 

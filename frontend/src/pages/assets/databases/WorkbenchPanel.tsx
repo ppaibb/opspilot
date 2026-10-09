@@ -15,6 +15,7 @@ import {
   FileTextOutlined, SearchOutlined, UserOutlined, RightOutlined, ThunderboltOutlined,
 } from '@ant-design/icons'
 import { useAuthStore } from '@/store/auth'
+import { usePermission } from '@/hooks/usePermission'
 import type { DbTicket } from '@/types/api'
 
 const { Text, Title } = Typography
@@ -90,6 +91,9 @@ export function WorkbenchPanel({
 }) {
   const userInfo = useAuthStore((s) => s.userInfo)
   const myName = userInfo?.name || userInfo?.username || ''
+  // 开工卡按提交权限显隐：无 action.db.submit 的用户看不到提单/查询入口（后端本就 403）
+  const { has } = usePermission()
+  const canSubmit = has('action.db.submit')
 
   const pending = useMemo(() => tickets.filter((t) => t.status === 'pending'), [tickets])
   const ready = useMemo(() => tickets.filter((t) => t.status === 'approved'), [tickets])
@@ -110,28 +114,30 @@ export function WorkbenchPanel({
 
   return (
     <Flex vertical gap={16}>
-      {/* 快捷开工 */}
-      <Card size="small" styles={{ body: { padding: 16 } }}>
-        <Flex justify="space-between" align="center" wrap gap={12}>
-          <div>
-            <Title level={5} style={{ margin: 0 }}>
-              <ThunderboltOutlined style={{ color: '#faad14', marginRight: 8 }} />
-              开工
-            </Title>
-            <Text type="secondary" style={{ fontSize: 12 }}>
-              提单会先过规则预审；查询需有效授权
-            </Text>
-          </div>
-          <Space>
-            <Button type="primary" icon={<FileTextOutlined />} onClick={onCreateTicket}>
-              提交 SQL 工单
-            </Button>
-            <Button icon={<SearchOutlined />} onClick={onOpenQuery}>
-              自助查询
-            </Button>
-          </Space>
-        </Flex>
-      </Card>
+      {/* 快捷开工（需要提交权限；普通只读角色整卡隐藏） */}
+      {canSubmit && (
+        <Card size="small" styles={{ body: { padding: 16 } }}>
+          <Flex justify="space-between" align="center" wrap gap={12}>
+            <div>
+              <Title level={5} style={{ margin: 0 }}>
+                <ThunderboltOutlined style={{ color: '#faad14', marginRight: 8 }} />
+                开工
+              </Title>
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                提单会先过规则预审；查询需有效授权
+              </Text>
+            </div>
+            <Space>
+              <Button type="primary" icon={<FileTextOutlined />} onClick={onCreateTicket}>
+                提交 SQL 工单
+              </Button>
+              <Button icon={<SearchOutlined />} onClick={onOpenQuery}>
+                自助查询
+              </Button>
+            </Space>
+          </Flex>
+        </Card>
+      )}
 
       {/* 今日流水线 */}
       <div>

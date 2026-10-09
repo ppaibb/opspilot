@@ -12,12 +12,14 @@ from fastapi import Depends, HTTPException, Query
 from kubernetes import client, config
 from kubernetes.client.rest import ApiException
 from pydantic import BaseModel, Field
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.core.filesystem import write_sensitive_text_file
 from app.core.security import require_permissions, require_risk_ack
 from app.db.database import get_db
 from app.models.cluster import Cluster
+from app.timefmt import local_str_to_utc_naive, to_local_str
 
 from ._router import router
 from ._schemas import (
@@ -587,31 +589,23 @@ def get_cluster_components_health(cluster_id: str):
         v1 = client.CoreV1Api(api_client=api_client)
         components = []
 
-        # 检查 kube-system 核心 Pod
-        core_names = ["apiserver", "etcd", "scheduler", "controller-manager", "kube-proxy", "coredns"]
         try:
             pods = v1.list_namespaced_pod(namespace="kube-system", _request_timeout=6).items
-            for target in core_names:
-                matched = [p for p in pods if target in p.metadata.name]
-                if matched:
-                    for p in matched[:2]:
-                        ready = any(c.type == "Ready" and c.status == "True" for c in (p.status.conditions or []))
-                        components.append({
-                            "name": p.metadata.name,
-                            "component": target,
-                            "status": "healthy" if ready and p.status.phase == "Running" else "unhealthy",
-                            "phase": p.status.phase,
-                        })
-                else:
-                    components.append({"name": target, "component": target, "status": "not_found", "phase": "-"})
+            components.extend(_classify_core_components(pods))
         except Exception:
             pass
 
-        # 兼容老集群 componentstatuses API
+        # 兼容老集群 componentstatuses API：控制面组件（如 RKE 的 etcd-0）不以
+        # kube-system Pod 形态运行时，这里给出唯一权威的健康度。
         try:
             cs_list = v1.list_component_status(_request_timeout=5).items
-            for cs in cs_list:
-                healthy = all(c.status == "True" for c in (cs.conditions or []))
+        except Exception:
+            cs_list = []
+        for cs in cs_list:
+            healthy = all(c.status == "True" for c in (cs.conditions or []))
+            target = _match_component_target(cs.metadata.name)
+            if target is None:
+                # 不在核心组件表里的 componentstatus 原样保留（极少见）。
                 if not any(c["component"] == cs.metadata.name for c in components):
                     components.append({
                         "name": cs.metadata.name,
@@ -619,8 +613,19 @@ def get_cluster_components_health(cluster_id: str):
                         "status": "healthy" if healthy else "unhealthy",
                         "phase": "OK" if healthy else "Degraded",
                     })
-        except Exception:
-            pass
+                continue
+            for row in components:
+                if row["component"] != target:
+                    continue
+                # 占位行用真实健康度覆盖；Pod 分类已命中的行不动。
+                # 不这么做会同时出现「etcd 外置」和「etcd-0 正常」两行自相矛盾。
+                if row["status"] == "external":
+                    row.update({
+                        "name": cs.metadata.name,
+                        "status": "healthy" if healthy else "unhealthy",
+                        "phase": "OK" if healthy else "Degraded",
+                    })
+                break
 
         return components
 
@@ -629,31 +634,139 @@ def get_cluster_components_health(cluster_id: str):
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"获取组件健康失败: {e}")
 
+
+# (组件名, 可匹配的 Pod 名别名)：kubeadm 静态 Pod 叫 kube-apiserver-<node>，
+# 别名列表保证两类命名都能命中。
+_CORE_COMPONENT_TARGETS = [
+    ("apiserver", ("kube-apiserver", "apiserver")),
+    ("etcd", ("etcd",)),
+    ("scheduler", ("kube-scheduler", "scheduler")),
+    ("controller-manager", ("kube-controller-manager", "controller-manager")),
+    ("kube-proxy", ("kube-proxy",)),
+    ("coredns", ("coredns",)),
+]
+
+# 这些组件在 k3s/云托管等拓扑下不以 Pod 形式运行（内嵌或外置控制面），
+# 找不到 Pod 属正常现象而非故障。
+_EXTERNAL_OK_COMPONENTS = {"apiserver", "etcd", "scheduler", "controller-manager", "kube-proxy"}
+
+
+def _match_component_target(name: str) -> str | None:
+    """实例名（Pod 名或 componentstatus 名）归属的核心组件目标。
+
+    "etcd-0"、"kube-apiserver-node1" → etcd / apiserver。
+    用于把 componentstatuses 的健康度对回 Pod 分类行，避免同一组件两行并存。
+    """
+    for target, aliases in _CORE_COMPONENT_TARGETS:
+        if any(a in name for a in aliases):
+            return target
+    return None
+
+
+def _classify_core_components(pods: list) -> list[dict]:
+    """根据 kube-system Pod 列表归类核心组件健康状态（纯函数，便于测试）。"""
+    components: list[dict] = []
+    for target, aliases in _CORE_COMPONENT_TARGETS:
+        matched = [p for p in pods if any(a in p.metadata.name for a in aliases)]
+        if matched:
+            for p in matched[:2]:
+                ready = any(c.type == "Ready" and c.status == "True" for c in (p.status.conditions or []))
+                components.append({
+                    "name": p.metadata.name,
+                    "component": target,
+                    "status": "healthy" if ready and p.status.phase == "Running" else "unhealthy",
+                    "phase": p.status.phase,
+                })
+        else:
+            status = "external" if target in _EXTERNAL_OK_COMPONENTS else "not_found"
+            # name 与 component 同为 target：占位行没有真实 Pod，前端据此不渲染 Pod 名。
+            components.append({"name": target, "component": target, "status": status, "phase": "-"})
+    return components
+
 @router.get("/{cluster_id}/audit-logs")
 def get_cluster_audit_logs(
     cluster_id: str,
-    limit: int = Query(50, ge=1, le=200),
+    limit: int = Query(50, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+    user: str = Query("", max_length=64),
+    action: str = Query("", max_length=32),
+    result: str = Query("", max_length=16),
+    risk_level: str = Query("", max_length=16),
+    q: str = Query("", max_length=128),
+    time_from: str = Query("", max_length=40),
+    time_to: str = Query("", max_length=40),
     db: Session = Depends(get_db),
 ):
-    """获取该集群相关的操作审计日志。"""
+    """获取该集群相关的操作审计日志（支持筛选与分页）。
+
+    展示层适配：
+    - time 由 audit_logs 的 naive UTC 转本地时间串（utcnow 落库约定）；
+    - action 只保留方法标签（创建/更新/删除/读取），resource 去掉
+      `/api/clusters/{cluster_id}` 前缀，避免前端两列各显示一遍完整路径。
+      path 字段保留完整路径，供前端悬浮查看。
+
+    筛选（2026-10-08 补）：此前只有 limit 且 ≤200，运维想按操作人/风险等级
+    捞记录根本做不到。参数边界照抄 settings.get_audits 的 clamp 写法；
+    time_from/time_to 是前端给的本地时间，须转 naive UTC 再比（local_str_to_utc_naive）。
+    """
     from app.models.audit import AuditLog
+    # 直接调用（契约测试）时参数还是 fastapi.Query 对象而非默认值，先归一再 clamp。
+    limit = limit if isinstance(limit, int) else 50
+    offset = offset if isinstance(offset, int) else 0
+    limit = max(1, min(limit, 1000))
+    offset = max(0, offset)
+
+    query = db.query(AuditLog).filter(AuditLog.resource.contains(f"/clusters/{cluster_id}"))
+    if user:
+        query = query.filter(AuditLog.user.contains(user))
+    if action:
+        # 中间件写的 action 形如「创建 /api/...」，contains 命中方法标签；
+        # 服务侧自写的 action（如「审批通过」）不匹配任何方法标签，属预期。
+        query = query.filter(AuditLog.action.contains(action))
+    if result:
+        query = query.filter(AuditLog.result == result)
+    if risk_level:
+        query = query.filter(AuditLog.risk_level == risk_level)
+    if q:
+        query = query.filter(or_(
+            AuditLog.user.contains(q),
+            AuditLog.action.contains(q),
+            AuditLog.resource.contains(q),
+        ))
+    start = local_str_to_utc_naive(time_from)
+    end = local_str_to_utc_naive(time_to)
+    if start is not None:
+        query = query.filter(AuditLog.time >= start)
+    if end is not None:
+        query = query.filter(AuditLog.time <= end)
+
+    total = query.count()
     logs = (
-        db.query(AuditLog)
-        .filter(AuditLog.resource.contains(f"/clusters/{cluster_id}"))
-        .order_by(AuditLog.time.desc())
+        query.order_by(AuditLog.time.desc())
+        .offset(offset)
         .limit(limit)
         .all()
     )
-    return [
-        {
+    prefix = f"/api/clusters/{cluster_id}"
+    items = []
+    for log in logs:
+        raw_action = log.action or ""
+        method_label, sep, path = raw_action.partition(" ")
+        action_label = method_label if sep else raw_action
+        resource = log.resource or ""
+        if resource.startswith(prefix):
+            resource = resource[len(prefix):] or "/"
+        items.append({
             "id": log.id,
-            "time": log.time.isoformat() if log.time else "",
+            "time": to_local_str(log.time),
             "user": log.user,
-            "action": log.action,
-            "resource": log.resource,
+            "action": action_label,
+            "resource": resource,
+            "path": path or log.resource or "",
+            "ip": log.ip or "",
             "result": log.result,
             "risk_level": log.risk_level or "low",
-        }
-        for log in logs
-    ]
+            "risk_reason": log.risk_reason or "",
+        })
+    return {"items": items, "total": total}
 

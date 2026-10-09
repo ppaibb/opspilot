@@ -9,7 +9,7 @@ import { useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Table, Space, Tag, Button, Select, Input, Drawer, Descriptions,
-  App, Badge, Popconfirm, Alert, Timeline, Tooltip, Typography, Card,
+  App, Badge, Popconfirm, Alert, Timeline, Tooltip, Typography, Card, Modal,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import {
@@ -52,6 +52,7 @@ interface ActiveAlert {
   acknowledged?: boolean
   acknowledged_by?: string
   acknowledged_at?: string
+  acknowledged_note?: string
   labels?: Record<string, string>
 }
 
@@ -92,6 +93,9 @@ export default function AlertsPage() {
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [rcaAlert, setRcaAlert] = useState<ActiveAlert | null>(null)
   const [rcaLibraryOpen, setRcaLibraryOpen] = useState(false)
+  // 认领弹窗：认领=接手处理，可附处理备注（做了什么/如何跟进）
+  const [ackTarget, setAckTarget] = useState<{ fingerprint: string; name: string } | null>(null)
+  const [ackNote, setAckNote] = useState('')
   const [tab, setTab] = useState<AlertStatusTab>('active')
   const [filters, setFilters] = useState({
     severity: 'all',
@@ -179,8 +183,11 @@ export default function AlertsPage() {
         color: 'blue',
         children: (
           <div>
-            <div><strong>确认</strong> {relativeOrAbsolute(selectedAlert.acknowledged_at)}</div>
-            <div style={{ color: 'var(--ink-2)', fontSize: 12 }}>由 {selectedAlert.acknowledged_by || '未知用户'} 认领</div>
+            <div><strong>认领</strong> {relativeOrAbsolute(selectedAlert.acknowledged_at)}</div>
+            <div style={{ color: 'var(--ink-2)', fontSize: 12 }}>
+              由 {selectedAlert.acknowledged_by || '未知用户'} 认领
+              {selectedAlert.acknowledged_note ? ` · 备注：${selectedAlert.acknowledged_note}` : ''}
+            </div>
           </div>
         ),
       })
@@ -195,11 +202,22 @@ export default function AlertsPage() {
   }, [selectedAlert, notifyLogs])
 
   const acknowledgeMut = useMutation({
+    mutationFn: (d: { fingerprint: string; note: string }) =>
+      client.post(`/monitoring/alerts/${d.fingerprint}/acknowledge`, { note: d.note }).then(r => r.data),
+    onSuccess: (_d, v) => {
+      queryClient.invalidateQueries({ queryKey: ['active-alerts'] })
+      setAckTarget(null)
+      setAckNote('')
+      message.success(v.note ? '已认领，备注已记录' : '已认领')
+    },
+  })
+
+  const unacknowledgeMut = useMutation({
     mutationFn: (fingerprint: string) =>
-      client.post(`/monitoring/alerts/${fingerprint}/acknowledge`).then(r => r.data),
+      client.post(`/monitoring/alerts/${fingerprint}/unacknowledge`).then(r => r.data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['active-alerts'] })
-      message.success('已确认')
+      message.success('已释放认领，告警回到未认领状态')
     },
   })
 
@@ -224,6 +242,7 @@ export default function AlertsPage() {
       acknowledged: record.acknowledged,
       acknowledged_by: record.acknowledged_by,
       acknowledged_at: record.acknowledged_at,
+      acknowledged_note: record.acknowledged_note,
       labels: record.labels,
     })
     setDrawerOpen(true)
@@ -244,7 +263,11 @@ export default function AlertsPage() {
         >
           <SeverityTag severity={severity} />
           {record.acknowledged ? (
-            <div style={{ fontSize: 11, color: 'var(--ok, #16a34a)', marginTop: 2 }}>已确认</div>
+            <Tooltip title={record.acknowledged_note ? `备注：${record.acknowledged_note}` : '已认领'}>
+              <div style={{ fontSize: 11, color: 'var(--ok, #16a34a)', marginTop: 2 }}>
+                已认领{record.acknowledged_by ? ` · ${record.acknowledged_by}` : ''}
+              </div>
+            </Tooltip>
           ) : null}
         </div>
       ),
@@ -316,10 +339,9 @@ export default function AlertsPage() {
                 type="primary"
                 ghost
                 icon={<CheckOutlined />}
-                loading={acknowledgeMut.isPending}
-                onClick={() => acknowledgeMut.mutate(record.fingerprint!)}
+                onClick={() => { setAckTarget({ fingerprint: record.fingerprint!, name: record.name }); setAckNote('') }}
               >
-                确认
+                认领
               </Button>
             ) : null}
             {canAct ? (
@@ -493,15 +515,6 @@ export default function AlertsPage() {
         }
         side={
           <Space direction="vertical" size={8} style={{ width: '100%' }}>
-            <SideCard title="说明">
-              <Paragraph style={{ marginBottom: 8, color: 'var(--ink-2)', fontSize: 12 }}>
-                活动 Tab 展示 firing / pending 告警；被静默的告警归入「已静默」；恢复后的归档在「已恢复」。
-                严重度色条 + SeverityTag 双重标识，鼠标悬停时间可看绝对时间。
-              </Paragraph>
-              <Paragraph style={{ marginBottom: 0, color: 'var(--ink-2)', fontSize: 12 }}>
-                行内「确认」表示认领处理，「静默」按名称+实例屏蔽 1 小时。
-              </Paragraph>
-            </SideCard>
             <SideCard title="快捷入口">
               <Space direction="vertical" size={4} style={{ width: '100%' }}>
                 <Button type="link" size="small" icon={<LinkOutlined />} href="/monitoring/alert-rules">
@@ -561,10 +574,10 @@ export default function AlertsPage() {
                   text={selectedAlert.status}
                 />
               </Descriptions.Item>
-              <Descriptions.Item label="确认状态">
+              <Descriptions.Item label="认领状态">
                 {selectedAlert.acknowledged
-                  ? `已由 ${selectedAlert.acknowledged_by || '未知用户'} 于 ${selectedAlert.acknowledged_at || '-'} 确认`
-                  : '未确认'}
+                  ? `已由 ${selectedAlert.acknowledged_by || '未知用户'} 于 ${selectedAlert.acknowledged_at || '-'} 认领`
+                  : '未认领'}
               </Descriptions.Item>
             </Descriptions>
 
@@ -587,16 +600,29 @@ export default function AlertsPage() {
             )}
 
             <Space>
-              <Button
-                type="primary"
-                icon={<CheckOutlined />}
-                onClick={() => {
-                  if (selectedAlert.fingerprint) acknowledgeMut.mutate(selectedAlert.fingerprint)
-                  setDrawerOpen(false)
-                }}
-              >
-                确认告警
-              </Button>
+              {!selectedAlert.acknowledged && (
+                <Button
+                  type="primary"
+                  icon={<CheckOutlined />}
+                  onClick={() => {
+                    if (selectedAlert.fingerprint) {
+                      setAckTarget({ fingerprint: selectedAlert.fingerprint, name: selectedAlert.name })
+                      setAckNote('')
+                    }
+                  }}
+                >
+                  认领处理
+                </Button>
+              )}
+              {selectedAlert.acknowledged && selectedAlert.fingerprint && (
+                <Popconfirm
+                  title="释放认领？"
+                  description="告警将回到未认领状态，其他人可以重新接手。"
+                  onConfirm={() => unacknowledgeMut.mutate(selectedAlert.fingerprint!)}
+                >
+                  <Button icon={<CheckOutlined />}>释放认领</Button>
+                </Popconfirm>
+              )}
               <Button
                 icon={<EyeInvisibleOutlined />}
                 onClick={() => {
@@ -622,6 +648,31 @@ export default function AlertsPage() {
       />
 
       <RootCauseLibrary open={rcaLibraryOpen} onClose={() => setRcaLibraryOpen(false)} />
+
+      {/* 认领弹窗：认领即接手处理，备注写清做了什么/如何跟进，形成处理闭环 */}
+      <Modal
+        title={ackTarget ? `认领告警：${ackTarget.name}` : '认领告警'}
+        open={!!ackTarget}
+        onCancel={() => { setAckTarget(null); setAckNote('') }}
+        onOk={() => {
+          if (ackTarget) acknowledgeMut.mutate({ fingerprint: ackTarget.fingerprint, note: ackNote })
+        }}
+        okText="认领"
+        confirmLoading={acknowledgeMut.isPending}
+        destroyOnHidden
+      >
+        <Paragraph type="secondary" style={{ fontSize: 12 }}>
+          认领后告警会标记处理人；恢复或换人接手前可在详情里释放认领。
+        </Paragraph>
+        <Input.TextArea
+          rows={3}
+          maxLength={500}
+          showCount
+          value={ackNote}
+          onChange={(e) => setAckNote(e.target.value)}
+          placeholder="处理备注（可选）：如「已定位为日志盘满，正在清理 / 已通知业务方扩容」"
+        />
+      </Modal>
     </div>
   )
 }

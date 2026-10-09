@@ -103,6 +103,36 @@ def test_render_uses_loki_source_docker():
     assert "targets = discovery.docker.docker_containers.targets" in cfg
     assert 'host = "unix:///var/run/docker.sock"' in cfg
     assert 'job = "container"' in cfg
+
+
+def test_render_docker_labels_service_and_level():
+    """Docker 日志必须带 service（容器名）与 level（解析）标签，对齐日志页筛选。
+
+    日志页的「服务」「级别」下拉靠这两个字段；缺了就是空下拉（235 部署演练实测）。
+    """
+    cfg = render_alloy_config(
+        agent_id="agent-1",
+        metrics={"node": False},
+        logs={"system": False, "docker_containers": True},
+        labels={"asset_id": "i-1", "host": "h-1", "instance": "10.0.0.1"},
+        remote_write_url="http://vm.example.com/api/v1/write",
+        vlogs_url="http://vl.example.com/insert/loki/api/v1/push",
+    )
+    # service ← 容器名
+    assert 'discovery.relabel "docker_containers"' in cfg
+    assert 'source_labels = ["__meta_docker_container_name"]' in cfg
+    assert 'target_label  = "service"' in cfg
+    # level 解析管线：默认 INFO → 正则覆盖 → 落标签
+    assert 'stage.template {' in cfg and 'template = "INFO"' in cfg
+    assert "P<level>" in cfg
+    assert 'stage.labels {' in cfg
+    # 串联：source → process → write（Alloy 组件顺序无关，只看引用关系）
+    assert "forward_to = [loki.process.docker_containers.receiver]" in cfg
+    assert "forward_to = [loki.write.victorialogs.receiver]" in cfg
+    assert 'loki.source.docker "docker_containers"' in cfg
+    assert cfg.index("forward_to = [loki.process.docker_containers.receiver]") > cfg.index(
+        'loki.source.docker "docker_containers"'
+    )
     assert "/var/lib/docker/containers" not in cfg
     assert "loki.source.file" not in cfg
 

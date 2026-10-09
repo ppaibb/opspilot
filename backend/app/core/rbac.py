@@ -115,6 +115,20 @@ MODULE_PERMISSION_CATALOG: list[dict[str, str]] = [
         "path": "/monitoring/logs",
     },
     {
+        "key": "module.monitoring.metrics",
+        "group": "监控告警",
+        "title": "指标查询",
+        "description": "PromQL 指标查询与指标浏览器。",
+        "path": "/monitoring/metrics",
+    },
+    {
+        "key": "module.monitoring.alerts",
+        "group": "监控告警",
+        "title": "告警中心",
+        "description": "查看与认领告警（活动/已恢复/静默）。",
+        "path": "/monitoring/alerts",
+    },
+    {
         "key": "module.monitoring.collector",
         "group": "监控告警",
         "title": "采集 Fleet",
@@ -183,6 +197,36 @@ MODULE_PERMISSION_CATALOG: list[dict[str, str]] = [
         "title": "操作审计",
         "description": "查看系统审计记录。",
         "path": "/settings/audit",
+    },
+    {
+        "key": "module.settings.permissions",
+        "group": "系统设置",
+        "title": "权限管理",
+        "description": "查看与编辑角色模板权限（保存仍需用户管理写权限）。",
+        "path": "/settings/permissions",
+    },
+    {
+        "key": "module.settings.scheduled",
+        "group": "系统设置",
+        "title": "定时任务",
+        "description": "查看与调整后台周期任务的启停与间隔。",
+        "path": "/settings/scheduled-tasks",
+    },
+    {
+        # 个人 IM 是自助能力（配自己的通知渠道），全员默认可用；
+        # 不希望某角色自助配置时可在权限管理页显式关闭。
+        "key": "module.settings.im",
+        "group": "系统设置",
+        "title": "个人 IM 通知",
+        "description": "绑定个人飞书账号、接收群内 @ 通知（自助能力，默认全员可用）。",
+        "path": "/settings/im",
+    },
+    {
+        "key": "module.tools.changes",
+        "group": "运维工具",
+        "title": "变更工单",
+        "description": "查看与处理变更工单。",
+        "path": "/tools/changes",
     },
     {
         "key": "module.assets.databases",
@@ -401,7 +445,9 @@ ACTION_PERMISSION_CATALOG: list[dict[str, str]] = [
         "key": "action.db.manage",
         "group": "资产管理",
         "title": "数据库实例写操作",
-        "description": "新增/编辑/删除数据源与连通测试。",
+        # 描述必须写明豁免副作用：勾选即等于"该角色免授权查任何库"，
+        # 管理员在权限管理页据此决定是否授予（参见 database.py _user_has_manage）。
+        "description": "新增/编辑/删除数据源与连通测试。注意：持有该权限的角色做自助查询时豁免查询授权校验（可直接查询已登记的任何库）。",
         "path": "/assets/databases",
     },
     {
@@ -516,11 +562,17 @@ ROLE_TEMPLATE_PRESETS: dict[str, dict[str, Any]] = {
             "module.monitoring.rules": True,
             "module.monitoring.channels": True,
             "module.monitoring.logs": True,
+            "module.monitoring.metrics": True,
+            "module.monitoring.alerts": True,
             "module.monitoring.collector": True,
             "module.tools.terminal": True,
             "module.tools.scripts": True,
+            "module.tools.changes": True,
             "module.settings.system": True,
             "module.settings.audit": True,
+            "module.settings.permissions": True,
+            "module.settings.scheduled": True,
+            "module.settings.im": True,
             "module.finance.overview": True,
             "module.finance.bills": True,
             "module.finance.accounts": True,
@@ -558,6 +610,21 @@ ROLE_TEMPLATE_PRESETS: dict[str, dict[str, Any]] = {
             "action.db.approve": True,
         },
     },
+    "数据库管理员": {
+        "title": "数据库管理员",
+        "description": "数据库实例与 SQL 工单全生命周期管理（提单/审批/执行/数据源维护）。",
+        "permissions": {
+            **PERMISSION_DEFAULTS,
+            "module.dashboard": True,
+            "module.ai.ops": True,
+            "module.assets.databases": True,
+            "module.settings.im": True,
+            "action.db.manage": True,
+            "action.db.submit": True,
+            "action.db.execute": True,
+            "action.db.approve": True,
+        },
+    },
     "开发": {
         "title": "开发",
         "description": "聚焦应用中心、日志与基础概览。",
@@ -572,7 +639,10 @@ ROLE_TEMPLATE_PRESETS: dict[str, dict[str, Any]] = {
             "module.apps.config": True,
             "module.monitoring.live": True,
             "module.monitoring.logs": True,
+            "module.monitoring.metrics": True,
+            "module.monitoring.alerts": True,
             "module.monitoring.collector": True,
+            "module.settings.im": True,
             "action.apps.manage": True,
             "action.apps.control": True,
             "action.apps.deploy": True,
@@ -588,6 +658,7 @@ ROLE_TEMPLATE_PRESETS: dict[str, dict[str, Any]] = {
             "module.ai.ops": True,
             "module.assets.domains": True,
             "module.assets.certificates": True,
+            "module.settings.im": True,
             "action.assets.domains.manage": True,
             "action.assets.certificates.manage": True,
             "action.assets.certificates.download": True,
@@ -602,6 +673,7 @@ ROLE_TEMPLATE_PRESETS: dict[str, dict[str, Any]] = {
             "module.ai.ops": True,
             "module.monitoring.live": True,
             "module.monitoring.logs": True,
+            "module.settings.im": True,
         },
     },
 }
@@ -631,10 +703,39 @@ ACTION_RISK_LEVELS: dict[tuple[str, str], str] = {
     ("action.assets.clusters.manage", "restart"): "medium",
     ("action.assets.clusters.manage", "pause"): "medium",
     ("action.assets.clusters.manage", "delete"): "high",
+    # 集群运维动作（2026-10-08 巡检补注册）：此前整族动作未登记 → 回落 low →
+    # 前端不弹确认、后端不索票，一次误点就把生产节点标记为不可调度/驱逐全部 Pod。
+    # 等级按「对运行中业务的影响」分级：
+    # - high：改变集群对工作负载的承载能力（cordon 停止调度、drain 驱逐 Pod、
+    #   set-image 触发滚动更新、rollout-undo 回退版本）
+    # - medium：可预期但影响面较小的状态变更（恢复调度、重启、暂停/挂起、
+    #   手动触发定时任务、污点、PVC 扩容不可逆）
+    ("action.assets.clusters.manage", "cordon"): "high",
+    ("action.assets.clusters.manage", "uncordon"): "medium",
+    ("action.assets.clusters.manage", "drain"): "high",
+    ("action.assets.clusters.manage", "set-image"): "high",
+    ("action.assets.clusters.manage", "rollout-undo"): "high",
+    ("action.assets.clusters.manage", "suspend_cronjob"): "medium",
+    ("action.assets.clusters.manage", "trigger_cronjob"): "medium",
+    ("action.assets.clusters.manage", "patch_taints"): "medium",
+    ("action.assets.clusters.manage", "resize_pvc"): "medium",
+    # 2026-10-08 二轮补登记：上一轮把 cordon/drain 家族拉起来了，但复盘发现
+    # 还有四个动作挂着 require_risk_ack / 前端已发确认却未登记 → 回落 low，
+    # 审计页风险列不可信。均为 medium：不破坏承载能力但改动共享状态。
+    # - patch_labels：节点 / 命名空间标签（影响调度与选择器命中）
+    # - scale：扩缩容（改了业务容量，但不删数据）
+    # - create_namespace：新建命名空间（含配额预设）
+    # - exec_session：Pod 终端入口，等同远程登录进容器
+    ("action.assets.clusters.manage", "patch_labels"): "medium",
+    ("action.assets.clusters.manage", "scale"): "medium",
+    ("action.assets.clusters.manage", "create_namespace"): "medium",
+    ("action.assets.clusters.manage", "exec_session"): "medium",
     ("action.assets.domains.manage", "delete"): "medium",
     ("action.tools.scripts.execute", "execute"): "medium",
     ("action.change.execute", "execute"): "high",
     ("action.settings.users.manage", "disable"): "medium",
+    # 删除用户（2026-10-05 新增端点）：不可恢复且影响登录主体，高危
+    ("action.settings.users.manage", "delete"): "high",
     ("action.settings.system.manage", "delete"): "medium",
     ("action.monitoring.channels.manage", "delete"): "medium",
     ("action.finance.accounts.manage", "delete"): "high",
@@ -748,7 +849,16 @@ def list_role_templates() -> list[dict[str, Any]]:
                 "deletable": not is_system,
             }
         )
-    result.sort(key=lambda item: (0 if item["is_system"] else 1, str(item["title"])))
+    # 排序：系统预设按定义顺序（管理员→运维→数据库管理员→开发→域名管理员→只读），
+    # 自定义组排在其后按名称。此前按标题 Unicode 码点排序，展示顺序看似随机。
+    preset_order = {role: idx for idx, role in enumerate(ROLE_TEMPLATE_PRESETS)}
+    result.sort(
+        key=lambda item: (
+            (0, preset_order.get(str(item["role"]), len(preset_order)), "")
+            if item["is_system"]
+            else (1, 0, str(item["title"]))
+        )
+    )
     return result
 
 

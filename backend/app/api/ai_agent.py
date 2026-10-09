@@ -20,7 +20,7 @@ import json
 import re
 import time
 import uuid
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -35,6 +35,7 @@ from app.core.config import settings
 from app.core.crypto import decrypt_secret, encrypt_secret
 from app.core.security import get_current_user, require_permissions
 from app.db.database import get_db
+from app.timefmt import to_local_str
 from app.models.ai_chat import AIChatMessage, AIChatSession
 from app.models.asset import Asset, DomainRecord
 from app.models.audit import AuditLog
@@ -693,9 +694,15 @@ def _normalize_stored_llm_entry(entry: dict[str, Any]) -> dict[str, Any] | None:
         "max_output_tokens": min(max(_safe_int(entry.get("max_output_tokens"), 1200), 128), 8192),
         "timeout_seconds": min(max(_safe_int(entry.get("timeout_seconds"), 30), 5), 120),
         "system_prompt": str(entry.get("system_prompt") or DEFAULT_SYSTEM_PROMPT).strip() or DEFAULT_SYSTEM_PROMPT,
-        "created_at": str(entry.get("created_at") or ""),
-        "updated_at": str(entry.get("updated_at") or ""),
+        "created_at": _fmt_utc_iso_local(entry.get("created_at")),
+        "updated_at": _fmt_utc_iso_local(entry.get("updated_at")),
     }
+
+
+def _fmt_utc_iso_local(value: Any) -> str:
+    """LLM 配置的 created_at/updated_at 以 datetime.utcnow().isoformat() 落库（naive UTC），
+    序列化时统一转本地时间。实现收敛到 app.timefmt.to_local_str。"""
+    return to_local_str(value, "%Y-%m-%d %H:%M")
 
 
 def _load_llm_config_store(db: Session) -> tuple[list[dict[str, Any]], str]:
@@ -1071,7 +1078,7 @@ def _build_audit_context(db: Session) -> dict[str, Any]:
     """构建最近审计上下文。"""
     audits = db.query(AuditLog).order_by(AuditLog.time.desc()).limit(MAX_CONTEXT_ITEMS).all()
     items = [
-        f"{item.user} · {item.action} · {item.time.strftime('%m-%d %H:%M') if item.time else '-'}"
+        f"{item.user} · {item.action} · {to_local_str(item.time, '%m-%d %H:%M') or '-'}"
         for item in audits
     ]
     if not items:
@@ -1167,7 +1174,7 @@ def _build_security_compliance_context(db: Session) -> dict[str, Any]:
     if audits:
         latest_audit = audits[0]
         items.append(
-            f"最近关键操作：{latest_audit.user} · {latest_audit.action} · {latest_audit.time.strftime('%m-%d %H:%M') if latest_audit.time else '-'}"
+            f"最近关键操作：{latest_audit.user} · {latest_audit.action} · {to_local_str(latest_audit.time, '%m-%d %H:%M') or '-'}"
         )
     if not items:
         items = ["当前未发现明显基线偏离信号。"]
@@ -2714,7 +2721,7 @@ def get_ai_observability_audit(db: Session = Depends(get_db)) -> AIObservability
         
         logs.append(AIAuditLogItem(
             id=str(item.id),
-            time=item.time.strftime('%m-%d %H:%M') if item.time else '-',
+            time=to_local_str(item.time, '%m-%d %H:%M') or '-',
             user=str(item.user or "system"),
             agent="Ops Agent",  # 当前审计表暂未记录来源 Agent，先默认回退
             intent=str(item.action),
@@ -2955,9 +2962,13 @@ def append_chat_message(
     db.add(message)
     session.message_count = int(session.message_count or 0) + 1
     session.updated_at = now
-    # 首条用户消息自动作为会话标题(若仍是默认名)
+    # 首条用户消息自动作为会话标题(若仍是默认名)；
+    # 剥掉开头的 @skill.xxx 技能引用——否则快捷技能会话的标题全是技能名（前端创建
+    # 会话时也会剥，这里兜住直接调 API 的路径；存量脏标题已一次性回填）
     if role == "user" and (not session.title or session.title == "新会话"):
-        session.title = (payload.content or "").strip().splitlines()[0][:40] or "新会话"
+        raw_first_line = (payload.content or "").strip().splitlines()[0]
+        readable = re.sub(r"^@[\w.]+\s*", "", raw_first_line).strip() or raw_first_line
+        session.title = readable[:40] or "新会话"
     db.commit()
     db.refresh(message)
     return _serialize_chat_message(message)

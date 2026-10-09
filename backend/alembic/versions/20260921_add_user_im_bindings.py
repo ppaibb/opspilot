@@ -4,6 +4,7 @@ from __future__ import annotations
 import sqlalchemy as sa
 
 from alembic import op
+from app import alembic_guards as g
 
 revision = "20260921_im_bindings"
 down_revision = "20260920_db_enhance"
@@ -12,7 +13,7 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.create_table(
+    g.create_table_if_missing(op, 
         "user_im_bindings",
         sa.Column("id", sa.Integer(), nullable=False),
         sa.Column("user_id", sa.Integer(), nullable=False),
@@ -26,11 +27,11 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("user_id", "platform", name="uq_user_im_binding"),
     )
-    op.create_index("ix_user_im_bindings_id", "user_im_bindings", ["id"])
-    op.create_index("ix_user_im_bindings_user_id", "user_im_bindings", ["user_id"])
+    g.create_index_if_missing(op, "ix_user_im_bindings_id", "user_im_bindings", ["id"])
+    g.create_index_if_missing(op, "ix_user_im_bindings_user_id", "user_im_bindings", ["user_id"])
 
 
 def downgrade() -> None:
     op.drop_index("ix_user_im_bindings_user_id", table_name="user_im_bindings")
     op.drop_index("ix_user_im_bindings_id", table_name="user_im_bindings")
-    op.drop_table("user_im_bindings")
+    g.drop_table_if_exists(op, "user_im_bindings")

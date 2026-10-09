@@ -6,15 +6,17 @@ import {
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import {
-  ReloadOutlined, CodeOutlined, FileTextOutlined, FileSearchOutlined,
+  ReloadOutlined, CodeOutlined, FileTextOutlined, MedicineBoxOutlined,
   DeleteOutlined,
 } from '@ant-design/icons'
 import { clusterDetailApi } from '@/api'
 import { usePermission, useRiskConfirm, extractAxiosDetail } from '@/hooks/usePermission'
 import PodLogViewer from '@/components/PodLogViewer'
 import PodExecTerminal from '@/components/PodExecTerminal'
+import YamlPre from '@/components/k8s/YamlPre'
 import type { K8sPod } from '@/types/api'
 import { statusTag } from './shared'
+import { useUrlFilter, useUrlFocus, focusRowClass } from './useTabParams'
 
 const { Text } = Typography
 
@@ -33,12 +35,14 @@ export default function PodsTab({ clusterId, namespaces }: { clusterId: string; 
   const riskConfirm = useRiskConfirm()
   const canManage = has('action.assets.clusters.manage')
 
-  const [nsFilter, setNsFilter] = useState('_all')
+  // ns / 关键字筛选入 URL：搜索跳转带参数进来时直接预填并高亮目标行，刷新不丢。
+  const [nsFilter, setNsFilter] = useUrlFilter('ns', '_all')
+  const [search, setSearch] = useUrlFilter('q')
   const [statusFilter, setStatusFilter] = useState('_all')
-  const [search, setSearch] = useState('')
   const [diagPod, setDiagPod] = useState<K8sPod | null>(null)
   const [logPod, setLogPod] = useState<K8sPod | null>(null)
   const [execPod, setExecPod] = useState<K8sPod | null>(null)
+  const focus = useUrlFocus()
 
   const { data: pods = [], isLoading, refetch } = useQuery({
     queryKey: ['cluster-pods', clusterId, nsFilter],
@@ -112,13 +116,14 @@ export default function PodsTab({ clusterId, namespaces }: { clusterId: string; 
           <Tooltip title="日志（实时流）">
             <Button size="small" type="text" icon={<FileTextOutlined />} onClick={() => setLogPod(record)} />
           </Tooltip>
-          <Tooltip title="诊断详情">
-            <Button size="small" type="text" icon={<FileSearchOutlined />} onClick={() => setDiagPod(record)} />
+          <Tooltip title="诊断详情（事件/重启/探针）">
+            <Button size="small" type="text" icon={<MedicineBoxOutlined />} onClick={() => setDiagPod(record)} />
           </Tooltip>
           <Popconfirm
             title={`删除 Pod ${record.name}？`} description="删除后由控制器重建（如 Deployment）。"
             okText="删除" okButtonProps={{ danger: true }} cancelText="取消"
-            onConfirm={() => riskConfirm.confirm('clusters:delete', () => deleteMutation.mutate(record))}
+            onConfirm={() => riskConfirm.confirm('clusters:delete', () => deleteMutation.mutate(record),
+              `将删除 Pod ${record.namespace}/${record.name}，删除后由所属控制器重建`)}
             disabled={!canManage}
           >
             <Button size="small" type="text" danger icon={<DeleteOutlined />} disabled={!canManage} />
@@ -153,6 +158,7 @@ export default function PodsTab({ clusterId, namespaces }: { clusterId: string; 
         columns={columns}
         dataSource={filtered}
         loading={isLoading}
+        rowClassName={(r) => focusRowClass(focus, 'Pod', r.namespace, r.name)}
         pagination={{ pageSize: 20, showSizeChanger: false, showTotal: (t) => `共 ${t} 个` }}
         scroll={{ x: 1100 }}
       />
@@ -184,12 +190,10 @@ export default function PodsTab({ clusterId, namespaces }: { clusterId: string; 
         {loadingDiag ? (
           <div style={{ textAlign: 'center', padding: '60px 0' }}><Spin tip="分析中..." /></div>
         ) : (
-          <pre style={{
-            background: '#fafafa', padding: 12, borderRadius: 6, fontSize: 12,
-            whiteSpace: 'pre-wrap', wordBreak: 'break-all', maxHeight: '70vh', overflow: 'auto',
-          }}>
-            {typeof diagnostics === 'string' ? diagnostics : JSON.stringify(diagnostics, null, 2)}
-          </pre>
+          <YamlPre
+            maxHeight="70vh"
+            text={typeof diagnostics === 'string' ? diagnostics : JSON.stringify(diagnostics, null, 2)}
+          />
         )}
       </Drawer>
     </Card>

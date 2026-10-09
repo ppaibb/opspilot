@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Table, Button, Space, Input, Tag, Drawer, Form, Checkbox,
@@ -37,6 +37,25 @@ export default function PermissionsPage() {
     acc[p.group].push(p)
     return acc
   }, {})
+
+  // 权限键搜索：70 个键跨 9 个组，过滤后命中的组自动展开
+  const [permSearch, setPermSearch] = useState('')
+  const [expandedGroups, setExpandedGroups] = useState<string[]>([])
+  const searching = permSearch.trim().length > 0
+  const filteredGroups = useMemo(() => {
+    const kw = permSearch.trim().toLowerCase()
+    if (!kw) return permGroups
+    const out: Record<string, PermissionCatalogItem[]> = {}
+    for (const [group, items] of Object.entries(permGroups)) {
+      const hit = items.filter((p) =>
+        p.title.toLowerCase().includes(kw)
+        || p.key.toLowerCase().includes(kw)
+        || (p.description || '').toLowerCase().includes(kw)
+        || group.toLowerCase().includes(kw))
+      if (hit.length) out[group] = hit
+    }
+    return out
+  }, [permGroups, permSearch])
 
   // ── Mutations ──
   const createMut = useMutation({
@@ -107,30 +126,36 @@ export default function PermissionsPage() {
 
   const columns: ColumnsType<RoleTemplateItem> = [
     {
-      title: '权限组', dataIndex: 'role', width: 160,
+      title: '权限组', dataIndex: 'role', width: 200,
       render: (v: string, r) => (
-        <Space>
+        <Flex align="center" gap={6} style={{ whiteSpace: 'nowrap' }}>
           <SafetyOutlined style={{ color: '#1677ff' }} />
           <Text strong>{r.title || v}</Text>
-          {r.is_system && <Tag color="orange">系统</Tag>}
-        </Space>
+          {r.is_system && <Tag color="orange" style={{ marginRight: 0 }}>系统</Tag>}
+        </Flex>
       ),
     },
-    { title: '角色标识', dataIndex: 'role', width: 140 },
     { title: '描述', dataIndex: 'description', ellipsis: true, render: (v: string) => v || '-' },
     {
-      title: '权限数', key: 'perm_count', width: 90,
+      title: '权限数', key: 'perm_count', width: 100,
       render: (_: unknown, r) => {
         const count = Object.values(r.permissions).filter(Boolean).length
-        return <Badge count={count} showZero color="#1677ff" overflowCount={999} />
+        return (
+          <span>
+            <Text strong>{count}</Text>
+            <Text type="secondary"> / {permissions.length}</Text>
+          </span>
+        )
       },
     },
     {
-      title: '操作', key: 'action', width: 120, fixed: 'right',
+      title: '操作', key: 'action', width: 150, fixed: 'right',
       render: (_: unknown, r) => (
         <Space size="small">
-          <Tooltip title={r.editable ? '编辑' : '系统内置，只能查看'}>
-            <Button size="small" type="primary" icon={<EditOutlined />} onClick={() => openEdit(r)} />
+          <Tooltip title={r.editable ? undefined : '系统内置，只能查看'}>
+            <Button size="small" type="link" icon={<EditOutlined />} onClick={() => openEdit(r)}>
+              {r.editable ? '编辑' : '查看'}
+            </Button>
           </Tooltip>
           {r.deletable && (
             <Popconfirm
@@ -138,9 +163,9 @@ export default function PermissionsPage() {
               description="确定删除该权限组吗？正在使用的用户将无法访问。"
               onConfirm={() => deleteMut.mutate(r.role)}
             >
-              <Tooltip title="删除">
-                <Button size="small" danger icon={<DeleteOutlined />} />
-              </Tooltip>
+              <Button size="small" type="link" danger icon={<DeleteOutlined />}>
+                删除
+              </Button>
             </Popconfirm>
           )}
         </Space>
@@ -195,10 +220,21 @@ export default function PermissionsPage() {
 
         {/* 权限勾选 */}
         <div style={{ marginTop: 16 }}>
-          <Text strong>权限配置</Text>
+          <Flex justify="space-between" align="center">
+            <Text strong>权限配置</Text>
+            <Input
+              style={{ width: 220 }}
+              placeholder="搜索权限名称 / 键，如 action.db"
+              allowClear
+              value={permSearch}
+              onChange={(e) => setPermSearch(e.target.value)}
+            />
+          </Flex>
           <Collapse
             style={{ marginTop: 8 }}
-            items={Object.entries(permGroups).map(([group, items]) => {
+            activeKey={searching ? Object.keys(filteredGroups) : expandedGroups}
+            onChange={(keys) => setExpandedGroups(Array.isArray(keys) ? keys : [keys])}
+            items={Object.entries(filteredGroups).map(([group, items]) => {
               const groupKeys = items.map((p) => p.key)
               const allChecked = groupKeys.every((k) => checkedPerms[k])
               const someChecked = groupKeys.some((k) => checkedPerms[k])

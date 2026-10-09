@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from alembic import op
+from app import alembic_guards as g
 import sqlalchemy as sa
 import app
 
@@ -22,7 +23,7 @@ def upgrade() -> None:
                
     # Manually added: Create dashboard_snapshots table if it doesn't exist
     if not table_exists:
-        op.create_table('dashboard_snapshots',
+        g.create_table_if_missing(op, 'dashboard_snapshots',
             sa.Column('id', sa.Integer(), nullable=False),
             sa.Column('date', sa.Date(), nullable=False),
             sa.Column('hosts_total', sa.Integer(), nullable=False),
@@ -32,8 +33,8 @@ def upgrade() -> None:
             sa.Column('updated_at', sa.String(length=30), nullable=False),
             sa.PrimaryKeyConstraint('id')
         )
-        op.create_index(op.f('ix_dashboard_snapshots_date'), 'dashboard_snapshots', ['date'], unique=True)
-        op.create_index(op.f('ix_dashboard_snapshots_id'), 'dashboard_snapshots', ['id'], unique=False)
+        g.create_index_if_missing(op, op.f('ix_dashboard_snapshots_date'), 'dashboard_snapshots', ['date'], unique=True)
+        g.create_index_if_missing(op, op.f('ix_dashboard_snapshots_id'), 'dashboard_snapshots', ['id'], unique=False)
     
     # Check if table is empty
     has_data = False
@@ -90,5 +91,5 @@ def downgrade() -> None:
             op.drop_index(op.f('ix_dashboard_snapshots_id'), table_name='dashboard_snapshots')
         if "ix_dashboard_snapshots_date" in indexes:
             op.drop_index(op.f('ix_dashboard_snapshots_date'), table_name='dashboard_snapshots')
-        op.drop_table('dashboard_snapshots')
+        g.drop_table_if_exists(op, 'dashboard_snapshots')
     # ### end Alembic commands ###

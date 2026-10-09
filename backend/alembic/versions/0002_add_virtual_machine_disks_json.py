@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from alembic import op
+from app import alembic_guards as g
 import sqlalchemy as sa
 from sqlalchemy import inspect
 
@@ -21,7 +22,7 @@ def upgrade() -> None:
     columns = {column["name"] for column in inspector.get_columns("virtual_machines")}
     if "disks_json" in columns:
         return
-    op.add_column(
+    g.add_column_if_missing(op, 
         "virtual_machines",
         sa.Column("disks_json", sa.String(length=2000), nullable=True, server_default="[]"),
     )

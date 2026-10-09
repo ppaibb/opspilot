@@ -26,6 +26,8 @@ from app.models.database import DbInstance, DbQueryGrant, DbTicket
 from app.models.user import User
 from app.core.rbac import (
     PERMISSION_DEFAULTS,
+    ROLE_TEMPLATE_PRESETS,
+    list_role_templates,
     resolve_effective_permissions_from_values,
 )
 from app.core.security import require_permissions
@@ -489,6 +491,41 @@ class QueryGrantTest(unittest.TestCase):
         self.assertEqual(
             self.db.query(DbQueryGrant).filter(DbQueryGrant.id == alive.id).first().status, "active",
         )
+
+
+
+class DatabaseAdminRolePresetTest(unittest.TestCase):
+    """「数据库管理员」预设角色与模板排序契约。"""
+
+    def test_preset_exists_with_db_full_lifecycle(self):
+        """数据库管理员预设必须存在且持有 db 四件套 + 页面权限。"""
+        self.assertIn("数据库管理员", ROLE_TEMPLATE_PRESETS)
+        perms = ROLE_TEMPLATE_PRESETS["数据库管理员"]["permissions"]
+        for key in (
+            "module.assets.databases",
+            "action.db.manage",
+            "action.db.submit",
+            "action.db.execute",
+            "action.db.approve",
+        ):
+            self.assertTrue(perms.get(key), key)
+        # 聚焦角色不越界：不给资产管理其它模块与系统管理
+        self.assertFalse(perms.get("module.assets.hosts"))
+        self.assertFalse(perms.get("module.settings.system.manage"))
+
+    def test_templates_ordered_presets_first_in_defined_order(self):
+        """系统预设按定义顺序在前（管理员→运维→数据库管理员→开发→域名管理员→只读），自定义组排后。"""
+        templates = list_role_templates()
+        roles = [t["role"] for t in templates]
+        expected_prefix = ["管理员", "运维", "数据库管理员", "开发", "域名管理员", "只读"]
+        self.assertEqual(roles[: len(expected_prefix)], expected_prefix)
+        # 全部系统组排在整个列表前段，且新组是系统组（可编辑不可删）
+        system_flags = [t["is_system"] for t in templates]
+        self.assertEqual(system_flags[: len(expected_prefix)], [True] * len(expected_prefix))
+        dba = next(t for t in templates if t["role"] == "数据库管理员")
+        self.assertTrue(dba["editable"])
+        self.assertFalse(dba["deletable"])
+
 
 
 if __name__ == "__main__":

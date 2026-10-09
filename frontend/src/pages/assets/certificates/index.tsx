@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Table, Button, Space, Input, Tag, Drawer, Form, Select, App, Tooltip,
-  Badge, Progress, Flex, Card, Statistic, Row, Col, Switch, Tabs, Radio, Alert, Dropdown,
+  Badge, Progress, Flex, Card, Statistic, Row, Col, Switch, Tabs, Radio, Dropdown,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import type { MenuProps } from 'antd'
@@ -530,14 +530,6 @@ export default function CertificatesPage() {
           </Button>
         }
       >
-        <Alert
-          message="证书多模态分发机制"
-          description="支持将 SSL 证书一键安全分发至 Nginx Linux 服务器主机、云服务商 CDN/ALB 域名节点，或 Kubernetes 集群 TLS Secret 中。"
-          type="info"
-          showIcon
-          style={{ marginBottom: 16 }}
-        />
-
         <Tabs
           activeKey={deployTab}
           onChange={(k) => setDeployTab(k as 'host' | 'cloud' | 'k8s')}

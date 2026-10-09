@@ -17,6 +17,7 @@ export interface AlertListRow {
   acknowledged?: boolean
   acknowledged_by?: string
   acknowledged_at?: string
+  acknowledged_note?: string
   labels?: Record<string, string>
   /** true = 来自历史归档（已恢复） */
   fromHistory?: boolean

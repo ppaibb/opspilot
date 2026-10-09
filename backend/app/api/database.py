@@ -672,7 +672,7 @@ def execute_ticket(ticket_id: int, db: Session = Depends(get_db),
             import json as _json
 
             rollback_parts = [
-                build_rollback_inserts(item["table"], item["columns"], item["rows"])
+                build_rollback_inserts(item["table"], item["columns"], item["rows"], db_type=instance.db_type, source_stmt=item.get("sql") or "")
                 for item in snapshot["items"]
             ]
             ticket.backup_snapshot = _json.dumps(snapshot, ensure_ascii=False, default=str)
@@ -1331,7 +1331,7 @@ def _run_due_tickets() -> None:
                         import json as _json
 
                         rollback_parts = [
-                            build_rollback_inserts(item["table"], item["columns"], item["rows"])
+                            build_rollback_inserts(item["table"], item["columns"], item["rows"], db_type=instance.db_type, source_stmt=item.get("sql") or "")
                             for item in snapshot["items"]
                         ]
                         ticket.backup_snapshot = _json.dumps(snapshot, ensure_ascii=False, default=str)

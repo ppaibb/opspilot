@@ -8,6 +8,7 @@ Create Date: 2026-06-24 11:30:00.000000
 用于「通知发送记录/审计」页面。可逆(downgrade 删表)。
 """
 from alembic import op
+from app import alembic_guards as g
 import sqlalchemy as sa
 
 revision = 'f6a7b8c9d0e1'
@@ -17,7 +18,7 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.create_table(
+    g.create_table_if_missing(op, 
         'monitoring_notification_logs',
         sa.Column('id', sa.Integer(), primary_key=True, index=True),
         sa.Column('fingerprint', sa.String(length=64), nullable=False, server_default=''),
@@ -33,11 +34,11 @@ def upgrade() -> None:
         sa.Column('message', sa.Text(), nullable=False, server_default=''),
         sa.Column('created_at', sa.DateTime(), nullable=False),
     )
-    op.create_index('ix_monitoring_notification_logs_fingerprint', 'monitoring_notification_logs', ['fingerprint'])
-    op.create_index('ix_monitoring_notification_logs_alert_name', 'monitoring_notification_logs', ['alert_name'])
-    op.create_index('ix_monitoring_notification_logs_channel_name', 'monitoring_notification_logs', ['channel_name'])
-    op.create_index('ix_monitoring_notification_logs_success', 'monitoring_notification_logs', ['success'])
-    op.create_index('ix_monitoring_notification_logs_created_at', 'monitoring_notification_logs', ['created_at'])
+    g.create_index_if_missing(op, 'ix_monitoring_notification_logs_fingerprint', 'monitoring_notification_logs', ['fingerprint'])
+    g.create_index_if_missing(op, 'ix_monitoring_notification_logs_alert_name', 'monitoring_notification_logs', ['alert_name'])
+    g.create_index_if_missing(op, 'ix_monitoring_notification_logs_channel_name', 'monitoring_notification_logs', ['channel_name'])
+    g.create_index_if_missing(op, 'ix_monitoring_notification_logs_success', 'monitoring_notification_logs', ['success'])
+    g.create_index_if_missing(op, 'ix_monitoring_notification_logs_created_at', 'monitoring_notification_logs', ['created_at'])
 
 
 def downgrade() -> None:
@@ -46,4 +47,4 @@ def downgrade() -> None:
     op.drop_index('ix_monitoring_notification_logs_channel_name', table_name='monitoring_notification_logs')
     op.drop_index('ix_monitoring_notification_logs_alert_name', table_name='monitoring_notification_logs')
     op.drop_index('ix_monitoring_notification_logs_fingerprint', table_name='monitoring_notification_logs')
-    op.drop_table('monitoring_notification_logs')
+    g.drop_table_if_exists(op, 'monitoring_notification_logs')

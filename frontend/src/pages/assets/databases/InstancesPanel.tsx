@@ -111,19 +111,23 @@ export function InstancesTab({ instances, loading, refetch }: { instances: DbIns
       title: '操作', key: 'ops', width: 180, fixed: 'right',
       render: (_, record) => (
         <Space size={4}>
-          <Button size="small" icon={<ApiOutlined />} disabled={!canManage}
-            loading={testMutation.isPending && testMutation.variables === record.id}
-            onClick={() => testMutation.mutate(record.id)}>
-            测试
-          </Button>
-          <Button size="small" disabled={!canManage} onClick={() => openEdit(record)}>编辑</Button>
-          <Popconfirm
-            title={`删除实例 ${record.name}？`} description="有工单记录的实例不可删除"
-            okText="删除" okButtonProps={{ danger: true }} cancelText="取消"
-            onConfirm={() => deleteMutation.mutate(record.id)} disabled={!canManage}
-          >
-            <Button size="small" danger icon={<DeleteOutlined />} disabled={!canManage} />
-          </Popconfirm>
+          {canManage && (
+            <Button size="small" icon={<ApiOutlined />}
+              loading={testMutation.isPending && testMutation.variables === record.id}
+              onClick={() => testMutation.mutate(record.id)}>
+              测试
+            </Button>
+          )}
+          {canManage && <Button size="small" onClick={() => openEdit(record)}>编辑</Button>}
+          {canManage && (
+            <Popconfirm
+              title={`删除实例 ${record.name}？`} description="有工单记录的实例不可删除"
+              okText="删除" okButtonProps={{ danger: true }} cancelText="取消"
+              onConfirm={() => deleteMutation.mutate(record.id)}
+            >
+              <Button size="small" danger icon={<DeleteOutlined />} />
+            </Popconfirm>
+          )}
         </Space>
       ),
     },
@@ -134,10 +138,12 @@ export function InstancesTab({ instances, loading, refetch }: { instances: DbIns
       <Flex justify="flex-end" style={{ marginBottom: 12 }}>
         <Space>
           <Button icon={<ReloadOutlined />} onClick={() => refetch()}>刷新</Button>
-          <Button type="primary" icon={<PlusOutlined />} disabled={!canManage}
-            onClick={() => { setEditing(null); form.resetFields(); setDrawerOpen(true) }}>
-            新增实例
-          </Button>
+          {canManage && (
+            <Button type="primary" icon={<PlusOutlined />}
+              onClick={() => { setEditing(null); form.resetFields(); setDrawerOpen(true) }}>
+              新增实例
+            </Button>
+          )}
         </Space>
       </Flex>
       <Table<DbInstance>

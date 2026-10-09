@@ -645,8 +645,19 @@ def build_backup_select(stmt: str) -> str | None:
     return f"SELECT * FROM {table} {where}"
 
 
-def build_rollback_inserts(table: str, columns: list[str], rows: list[dict[str, Any]], limit: int = BACKUP_MAX_ROWS) -> str:
-    """把备份行渲染为回滚 INSERT 语句（值做 SQL 转义；NULL/数字/字符串分型处理）。"""
+def build_rollback_inserts(
+    table: str, columns: list[str], rows: list[dict[str, Any]],
+    limit: int = BACKUP_MAX_ROWS, db_type: str = "mysql",
+    source_stmt: str = "",
+) -> str:
+    """把备份行渲染为回滚语句（值做 SQL 转义；NULL/数字/字符串分型处理）。
+
+    - 来源是 UPDATE：回滚用 UPDATE ... SET 原值 WHERE <原子句>——裸 INSERT 会撞
+      主键冲突（目标行还在），曾让 PG 实例的回滚 SQL 不可执行；
+    - 来源是 DELETE：目标行已删，回滚只能 INSERT 还原；
+    - 无主键列/解析失败的行退回 INSERT（宁多勿错，人工执行时可自行调整）。
+    标识符引号按方言：MySQL 用反引号；PostgreSQL 反引号是语法错误，必须用双引号。
+    """
     def _quote(value: Any) -> str:
         if value is None:
             return "NULL"
@@ -657,10 +668,24 @@ def build_rollback_inserts(table: str, columns: list[str], rows: list[dict[str, 
         escaped = str(value).replace("\\", "\\\\").replace("'", "''")
         return f"'{escaped}'"
 
+    def _ident(name: str) -> str:
+        # 只拦标识符非法字符，防注入；正常列名不受影响
+        safe = name.replace('"', '""').replace("`", "")
+        return f'"{safe}"' if str(db_type or "").lower().startswith("postgres") else f"`{safe}`"
+
+    is_update = bool(re.match(r"^\s*UPDATE\b", source_stmt or "", re.I))
+    where_clause = extract_where_clause(source_stmt) if is_update else ""
+    pk_column = columns[0] if columns else ""
+
     statements = []
     for row in rows[:limit]:
         values = ", ".join(_quote(row.get(col)) for col in columns)
-        col_list = ", ".join(f"`{col}`" for col in columns)
+        col_list = ", ".join(_ident(col) for col in columns)
+        if is_update and where_clause and pk_column and row.get(pk_column) is not None:
+            # UPDATE 回滚：按 WHERE 整体还原（与原语句影响面一致），不再按行拼条件
+            assignments = ", ".join(f"{_ident(col)} = {_quote(row.get(col))}" for col in columns)
+            statements.append(f"UPDATE {table} SET {assignments} {where_clause};")
+            break  # UPDATE 的 WHERE 是原语句级条件，一条即可还原全部备份行
         statements.append(f"INSERT INTO {table} ({col_list}) VALUES ({values});")
     return "\n".join(statements)
 

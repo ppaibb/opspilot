@@ -6,6 +6,7 @@ Create Date: 2026-09-19
 
 """
 from alembic import op
+from app import alembic_guards as g
 import sqlalchemy as sa
 
 revision = '20260919_database'
@@ -15,7 +16,7 @@ depends_on = None
 
 
 def upgrade():
-    op.create_table(
+    g.create_table_if_missing(op, 
         'db_instances',
         sa.Column('id', sa.Integer(), primary_key=True, autoincrement=True),
         sa.Column('name', sa.String(100), nullable=False, comment='实例名称'),
@@ -32,7 +33,7 @@ def upgrade():
         comment='数据库实例（数据源）',
     )
 
-    op.create_table(
+    g.create_table_if_missing(op, 
         'db_tickets',
         sa.Column('id', sa.Integer(), primary_key=True, autoincrement=True),
         sa.Column('instance_id', sa.Integer(), nullable=False, comment='目标实例'),
@@ -51,10 +52,10 @@ def upgrade():
         sa.Column('executed_at', sa.String(50), server_default='', comment='执行完成时间'),
         comment='SQL 工单',
     )
-    op.create_index('idx_db_tickets_status', 'db_tickets', ['status'])
-    op.create_index('idx_db_tickets_instance', 'db_tickets', ['instance_id'])
+    g.create_index_if_missing(op, 'idx_db_tickets_status', 'db_tickets', ['status'])
+    g.create_index_if_missing(op, 'idx_db_tickets_instance', 'db_tickets', ['instance_id'])
 
-    op.create_table(
+    g.create_table_if_missing(op, 
         'db_query_logs',
         sa.Column('id', sa.Integer(), primary_key=True, autoincrement=True),
         sa.Column('instance_id', sa.Integer(), nullable=False, comment='实例'),
@@ -67,10 +68,10 @@ def upgrade():
         sa.Column('created_at', sa.String(50), comment='查询时间'),
         comment='自助查询审计日志',
     )
-    op.create_index('idx_db_query_logs_instance', 'db_query_logs', ['instance_id'])
+    g.create_index_if_missing(op, 'idx_db_query_logs_instance', 'db_query_logs', ['instance_id'])
 
 
 def downgrade():
-    op.drop_table('db_query_logs')
-    op.drop_table('db_tickets')
-    op.drop_table('db_instances')
+    g.drop_table_if_exists(op, 'db_query_logs')
+    g.drop_table_if_exists(op, 'db_tickets')
+    g.drop_table_if_exists(op, 'db_instances')

@@ -6,6 +6,7 @@ Create Date: 2026-09-19
 
 """
 from alembic import op
+from app import alembic_guards as g
 import sqlalchemy as sa
 
 revision = '20260919_root_cause'
@@ -15,7 +16,7 @@ depends_on = None
 
 
 def upgrade():
-    op.create_table(
+    g.create_table_if_missing(op, 
         'alert_root_causes',
         sa.Column('id', sa.Integer(), primary_key=True, autoincrement=True),
         sa.Column('fingerprint', sa.String(120), server_default='', comment='告警 fingerprint'),
@@ -33,9 +34,9 @@ def upgrade():
         sa.Column('created_at', sa.String(50), comment='创建时间'),
         comment='告警根因反馈闭环（三元组沉淀）',
     )
-    op.create_index('idx_arc_alert_name', 'alert_root_causes', ['alert_name'])
-    op.create_index('idx_arc_rating', 'alert_root_causes', ['ai_rating'])
+    g.create_index_if_missing(op, 'idx_arc_alert_name', 'alert_root_causes', ['alert_name'])
+    g.create_index_if_missing(op, 'idx_arc_rating', 'alert_root_causes', ['ai_rating'])
 
 
 def downgrade():
-    op.drop_table('alert_root_causes')
+    g.drop_table_if_exists(op, 'alert_root_causes')

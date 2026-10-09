@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from alembic import op
+from app import alembic_guards as g
 import sqlalchemy as sa
 
 revision = '65c930eb2160'
@@ -12,7 +13,7 @@ depends_on = None
 
 def upgrade() -> None:
     """Create user_notifications table for in-app user notifications."""
-    op.create_table(
+    g.create_table_if_missing(op, 
         'user_notifications',
         sa.Column('id', sa.String(length=36), nullable=False),
         sa.Column('user_id', sa.Integer(), nullable=False, comment='接收用户 ID'),
@@ -26,10 +27,10 @@ def upgrade() -> None:
         sa.Column('created_at', sa.DateTime(), nullable=False),
         sa.PrimaryKeyConstraint('id'),
     )
-    op.create_index(op.f('ix_user_notifications_created_at'), 'user_notifications', ['created_at'], unique=False)
-    op.create_index(op.f('ix_user_notifications_id'), 'user_notifications', ['id'], unique=False)
-    op.create_index(op.f('ix_user_notifications_is_read'), 'user_notifications', ['is_read'], unique=False)
-    op.create_index(op.f('ix_user_notifications_user_id'), 'user_notifications', ['user_id'], unique=False)
+    g.create_index_if_missing(op, op.f('ix_user_notifications_created_at'), 'user_notifications', ['created_at'], unique=False)
+    g.create_index_if_missing(op, op.f('ix_user_notifications_id'), 'user_notifications', ['id'], unique=False)
+    g.create_index_if_missing(op, op.f('ix_user_notifications_is_read'), 'user_notifications', ['is_read'], unique=False)
+    g.create_index_if_missing(op, op.f('ix_user_notifications_user_id'), 'user_notifications', ['user_id'], unique=False)
 
 
 def downgrade() -> None:
@@ -38,4 +39,4 @@ def downgrade() -> None:
     op.drop_index(op.f('ix_user_notifications_is_read'), table_name='user_notifications')
     op.drop_index(op.f('ix_user_notifications_id'), table_name='user_notifications')
     op.drop_index(op.f('ix_user_notifications_created_at'), table_name='user_notifications')
-    op.drop_table('user_notifications')
+    g.drop_table_if_exists(op, 'user_notifications')

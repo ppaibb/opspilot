@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react'
-import { useQuery, useMutation } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Card, Table, Button, Space, Modal, Select, Tooltip, Spin, App,
-  Input, Popconfirm, Form, Alert, Drawer,
+  Input, Popconfirm, Form, Alert, Drawer, Descriptions,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import {
@@ -11,12 +11,22 @@ import {
 import { clusterDetailApi, clusterOpsApi } from '@/api'
 import { usePermission, useRiskConfirm, extractAxiosDetail } from '@/hooks/usePermission'
 import type { NamespaceRow } from './types'
-import { statusTag } from './shared'
+import { statusTag, PROTECTED_NAMESPACES } from './shared'
+
+/** 命名空间用量（GET /clusters/{cid}/namespaces/{ns}/usage）。 */
+interface NamespaceUsage {
+  pod_count: number
+  cpu_requests_total: number
+  mem_requests_total_gi: number
+  quota: { name: string; hard: Record<string, string>; used: Record<string, string> } | null
+  top_pods: Array<{ name: string; status: string; cpu_request: number; mem_request: number }>
+}
 
 // ───────────────────────── 命名空间 Tab ─────────────────────────
 
 export default function NamespacesTab({ clusterId }: { clusterId: string }) {
   const { message } = App.useApp()
+  const queryClient = useQueryClient()
   const { has } = usePermission()
   const canManage = has('action.assets.clusters.manage')
   const [createOpen, setCreateOpen] = useState(false)
@@ -24,18 +34,22 @@ export default function NamespacesTab({ clusterId }: { clusterId: string }) {
   const riskConfirm = useRiskConfirm()
   const [labelsTarget, setLabelsTarget] = useState<string | null>(null)
 
+  // queryKey 与详情页共享的 namespace 清单保持一致：创建/删除后 invalidate，
+  // 工作负载/Pod/资源浏览三个 Tab 的下拉会同步刷新。
+  const { data: namespaces = [], isLoading } = useQuery({
+    queryKey: ['cluster-namespaces', clusterId],
+    queryFn: () => clusterDetailApi.namespaces(clusterId),
+  })
+  const invalidateNamespaces = () =>
+    queryClient.invalidateQueries({ queryKey: ['cluster-namespaces', clusterId] })
+
   const deleteNsMutation = useMutation({
     mutationFn: (ns: string) => clusterOpsApi.deleteNamespace(clusterId, ns),
     onSuccess: (_d, ns) => {
       message.success(`命名空间 ${ns} 已进入 Terminating`)
-      refetch()
+      invalidateNamespaces()
     },
     onError: (error: unknown) => message.error(extractAxiosDetail(error) ?? '删除失败'),
-  })
-
-  const { data: namespaces = [], isLoading, refetch } = useQuery({
-    queryKey: ['cluster-namespaces-list', clusterId],
-    queryFn: () => clusterDetailApi.namespaces(clusterId),
   })
 
   // 选中行展开用量（ResourceQuota 聚合）。
@@ -45,6 +59,7 @@ export default function NamespacesTab({ clusterId }: { clusterId: string }) {
     queryFn: () => clusterOpsApi.namespaceUsage(clusterId, usageNs!),
     enabled: !!usageNs,
   })
+  const usageView = usage as NamespaceUsage | undefined
 
   const createMutation = useMutation({
     mutationFn: (values: { name: string; labels?: string; quota_preset?: string | null }) => {
@@ -64,7 +79,7 @@ export default function NamespacesTab({ clusterId }: { clusterId: string }) {
     onSuccess: () => {
       message.success('命名空间已创建')
       setCreateOpen(false)
-      refetch()
+      invalidateNamespaces()
     },
     onError: (error: unknown) => message.error(extractAxiosDetail(error) ?? '创建失败'),
   })
@@ -80,25 +95,31 @@ export default function NamespacesTab({ clusterId }: { clusterId: string }) {
     { title: '创建时间', dataIndex: 'age', width: 120 },
     {
       title: '操作', key: 'ops', width: 110,
-      render: (_: unknown, r) => (
-        <Space size={2}>
-          <Tooltip title="编辑标签">
-            <Button size="small" type="text" icon={<TagsOutlined />}
-              disabled={!canManage} onClick={() => setLabelsTarget(r.name)} />
-          </Tooltip>
-          <Popconfirm
-            title={`删除命名空间 ${r.name}？`}
-            description="其下全部资源（Pod/Service/配置等）将被级联删除，不可恢复！"
-            okText="删除" okButtonProps={{ danger: true }} cancelText="取消"
-            onConfirm={() => riskConfirm.confirm('clusters:delete', () => deleteNsMutation.mutate(r.name))}
-            disabled={!canManage}
-          >
-            <Tooltip title="删除（级联）">
-              <Button size="small" type="text" danger icon={<DeleteOutlined />} disabled={!canManage} />
+      render: (_: unknown, r) => {
+        // 核心命名空间后端 403 硬拒，前端先禁用按钮并说明原因，避免连点两次确认后被拒。
+        const protectedNs = PROTECTED_NAMESPACES.includes(r.name)
+        return (
+          <Space size={2}>
+            <Tooltip title="编辑标签">
+              <Button size="small" type="text" icon={<TagsOutlined />}
+                disabled={!canManage} onClick={() => setLabelsTarget(r.name)} />
             </Tooltip>
-          </Popconfirm>
-        </Space>
-      ),
+            <Popconfirm
+              title={`删除命名空间 ${r.name}？`}
+              description="其下全部资源（Pod/Service/配置等）将被级联删除，不可恢复！"
+              okText="删除" okButtonProps={{ danger: true }} cancelText="取消"
+              onConfirm={() => riskConfirm.confirm('clusters:delete', () => deleteNsMutation.mutate(r.name),
+                `将删除命名空间 ${r.name} 及其下全部资源（级联删除，不可恢复）`)}
+              disabled={!canManage || protectedNs}
+            >
+              <Tooltip title={protectedNs ? '集群核心命名空间，禁止删除' : '删除（级联）'}>
+                <Button size="small" type="text" danger icon={<DeleteOutlined />}
+                  disabled={!canManage || protectedNs} />
+              </Tooltip>
+            </Popconfirm>
+          </Space>
+        )
+      },
     },
   ]
 
@@ -107,7 +128,7 @@ export default function NamespacesTab({ clusterId }: { clusterId: string }) {
       size="small"
       extra={
         <Space>
-          <Button icon={<ReloadOutlined />} onClick={() => refetch()}>刷新</Button>
+          <Button icon={<ReloadOutlined />} onClick={invalidateNamespaces}>刷新</Button>
           <Button type="primary" icon={<PlusOutlined />} disabled={!canManage} onClick={() => { form.resetFields(); setCreateOpen(true) }}>
             创建命名空间
           </Button>
@@ -125,13 +146,29 @@ export default function NamespacesTab({ clusterId }: { clusterId: string }) {
 
       {usageNs && (
         <Card size="small" title={`资源用量 - ${usageNs}`} style={{ marginTop: 12 }}>
-          {usage ? (
-            <pre style={{
-              background: '#fafafa', padding: 12, borderRadius: 6, fontSize: 12,
-              whiteSpace: 'pre-wrap', wordBreak: 'break-all', maxHeight: 320, overflow: 'auto',
-            }}>
-              {JSON.stringify(usage, null, 2)}
-            </pre>
+          {usageView ? (
+            <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+              <Descriptions size="small" column={2} bordered items={[
+                { key: 'pod', label: 'Pod 数', children: usageView.pod_count ?? 0 },
+                { key: 'cpu', label: 'CPU requests 合计', children: `${usageView.cpu_requests_total ?? 0} 核` },
+                { key: 'mem', label: '内存 requests 合计', children: `${usageView.mem_requests_total_gi ?? 0} Gi` },
+                { key: 'quota', label: 'ResourceQuota', children: usageView.quota ? `${usageView.quota.name}（上限 ${usageView.quota.hard['requests.cpu'] ?? '-'} 核 / ${usageView.quota.hard['requests.memory'] ?? '-'}）` : '未设置' },
+              ]} />
+              {!!usageView.top_pods?.length && (
+                <Table
+                  rowKey="name"
+                  size="small"
+                  pagination={false}
+                  dataSource={usageView.top_pods}
+                  columns={[
+                    { title: 'Pod', dataIndex: 'name', ellipsis: true },
+                    { title: '状态', dataIndex: 'status', width: 100, render: (v: string) => statusTag(v) },
+                    { title: 'CPU request（核）', dataIndex: 'cpu_request', width: 150, align: 'right' },
+                    { title: '内存 request（Gi）', dataIndex: 'mem_request', width: 150, align: 'right' },
+                  ]}
+                />
+              )}
+            </Space>
           ) : (
             <div style={{ textAlign: 'center', padding: 24 }}><Spin /></div>
           )}

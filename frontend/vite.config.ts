@@ -39,6 +39,14 @@ export default defineConfig({
         changeOrigin: true,
         ws: true, // K8s Pod 日志/Exec 等 WebSocket 也走 /api 前缀，必须允许 upgrade
       },
+      // Grafana 免密入口：同源反代到后端，由后端注入 auth.proxy 身份头
+      '/grafana': {
+        target: 'http://127.0.0.1:8001',
+        changeOrigin: true,
+        ws: true, // Grafana Live / 实时刷新走 WebSocket
+        timeout: 120_000,
+        proxyTimeout: 120_000,
+      },
     },
   },
 })

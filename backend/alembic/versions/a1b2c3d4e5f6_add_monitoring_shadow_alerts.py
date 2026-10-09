@@ -6,6 +6,7 @@ Create Date: 2026-06-22 15:52:00.000000
 
 """
 from alembic import op
+from app import alembic_guards as g
 import sqlalchemy as sa
 
 revision = 'a1b2c3d4e5f6'
@@ -14,7 +15,7 @@ branch_labels = None
 depends_on = None
 
 def upgrade() -> None:
-    op.create_table(
+    g.create_table_if_missing(op, 
         'monitoring_shadow_alerts',
         sa.Column('id', sa.Integer(), primary_key=True, index=True),
         sa.Column('fingerprint', sa.String(length=64), nullable=True),
@@ -31,12 +32,12 @@ def upgrade() -> None:
         sa.Column('first_seen_at', sa.DateTime(), nullable=True),
         sa.Column('last_seen_at', sa.DateTime(), nullable=True)
     )
-    op.create_index('ix_monitoring_shadow_alerts_fingerprint', 'monitoring_shadow_alerts', ['fingerprint'], unique=True)
-    op.create_index('ix_monitoring_shadow_alerts_rule_id', 'monitoring_shadow_alerts', ['rule_id'])
-    op.create_index('ix_monitoring_shadow_alerts_instance', 'monitoring_shadow_alerts', ['instance'])
+    g.create_index_if_missing(op, 'ix_monitoring_shadow_alerts_fingerprint', 'monitoring_shadow_alerts', ['fingerprint'], unique=True)
+    g.create_index_if_missing(op, 'ix_monitoring_shadow_alerts_rule_id', 'monitoring_shadow_alerts', ['rule_id'])
+    g.create_index_if_missing(op, 'ix_monitoring_shadow_alerts_instance', 'monitoring_shadow_alerts', ['instance'])
 
 def downgrade() -> None:
     op.drop_index('ix_monitoring_shadow_alerts_instance', table_name='monitoring_shadow_alerts')
     op.drop_index('ix_monitoring_shadow_alerts_rule_id', table_name='monitoring_shadow_alerts')
     op.drop_index('ix_monitoring_shadow_alerts_fingerprint', table_name='monitoring_shadow_alerts')
-    op.drop_table('monitoring_shadow_alerts')
+    g.drop_table_if_exists(op, 'monitoring_shadow_alerts')

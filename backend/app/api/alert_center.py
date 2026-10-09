@@ -54,6 +54,7 @@ class ActiveAlertItem(BaseModel):
     acknowledged: bool = False
     acknowledged_by: str = ""
     acknowledged_at: str = ""
+    acknowledged_note: str = ""
 
 
 
@@ -98,12 +99,18 @@ class SilenceResponse(BaseModel):
     message: str
 
 
+class AcknowledgeRequest(BaseModel):
+    """认领告警请求：可附处理备注（做了什么/如何跟进），形成处理闭环。"""
+    note: str = ""
+
+
 class AcknowledgeResponse(BaseModel):
     """确认告警响应。"""
     fingerprint: str
     acknowledged: bool
     acknowledged_by: str
     acknowledged_at: str
+    note: str = ""
 
 
 class TestFireRequest(BaseModel):
@@ -453,6 +460,7 @@ def get_active_alerts(
             "acknowledged": bool(acknowledgement),
             "acknowledged_by": str(acknowledgement.get("acknowledged_by") or ""),
             "acknowledged_at": str(acknowledgement.get("acknowledged_at") or ""),
+            "acknowledged_note": str(acknowledgement.get("note") or ""),
         })
 
     return {"alerts": alerts, "total": len(alerts)}
@@ -461,12 +469,13 @@ def get_active_alerts(
 @router.post("/{fingerprint}/acknowledge", response_model=AcknowledgeResponse)
 def acknowledge_alert(
     fingerprint: str,
+    payload: AcknowledgeRequest | None = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(
         require_permissions("module.monitoring.rules", "action.monitoring.rules.manage")
     ),
 ):
-    """确认一条仍处于活跃状态的告警。"""
+    """认领一条仍处于活跃状态的告警，可附处理备注（做了什么/如何跟进）。"""
     alert = db.query(MonitoringActiveAlert).filter(
         MonitoringActiveAlert.fingerprint == fingerprint
     ).first()
@@ -475,10 +484,12 @@ def acknowledge_alert(
 
     acknowledged_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     acknowledged_by = str(current_user.name or current_user.username or "未知用户")
+    note = str((payload.note if payload else "") or "").strip()[:500]
     acknowledgements = _read_acknowledgements(db)
     acknowledgements[fingerprint] = {
         "acknowledged_by": acknowledged_by,
         "acknowledged_at": acknowledged_at,
+        "note": note,
     }
     _save_acknowledgements(db, acknowledgements)
     return {
@@ -486,7 +497,25 @@ def acknowledge_alert(
         "acknowledged": True,
         "acknowledged_by": acknowledged_by,
         "acknowledged_at": acknowledged_at,
+        "note": note,
     }
+
+
+@router.post("/{fingerprint}/unacknowledge")
+def unacknowledge_alert(
+    fingerprint: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(
+        require_permissions("module.monitoring.rules", "action.monitoring.rules.manage")
+    ),
+):
+    """释放认领：告警回到未认领状态（换人接手或误操作时用）。"""
+    acknowledgements = _read_acknowledgements(db)
+    if fingerprint not in acknowledgements:
+        raise HTTPException(status_code=404, detail="该告警未被认领")
+    del acknowledgements[fingerprint]
+    _save_acknowledgements(db, acknowledgements)
+    return {"fingerprint": fingerprint, "acknowledged": False}
 
 
 

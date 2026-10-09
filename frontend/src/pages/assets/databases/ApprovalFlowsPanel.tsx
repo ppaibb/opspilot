@@ -107,7 +107,7 @@ export function ApprovalFlowsTab() {
         </Col>
       </Row>
       <Alert type="info" showIcon style={{ marginTop: 12 }}
-        message="审批链从上到下逐级流转：每一级只有该角色且具备审批权限的用户能审批，批准后自动流向下一级；任一级驳回即终止。提交人不能审批自己的工单（管理员角色豁免）。配置变更不影响已提交的在途工单。" />
+        message="提交人不能审批自己的工单（管理员角色豁免）；配置变更不影响已提交的在途审批单。" />
     </Card>
   )
 }

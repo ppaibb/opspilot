@@ -83,6 +83,12 @@ body {
 .alert-row-critical > td:first-child {
   box-shadow: inset 3px 0 0 var(--danger, #dc2626);
 }
+
+/* 集群详情：搜索跳转 / 概览下钻定位到的目标行（URL 上的 focus 参数） */
+.cluster-row-focused > td {
+  background: color-mix(in srgb, var(--warn, #d97706) 18%, transparent);
+  transition: background 0.3s ease;
+}
 .sider-menu-scroll::-webkit-scrollbar {
   width: 6px;
 }

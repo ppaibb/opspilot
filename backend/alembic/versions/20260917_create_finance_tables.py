@@ -6,6 +6,7 @@ Create Date: 2026-09-17
 
 """
 from alembic import op
+from app import alembic_guards as g
 import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
@@ -16,7 +17,7 @@ depends_on = None
 
 
 def upgrade():
-    op.create_table(
+    g.create_table_if_missing(op, 
         'cloud_accounts',
         sa.Column('id', sa.Integer(), primary_key=True, autoincrement=True),
         sa.Column('name', sa.String(100), nullable=False, comment='账号显示名'),
@@ -31,7 +32,7 @@ def upgrade():
         comment='费用管理云账号表',
     )
 
-    op.create_table(
+    g.create_table_if_missing(op, 
         'cloud_bills',
         sa.Column('id', sa.Integer(), primary_key=True, autoincrement=True),
         sa.Column('account_id', sa.Integer(), nullable=False, comment='关联 cloud_accounts.id'),
@@ -62,11 +63,11 @@ def upgrade():
         sa.UniqueConstraint('account_id', 'billing_date', 'dedup_key', name='uq_cloud_bill_dedup'),
         comment='云账单明细表',
     )
-    op.create_index('idx_cloud_bills_cycle', 'cloud_bills', ['account_id', 'billing_cycle'])
-    op.create_index('idx_cloud_bills_product', 'cloud_bills', ['billing_cycle', 'product_code'])
-    op.create_index('idx_cloud_bills_date', 'cloud_bills', ['billing_date'])
+    g.create_index_if_missing(op, 'idx_cloud_bills_cycle', 'cloud_bills', ['account_id', 'billing_cycle'])
+    g.create_index_if_missing(op, 'idx_cloud_bills_product', 'cloud_bills', ['billing_cycle', 'product_code'])
+    g.create_index_if_missing(op, 'idx_cloud_bills_date', 'cloud_bills', ['billing_date'])
 
-    op.create_table(
+    g.create_table_if_missing(op, 
         'bill_sync_runs',
         sa.Column('id', sa.Integer(), primary_key=True, autoincrement=True),
         sa.Column('account_id', sa.Integer(), nullable=False, comment='关联 cloud_accounts.id'),
@@ -79,10 +80,10 @@ def upgrade():
         sa.Column('finished_at', sa.String(50), server_default='', comment='结束时间'),
         comment='账单同步执行记录表',
     )
-    op.create_index('idx_bill_sync_runs_account', 'bill_sync_runs', ['account_id'])
+    g.create_index_if_missing(op, 'idx_bill_sync_runs_account', 'bill_sync_runs', ['account_id'])
 
 
 def downgrade():
-    op.drop_table('bill_sync_runs')
-    op.drop_table('cloud_bills')
-    op.drop_table('cloud_accounts')
+    g.drop_table_if_exists(op, 'bill_sync_runs')
+    g.drop_table_if_exists(op, 'cloud_bills')
+    g.drop_table_if_exists(op, 'cloud_accounts')

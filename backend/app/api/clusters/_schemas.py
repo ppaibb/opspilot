@@ -22,15 +22,20 @@ class ClusterResponse(BaseModel):
         from_attributes = True
 
 class ClusterCreate(BaseModel):
+    """纳管请求。
+
+    version/水位数字一律可空：探测失败、用户不知道或不想填都不能挡住纳管
+    （纳管后可用「刷新」重新探测回填，见 refresh 端点）。
+    """
     name: str
     provider: str
-    version: str
-    node_count: int
-    pod_capacity: int
-    pod_usage: int
-    cpu_cores: int
-    mem_gb: int
-    kubeconfig_ref: str
+    version: str = ""
+    node_count: int = 0
+    pod_capacity: int = 0
+    pod_usage: int = 0
+    cpu_cores: int = 0
+    mem_gb: int = 0
+    kubeconfig_ref: str = "managed"
     kubeconfig_yaml: Optional[str] = None  # 原始 YAML 用于物理落盘
 
 class KubeScanRequest(BaseModel):

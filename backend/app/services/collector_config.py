@@ -299,6 +299,9 @@ def _render_log_sections(
         # 不再 tail /var/lib/docker/containers/*/*-json.log。
         # 前置条件：Alloy 进程可读 unix:///var/run/docker.sock。
         # Alloy 1.16.3 的 loki.source.docker 必填 targets，需先 discovery.docker。
+        # 标签设计（对齐监控栈内置采集与日志页 host/service/job/level 筛选）：
+        # service ← 容器名（relabel __meta_docker_container_name），
+        # level ← 从日志行解析（默认 INFO），job 固定 "container"。
         source_names.append("docker_containers")
         label_lines = [f"    {key} = {_quote(value)}," for key, value in labels.items()]
         sections.append(
@@ -308,14 +311,39 @@ def _render_log_sections(
                     '  host = "unix:///var/run/docker.sock"',
                     "}",
                     "",
+                    'discovery.relabel "docker_containers" {',
+                    "  targets = discovery.docker.docker_containers.targets",
+                    "",
+                    "  rule {",
+                    '    source_labels = ["__meta_docker_container_name"]',
+                    '    regex         = "/(.*)"',
+                    '    target_label  = "service"',
+                    "  }",
+                    "}",
+                    "",
+                    'loki.process "docker_containers" {',
+                    '  stage.template {',
+                    '    source   = "level"',
+                    '    template = "INFO"',
+                    "  }",
+                    '  stage.regex {',
+                    '    expression = "\\\\b(?P<level>DEBUG|INFO|NOTICE|WARN|WARNING|ERROR|ERR|CRIT|CRITICAL|FATAL|PANIC)\\\\b"',
+                    "  }",
+                    '  stage.labels {',
+                    '    values = { level = "" }',
+                    "  }",
+                    "",
+                    "  forward_to = [loki.write.victorialogs.receiver]",
+                    "}",
+                    "",
                     'loki.source.docker "docker_containers" {',
                     '  host = "unix:///var/run/docker.sock"',
-                    "  targets = discovery.docker.docker_containers.targets",
+                    "  targets = discovery.relabel.docker_containers.output",
                     "  labels = {",
                     '    job = "container",',
                     *label_lines,
                     "  }",
-                    "  forward_to = [loki.write.victorialogs.receiver]",
+                    "  forward_to = [loki.process.docker_containers.receiver]",
                     "}",
                 ]
             )

@@ -468,13 +468,6 @@ export default function AlertRulesPage() {
               />
             )}
 
-            <SideCard title="说明">
-              <Text type="secondary" style={{ fontSize: 12 }}>
-                字段契约 name/duration。行内 Switch 即可启停；「测试命中」对表达式即时试跑并列出命中序列。
-                悬停表达式可看全文。保存前也可在抽屉里「命中预览」。
-              </Text>
-            </SideCard>
-
             {rowTest && (
               <Card size="small" title={`测试命中 · ${rowTest.name}`}>
                 {rowTest.loading ? (
@@ -693,9 +686,6 @@ export default function AlertRulesPage() {
             <Text strong>④ 命中预览</Text>
             <div style={{ marginTop: 8 }}>
               {previewing && <Spin size="small" tip="试跑中..." />}
-              {!previewing && !preview && (
-                <Text type="secondary">保存前点「命中预览」，用当前 expression 即时评估并列出命中序列。</Text>
-              )}
               {!previewing && preview && !preview.ok && (
                 <Alert type="error" showIcon message="预览失败" description={preview.error || '表达式无法评估'} />
               )}

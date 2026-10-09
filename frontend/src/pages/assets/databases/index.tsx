@@ -13,14 +13,15 @@
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
-  Tabs, Flex, Space, Alert, Badge, Card, Row, Col, Statistic,
+  Tabs, Flex, Space, Alert, Badge, Button,
 } from 'antd'
 import {
-  PlayCircleOutlined, DatabaseOutlined, FileTextOutlined, SearchOutlined,
-  SafetyCertificateOutlined, ExclamationCircleOutlined, KeyOutlined, NodeIndexOutlined,
+  DatabaseOutlined, FileTextOutlined, SearchOutlined,
+  SafetyCertificateOutlined, KeyOutlined, NodeIndexOutlined,
   ThunderboltOutlined,
 } from '@ant-design/icons'
 import { dbApi } from '@/api'
+import { usePermission } from '@/hooks/usePermission'
 import { TICKET_FETCH_LIMIT } from './types'
 import { TicketsTab } from './TicketsPanel'
 import { QueryTab } from './QueryPanel'
@@ -47,7 +48,6 @@ export default function DatabasesPage() {
   const [keyword, setKeyword] = useState('')
 
   const pendingCount = useMemo(() => allTickets.filter((t) => t.status === 'pending').length, [allTickets])
-  const approvedCount = useMemo(() => allTickets.filter((t) => t.status === 'approved').length, [allTickets])
   const scheduledCount = useMemo(
     () => allTickets.filter((t) => t.status === 'approved' && t.execute_after).length,
     [allTickets],
@@ -81,56 +81,13 @@ export default function DatabasesPage() {
     </Space>
   )
 
+  // 管理类 Tab（查询授权/数据源/审批流/审核规则）仅 action.db.manage 可见；
+  // 普通用户（submit）只见 工作台/SQL 工单/自助查询。后端各路由本就分权强制。
+  const { has } = usePermission()
+  const canManage = has('action.db.manage')
+
   return (
     <Flex vertical gap={12} style={{ height: '100%', paddingBottom: tab === 'home' ? 24 : 0 }}>
-      {/* 统计只在工作台；其它 Tab 把纵向空间全给工作区 */}
-      {tab === 'home' && (
-        <Row gutter={[16, 16]}>
-          <Col xs={12} sm={6}>
-            <Card size="small" styles={{ body: { padding: '12px 16px' } }} onClick={() => setTab('instances')} style={{ cursor: 'pointer' }}>
-              <Statistic
-                title={<span style={{ fontSize: 13, color: '#8c8c8c' }}>数据源</span>}
-                value={instances.length}
-                prefix={<DatabaseOutlined style={{ color: '#1677ff', marginRight: 6 }} />}
-                valueStyle={{ fontWeight: 600, fontSize: 20 }}
-              />
-            </Card>
-          </Col>
-          <Col xs={12} sm={6}>
-            <Card size="small" styles={{ body: { padding: '12px 16px' } }} onClick={() => setTab('instances')} style={{ cursor: 'pointer' }}>
-              <Statistic
-                title={<span style={{ fontSize: 13, color: '#8c8c8c' }}>连接异常</span>}
-                value={errorInstanceCount}
-                prefix={<ExclamationCircleOutlined style={{ color: '#ff4d4f', marginRight: 6 }} />}
-                valueStyle={{ fontWeight: 600, fontSize: 20, color: errorInstanceCount > 0 ? '#ff4d4f' : 'inherit' }}
-              />
-            </Card>
-          </Col>
-          <Col xs={12} sm={6}>
-            <Card size="small" styles={{ body: { padding: '12px 16px' } }} onClick={() => jumpToTickets('pending')} style={{ cursor: 'pointer' }}>
-              <Statistic
-                title={<span style={{ fontSize: 13, color: '#8c8c8c' }}>待审批</span>}
-                value={pendingCount}
-                suffix={<span style={{ fontSize: 14 }}>张</span>}
-                prefix={<SafetyCertificateOutlined style={{ color: '#faad14', marginRight: 6 }} />}
-                valueStyle={{ fontWeight: 600, fontSize: 20, color: pendingCount > 0 ? '#faad14' : 'inherit' }}
-              />
-            </Card>
-          </Col>
-          <Col xs={12} sm={6}>
-            <Card size="small" styles={{ body: { padding: '12px 16px' } }} onClick={() => jumpToTickets('approved')} style={{ cursor: 'pointer' }}>
-              <Statistic
-                title={<span style={{ fontSize: 13, color: '#8c8c8c' }}>待执行</span>}
-                value={approvedCount}
-                suffix={<span style={{ fontSize: 14 }}>张</span>}
-                prefix={<PlayCircleOutlined style={{ color: '#1677ff', marginRight: 6 }} />}
-                valueStyle={{ fontWeight: 600, fontSize: 20 }}
-              />
-            </Card>
-          </Col>
-        </Row>
-      )}
-
       <Tabs
         activeKey={tab}
         onChange={setTab}
@@ -165,18 +122,33 @@ export default function DatabasesPage() {
             ),
           },
           { key: 'query', label: tabLabel(<SearchOutlined />, '自助查询'), children: <QueryTab instances={instances} /> },
-          { key: 'grants', label: tabLabel(<KeyOutlined />, '查询授权'), children: <GrantsTab instances={instances} /> },
-          {
-            key: 'instances',
-            label: tabLabel(<DatabaseOutlined />, '数据源'),
-            children: <InstancesTab instances={instances} loading={instancesLoading} refetch={() => refetchInstances()} />,
-          },
-          { key: 'flows', label: tabLabel(<NodeIndexOutlined />, '审批流'), children: <ApprovalFlowsTab /> },
-          { key: 'rules', label: tabLabel(<SafetyCertificateOutlined />, '审核规则'), children: <AuditRulesTab /> },
+          ...(canManage
+            ? [
+                { key: 'grants', label: tabLabel(<KeyOutlined />, '查询授权'), children: <GrantsTab instances={instances} /> },
+                {
+                  key: 'instances',
+                  label: tabLabel(<DatabaseOutlined />, '数据源'),
+                  children: <InstancesTab instances={instances} loading={instancesLoading} refetch={() => refetchInstances()} />,
+                },
+                { key: 'flows', label: tabLabel(<NodeIndexOutlined />, '审批流'), children: <ApprovalFlowsTab /> },
+                { key: 'rules', label: tabLabel(<SafetyCertificateOutlined />, '审核规则'), children: <AuditRulesTab /> },
+              ]
+            : []),
         ]}
       />
+
+      {/* 数据源异常只在出问题时出现（概览卡去重后的保留项，模式同下方定时提示） */}
+      {errorInstanceCount > 0 && (
+        <Alert
+          type="error"
+          showIcon
+          message={`${errorInstanceCount} 个数据源连接异常，提单/执行会失败`}
+          action={canManage ? <Button size="small" onClick={() => setTab('instances')}>去查看</Button> : undefined}
+        />
+      )}
+
       {scheduledCount > 0 && (
-        <Alert type="info" showIcon style={{ marginTop: 12 }}
+        <Alert type="info" showIcon
           message={`当前有 ${scheduledCount} 张已批准工单等待定时执行（由系统在设定时间自动执行，无需人工干预）`}
         />
       )}

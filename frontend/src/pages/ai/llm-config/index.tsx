@@ -227,7 +227,7 @@ export default function LLMConfigPage() {
         <Alert
           type="warning" showIcon style={{ marginBottom: 16 }}
           message="尚无激活配置"
-          description="AI 问答将使用环境变量兜底配置。选中一条配置点击「激活」以固定运行时模型。"
+          description="AI 问答将使用环境变量兜底配置。"
         />
       )}
 

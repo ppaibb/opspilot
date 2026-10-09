@@ -7,10 +7,10 @@ import {
 import type { ColumnsType } from 'antd/es/table'
 import {
   PlusOutlined, ReloadOutlined, SearchOutlined,
-  EditOutlined, LockOutlined, UserOutlined,
+  EditOutlined, LockOutlined, UserOutlined, DeleteOutlined,
 } from '@ant-design/icons'
 import { usersApi, rbacApi } from '@/api'
-import { useRiskConfirm } from '@/hooks/usePermission'
+import { useRiskConfirm, extractAxiosDetail, fetchRiskTicket } from '@/hooks/usePermission'
 import type { UserResponse, UserCreateRequest, UserAccessUpdate } from '@/types/api'
 
 const { Text } = Typography
@@ -91,6 +91,24 @@ export default function UsersPage() {
     },
     onError: () => message.error('重置失败'),
   })
+
+  const deleteMut = useMutation({
+    mutationFn: ({ id, ticket }: { id: number; ticket: string }) => usersApi.delete(id, ticket),
+    onSuccess: (d: { message?: string }) => {
+      queryClient.invalidateQueries({ queryKey: ['users'] })
+      message.success(d?.message || '用户已删除')
+    },
+    onError: (err: unknown) => message.error(extractAxiosDetail(err) ?? '删除失败'),
+  })
+
+  const handleDelete = (u: UserResponse) => {
+    // 删除用户是高危动作（users:delete，high）：riskConfirm 先弹二次确认再取一次性票据
+    confirm(
+      'users:delete',
+      () => { fetchRiskTicket('users:delete').then((ticket) => deleteMut.mutate({ id: u.id, ticket })) },
+      `确定要删除用户「${u.username}」吗？删除后该账号无法登录，历史审计记录以用户名保留。`,
+    )
+  }
 
   const filtered = users.filter((u) =>
     !search ||
@@ -184,6 +202,9 @@ export default function UsersPage() {
               onChange={() => handleToggleStatus(r)}
               loading={statusMut.isPending}
             />
+          </Tooltip>
+          <Tooltip title="删除用户（高危）">
+            <Button size="small" danger icon={<DeleteOutlined />} loading={deleteMut.isPending} onClick={() => handleDelete(r)} />
           </Tooltip>
         </Space>
       ),

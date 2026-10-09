@@ -9,7 +9,7 @@ class ApplicationApiSplitContractTest(unittest.TestCase):
     """验证应用中心路由入口保持轻量，具体业务路由已拆到子模块。"""
 
     def test_api_entrypoint_is_not_a_monolith(self) -> None:
-        root = Path(__file__).resolve().parent
+        root = Path(__file__).resolve().parents[1]
         entrypoint = root / "app" / "api" / "applications.py"
 
         self.assertLessEqual(

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from alembic import op
+from app import alembic_guards as g
 import sqlalchemy as sa
 
 
@@ -13,7 +14,7 @@ depends_on = None
 
 def upgrade() -> None:
     """Apply schema changes."""
-    op.add_column(
+    g.add_column_if_missing(op, 
         'assets',
         sa.Column(
             'disks_json',
@@ -27,4 +28,4 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     """Rollback schema changes."""
-    op.drop_column('assets', 'disks_json')
+    g.drop_column_if_exists(op, 'assets', 'disks_json')

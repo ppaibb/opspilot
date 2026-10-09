@@ -115,7 +115,7 @@ export default function NotificationBell() {
         <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无通知" style={{ padding: '32px 0' }} />
       ) : (
         <List
-          style={{ maxHeight: 400, overflow: 'auto' }}
+          style={{ maxHeight: 400, overflowY: 'auto', overflowX: 'hidden' }}
           dataSource={items.slice(0, 20)}
           renderItem={(n) => (
             <List.Item
@@ -143,16 +143,17 @@ export default function NotificationBell() {
               <List.Item.Meta
                 avatar={TYPE_ICON[n.type]}
                 title={
-                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
-                    <Space size={4}>
+                  // minWidth:0 让标题列在 flex 里可收缩，配 ellipsis 防止长标题把面板撑出横向滚动条
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, minWidth: 0 }}>
+                    <Space size={4} style={{ minWidth: 0, flex: 1, overflow: 'hidden' }}>
                       <Text style={{ fontSize: 13 }} ellipsis>{n.title}</Text>
                       {n.category && (
-                        <Tag style={{ marginInlineEnd: 0, fontSize: 11 }}>
+                        <Tag style={{ marginInlineEnd: 0, fontSize: 11, flexShrink: 0 }}>
                           {CATEGORY_LABEL[n.category] ?? n.category}
                         </Tag>
                       )}
                     </Space>
-                    <Text type="secondary" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>{timeAgo(n.createdAt)}</Text>
+                    <Text type="secondary" style={{ fontSize: 12, whiteSpace: 'nowrap', flexShrink: 0 }}>{timeAgo(n.createdAt)}</Text>
                   </div>
                 }
                 description={n.content && <Text type="secondary" style={{ fontSize: 12 }} ellipsis>{n.content}</Text>}

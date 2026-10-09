@@ -7,7 +7,7 @@
  *
  * 预置常用模板（Deployment/Service/Ingress/ConfigMap）降低上手成本。
  */
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import axios from 'axios'
 import {
@@ -101,14 +101,30 @@ interface Props {
 }
 
 export default function ClusterYamlWorkbench({ open, clusterId, clusterName, onClose }: Props) {
-  const { message } = App.useApp()
+  const { message, modal } = App.useApp()
   const { has } = usePermission()
   const riskConfirm = useRiskConfirm()
   const [yamlText, setYamlText] = useState('')
   const [dryRunResult, setDryRunResult] = useState<DryRunResult | null>(null)
+  // 用 ref 跟踪"有未保存内容"：apply 成功后同步清空再 onClose，
+  // 若读 state 会拿到尚未重渲染的旧值，误弹关闭确认。
+  const dirtyRef = useRef(false)
 
   // 集群写操作权限键（backend/app/core/rbac.py: action.assets.clusters.manage）
   const canManage = has('action.assets.clusters.manage')
+
+  const clearAll = () => { dirtyRef.current = false; setYamlText(''); setDryRunResult(null) }
+
+  /** 关闭前拦截：有内容时确认一次，避免误点遮罩白填一场。 */
+  const handleClose = () => {
+    if (!dirtyRef.current) { onClose(); return }
+    modal.confirm({
+      title: '关闭 YAML 工作台？',
+      content: '已填写的内容不会保留，确认关闭？',
+      okText: '关闭', okButtonProps: { danger: true }, cancelText: '继续编辑',
+      onOk: () => { dirtyRef.current = false; onClose() },
+    })
+  }
 
   const dryRunMutation = useMutation({
     mutationFn: () => clusterOpsApi.dryRun(clusterId, yamlText),
@@ -123,10 +139,11 @@ export default function ClusterYamlWorkbench({ open, clusterId, clusterName, onC
   const applyMutation = useMutation({
     mutationFn: () => clusterOpsApi.apply(clusterId, yamlText),
     onSuccess: () => {
-      message.success('YAML 已应用到集群')
-      onClose()
+      dirtyRef.current = false
       setYamlText('')
       setDryRunResult(null)
+      message.success('YAML 已应用到集群')
+      onClose()
     },
     onError: (error: unknown) => message.error(errorDetail(error, '应用失败')),
   })
@@ -137,7 +154,8 @@ export default function ClusterYamlWorkbench({ open, clusterId, clusterName, onC
     <Modal
       title={`YAML 工作台${clusterName ? ` - ${clusterName}` : ''}`}
       open={open}
-      onCancel={onClose}
+      onCancel={handleClose}
+      maskClosable={false}
       width={860}
       footer={
         <Space>
@@ -154,12 +172,13 @@ export default function ClusterYamlWorkbench({ open, clusterId, clusterName, onC
               icon={<RocketOutlined />}
               loading={applyMutation.isPending}
               disabled={!canApply || !canManage}
-              onClick={() => riskConfirm.confirm('clusters:apply', () => applyMutation.mutate())}
+              onClick={() => riskConfirm.confirm('clusters:apply', () => applyMutation.mutate(),
+                `将把当前 YAML 通过 server-side apply 写入集群${clusterName ? ` ${clusterName}` : ''}，同名资源将被覆盖`)}
             >
               应用到集群
             </Button>
           </Tooltip>
-          <Button icon={<ClearOutlined />} onClick={() => { setYamlText(''); setDryRunResult(null) }}>清空</Button>
+          <Button icon={<ClearOutlined />} onClick={clearAll}>清空</Button>
         </Space>
       }
     >
@@ -170,11 +189,11 @@ export default function ClusterYamlWorkbench({ open, clusterId, clusterName, onC
             key,
             label: key === 'deployment' ? '模板：Deployment' : key === 'service' ? '模板：Service' : '模板：Namespace',
           }))}
-          onChange={(key) => setYamlText(TEMPLATES[key] || '')}
+          onChange={(key) => { dirtyRef.current = true; setYamlText(TEMPLATES[key] || ''); setDryRunResult(null) }}
         />
         <Input.TextArea
           value={yamlText}
-          onChange={(e) => { setYamlText(e.target.value); setDryRunResult(null) }}
+          onChange={(e) => { dirtyRef.current = true; setYamlText(e.target.value); setDryRunResult(null) }}
           rows={14}
           spellCheck={false}
           placeholder={'粘贴 Kubernetes YAML（支持多文档，--- 分隔，单次最多 20 个文档）\n\n先「试运行」校验，通过后才能「应用」。'}

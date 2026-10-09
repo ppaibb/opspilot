@@ -1,6 +1,16 @@
 import { useState, useCallback, useEffect, useMemo, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+
+/** 搜索输入防抖：避免每敲一个字符就打一次分页接口 */
+function useDebouncedValue<T>(value: T, delayMs: number): T {
+  const [debounced, setDebounced] = useState(value)
+  useEffect(() => {
+    const timer = setTimeout(() => setDebounced(value), delayMs)
+    return () => clearTimeout(timer)
+  }, [value, delayMs])
+  return debounced
+}
 import {
   Table, Button, Space, Input, Tag, Drawer, Form, Select, InputNumber, App, Tooltip,
   Badge, Flex, Alert, Dropdown, Popover, Popconfirm, Empty, Segmented, Modal, Descriptions, Radio,
@@ -139,6 +149,52 @@ export default function HostsPage() {
       return anyCollecting ? 2000 : false
     },
   })
+
+  // ── 服务端分页/筛选（2026-10-05 迁移）──
+  // search/status/source/group 四个维度下沉到 SQL；configFilter（采集状态）是前端态，
+  // 留在本地叠加。8 台规模无感，数百台时表格主链路不再全量拉取。
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(20)
+  const debouncedSearch = useDebouncedValue(search, 300)
+  const serverStatus = statusFilter === 'all' ? '' : statusFilter === 'online' ? 'healthy' : 'offline'
+  // 当前服务端筛选参数（导出全量、分页取数共用）
+  const serverFilterParams = useMemo(() => ({
+    q: debouncedSearch || undefined,
+    status: serverStatus || undefined,
+    source: sourceFilter || undefined,
+    group_id: groupFilter ?? undefined,
+  }), [debouncedSearch, serverStatus, sourceFilter, groupFilter])
+  const { data: paged, isLoading: loadingPaged, isFetching } = useQuery({
+    // key 挂在 ['assets', ...] 前缀下：任何 ['assets'] 失效（增删改）自动刷新本页
+    queryKey: ['assets', 'paged', debouncedSearch, serverStatus, sourceFilter, groupFilter, page, pageSize],
+    queryFn: () => assetsApi.listPaged({
+      limit: pageSize,
+      offset: (page - 1) * pageSize,
+      ...serverFilterParams,
+    }),
+    placeholderData: (prev) => prev, // 翻页时保留旧数据避免闪空
+  })
+  const filtered = useMemo(
+    () => (paged?.items ?? []).filter((a) => !configFilter
+      || (configFilter === 'collecting' && (collectingIds.includes(a.id) || a.config_task_status === 'collecting'))
+      || (configFilter === 'failed' && a.config_task_status === 'failed')),
+    [paged, configFilter, collectingIds],
+  )
+  const pagedTotal = paged?.total ?? 0
+  // 服务端筛选变化时回第 1 页（直接挂在各 setter 的包装里，避免 effect 内同步 setState）
+  const changeSearch = useCallback((v: string) => { setSearch(v); setPage(1) }, [])
+  const changeStatusFilter = useCallback((v: 'all' | 'online' | 'offline') => { setStatusFilter(v); setPage(1) }, [])
+  const changeSourceFilter = useCallback((v: string | null) => { setSourceFilter(v); setPage(1) }, [])
+  const changeGroupFilter = useCallback((v: number | null) => { setGroupFilter(v); setPage(1) }, [])
+
+  // 导出/全选基于当前筛选的全量结果（导出时服务端拉取 limit=0 全量并叠加 configFilter 前端态）
+  const [exportLoading, setExportLoading] = useState(false)
+  const loadExportRows = useCallback(async (): Promise<AssetResponse[]> => {
+    const full = await assetsApi.listPaged({ limit: 0, offset: 0, ...serverFilterParams })
+    return full.items.filter((a) => !configFilter
+      || (configFilter === 'collecting' && (collectingIds.includes(a.id) || a.config_task_status === 'collecting'))
+      || (configFilter === 'failed' && a.config_task_status === 'failed'))
+  }, [serverFilterParams, configFilter, collectingIds])
   const { data: groups = [] }            = useQuery({ queryKey: ['groups'],  queryFn: groupsApi.list })
   const { data: credentials = [] }       = useQuery({ queryKey: ['credentials'], queryFn: credentialsApi.list })
   const { data: monTargets }             = useQuery({ queryKey: ['monitoring-targets'], queryFn: monitoringApi.targets, refetchInterval: 60000 })
@@ -304,19 +360,8 @@ export default function HostsPage() {
   const pendingCount = assets.filter((a) => a.type === 'pending').length
   const offlineCount = assets.filter((a) => a.type !== 'healthy' && a.type !== 'pending').length
 
-  // ── 筛选 ──
-  const filtered = assets.filter((a) => {
-    const matchSearch = !search || a.name.includes(search) || a.ip.includes(search)
-    const matchGroup  = groupFilter === null || a.group_id === groupFilter
-    const matchStatus = statusFilter === 'all'
-      || (statusFilter === 'online' && a.type === 'healthy')
-      || (statusFilter === 'offline' && a.type !== 'healthy')
-    const matchSource = !sourceFilter || a.provider === sourceFilter
-    const matchConfig = !configFilter
-      || (configFilter === 'collecting' && (collectingIds.includes(a.id) || a.config_task_status === 'collecting'))
-      || (configFilter === 'failed' && a.config_task_status === 'failed')
-    return matchSearch && matchGroup && matchStatus && matchSource && matchConfig
-  })
+  // ── 筛选 ──（search/group/status/source 已下沉服务端分页查询，见 assets-paged；
+  //   此处仅保留 configFilter 本地叠加，filtered 已在分页查询处定义）
 
   // 来源筛选候选（去重）
   const sourceOptions = useMemo(() => {
@@ -330,29 +375,36 @@ export default function HostsPage() {
     }, [])
   }, [assets])
 
-  // ── 导出 CSV ──
-  const handleExport = () => {
-    const headers = ['名称', 'IP地址', '来源', '分组', 'CPU(核)', '内存(GB)', '系统盘(GB)', '状态', '操作系统']
-    const rows = filtered.map((a) => [
-      a.name,
-      a.ip,
-      providerMeta(a.provider).label,
-      groups.find((g) => g.id === a.group_id)?.name || '未分组',
-      a.cpu_cores || '',
-      a.memory_gb || '',
-      a.system_disk_gb || '',
-      a.type === 'healthy' ? '在线' : '离线',
-      a.os || '',
-    ])
-    const csv = [headers, ...rows].map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(',')).join('\r\n')
-    const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `主机清单-${new Date().toISOString().slice(0, 10)}.csv`
-    a.click()
-    URL.revokeObjectURL(url)
-    message.success(`已导出 ${filtered.length} 台主机`)
+  // ── 导出 CSV ──（导出当前筛选的全量结果，异步拉取后生成）
+  const handleExport = async () => {
+    setExportLoading(true)
+    try {
+      const rows = await loadExportRows()
+      if (rows.length === 0) { message.warning('没有可导出的主机'); return }
+      const headers = ['名称', 'IP地址', '来源', '分组', 'CPU(核)', '内存(GB)', '系统盘(GB)', '状态', '操作系统']
+      const csvRows = rows.map((a) => [
+        a.name,
+        a.ip,
+        providerMeta(a.provider).label,
+        groups.find((g) => g.id === a.group_id)?.name || '未分组',
+        a.cpu_cores || '',
+        a.memory_gb || '',
+        a.system_disk_gb || '',
+        a.type === 'healthy' ? '在线' : '离线',
+        a.os || '',
+      ])
+      const csv = [headers, ...csvRows].map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(',')).join('\r\n')
+      const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8' })
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `主机清单-${new Date().toISOString().slice(0, 10)}.csv`
+      link.click()
+      URL.revokeObjectURL(url)
+      message.success(`已导出 ${rows.length} 台主机`)
+    } finally {
+      setExportLoading(false)
+    }
   }
 
   // 抽屉内展示的主机（随轮询自动更新，用于磁盘明细/采集状态）
@@ -790,7 +842,7 @@ export default function HostsPage() {
         <GroupSidebar
           resourceType="host"
           selectedGroupId={groupFilter}
-          onSelect={setGroupFilter}
+          onSelect={changeGroupFilter}
           selectedIds={selectedKeys}
         />
 
@@ -845,12 +897,12 @@ export default function HostsPage() {
               prefix={<SearchOutlined />}
               placeholder="搜索名称或 IP"
               value={search}
-              onChange={(e) => setSearch(e.target.value)}
+              onChange={(e) => changeSearch(e.target.value)}
               allowClear style={{ width: 220 }}
             />
             <Segmented
               value={statusFilter}
-              onChange={(v) => setStatusFilter(v as typeof statusFilter)}
+              onChange={(v) => changeStatusFilter(v as typeof statusFilter)}
               options={[
                 { label: '全部', value: 'all' },
                 { label: '在线', value: 'online' },
@@ -861,7 +913,7 @@ export default function HostsPage() {
               allowClear
               placeholder="来源"
               value={sourceFilter ?? undefined}
-              onChange={(v) => setSourceFilter(v ?? null)}
+              onChange={(v) => changeSourceFilter(v ?? null)}
               options={sourceOptions}
               style={{ width: 120 }}
             />
@@ -891,7 +943,7 @@ export default function HostsPage() {
                 </Button>
               </>
             )}
-            <Button icon={<DownloadOutlined />} onClick={handleExport} disabled={filtered.length === 0}>
+            <Button icon={<DownloadOutlined />} onClick={handleExport} loading={exportLoading} disabled={filtered.length === 0}>
               导出
             </Button>
             <Button icon={<CloudSyncOutlined />} onClick={openCloudSync}>云同步</Button>
@@ -905,7 +957,7 @@ export default function HostsPage() {
           rowSelection={rowSelection}
           columns={columns}
           dataSource={filtered}
-          loading={isLoading}
+          loading={isLoading || loadingPaged || isFetching}
           size="middle"
           scroll={{ x: 1070 }}
           locale={{
@@ -927,7 +979,14 @@ export default function HostsPage() {
               </Empty>
             ),
           }}
-          pagination={{ defaultPageSize: 20, showSizeChanger: true, showTotal: (t) => `共 ${t} 台主机` }}
+          pagination={{
+            current: page,
+            pageSize,
+            total: pagedTotal,
+            showSizeChanger: true,
+            showTotal: (t) => `共 ${t} 台主机`,
+            onChange: (p, s) => { setPage(p); setPageSize(s) },
+          }}
         />
 
         <Drawer

@@ -15,6 +15,7 @@ import {
 } from '@/hooks/usePermission'
 import type { K8sNode, K8sNodeDetail } from '@/types/api'
 import { statusTag } from './shared'
+import { useUrlFocus, focusRowClass } from './useTabParams'
 
 const { Text } = Typography
 
@@ -141,6 +142,7 @@ export default function NodesTab({ clusterId }: { clusterId: string }) {
     onError: (error: unknown) => message.error(extractAxiosDetail(error) ?? '排空失败'),
   })
 
+  const focus = useUrlFocus()
   const columns: ColumnsType<K8sNode> = [
     {
       title: '节点', dataIndex: 'name', width: 210, fixed: 'left',
@@ -193,7 +195,8 @@ export default function NodesTab({ clusterId }: { clusterId: string }) {
           ) : (
             <Button size="small" icon={<PauseCircleOutlined />} disabled={!canManage}
               loading={cordonMutation.isPending && cordonMutation.variables?.name === record.name}
-              onClick={() => riskConfirm.confirm('clusters:cordon', () => cordonMutation.mutate({ name: record.name, uncordon: false }))}>
+              onClick={() => riskConfirm.confirm('clusters:cordon', () => cordonMutation.mutate({ name: record.name, uncordon: false }),
+                `将把节点 ${record.name} 标记为不可调度：新 Pod 不再调度到该节点，已有 Pod 保持运行；如目的是下线节点，请改用「排空」`)}>
               停止调度
             </Button>
           )}
@@ -224,6 +227,7 @@ export default function NodesTab({ clusterId }: { clusterId: string }) {
         columns={columns}
         dataSource={nodes}
         loading={isLoading}
+        rowClassName={(r) => focusRowClass(focus, 'Node', '', r.name)}
         pagination={false}
         scroll={{ x: 1080 }}
       />
@@ -259,7 +263,8 @@ export default function NodesTab({ clusterId }: { clusterId: string }) {
             key="drain" type="primary" danger
             loading={drainMutation.isPending}
             disabled={loadingPreview || !drainPreview}
-            onClick={() => riskConfirm.confirm('clusters:drain', () => drainMutation.mutate(drainNode!.name))}
+            onClick={() => riskConfirm.confirm('clusters:drain', () => drainMutation.mutate(drainNode!.name),
+              `将驱逐节点 ${drainNode?.name} 上的 ${drainPreview?.total ?? 0} 个业务 Pod（DaemonSet 与镜像 Pod 跳过），驱逐期间相关服务可能只剩其余副本`)}
           >
             确认排空（{drainPreview?.total ?? '?'} 个 Pod）
           </Button>,

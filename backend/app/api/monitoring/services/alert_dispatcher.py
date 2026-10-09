@@ -10,6 +10,36 @@ import requests
 
 logger = logging.getLogger("opspilot.alert_dispatcher")
 
+# 重复日志节流：告警引擎每个评估周期（默认 30s）都会跑一遍 dispatch，
+# "未绑渠道/未满间隔/已达上限"这类常规跳过若每次都打 info 会把日志刷爆。
+# 这里按 key 做时间窗口内只打一次，进程重启后归零（可接受，只是日志）。
+_throttled_log_at: dict[str, datetime] = {}
+
+
+def _log_throttled(key: str, message: str, every_seconds: int = 3600) -> None:
+    """同一 key 在 every_seconds 窗口内只记录一次 info 日志。"""
+    now_ts = datetime.utcnow()
+    last = _throttled_log_at.get(key)
+    if last is not None and (now_ts - last).total_seconds() < every_seconds:
+        return
+    _throttled_log_at[key] = now_ts
+    logger.info(message)
+
+
+def _effective_reminder_interval_minutes(base_minutes: int, firing_age_hours: float) -> int:
+    """持续 firing 的告警按"告警年龄"升级重复提醒间隔，避免无限期匀速骚扰。
+
+    2 小时内用配置间隔；2-8 小时至少 2 小时一次；8-48 小时至少 8 小时一次；
+    48 小时以上至少 24 小时一次（一天最多提醒一次，直到恢复或停发）。
+    """
+    if firing_age_hours >= 48:
+        return max(base_minutes, 1440)
+    if firing_age_hours >= 8:
+        return max(base_minutes, 480)
+    if firing_age_hours >= 2:
+        return max(base_minutes, 120)
+    return base_minutes
+
 # 主事件循环句柄。由 app 启动时(lifespan)调用 set_main_event_loop 注入。
 # dispatch_active_alerts 可能在工作线程里被调用(告警引擎 runner 用 asyncio.to_thread,
 # 或 webhook 的 background_tasks 线程池),此时当前线程没有运行中的事件循环,
@@ -505,7 +535,8 @@ def dispatch_active_alerts(
             "send_resolved_global": True,
             "recovery_debounce_seconds": 60,
             "reminder_interval_minutes": 30,
-            "max_reminders_cap": 0
+            "max_reminders_cap": 0,
+            "reminder_max_age_hours": 168
         }
 
     from app.db.database import SessionLocal
@@ -593,7 +624,10 @@ def dispatch_active_alerts(
                     target_channel_ids = bound_channel_ids
 
             if not target_channel_ids and not im_user_ids:
-                logger.info(f"告警 [{alert_name}] ({instance}) 未绑定任何通知渠道/通知人且无全局兜底渠道，不发送通知。")
+                _log_throttled(
+                    f"no-channel:{alert_name}:{instance}",
+                    f"告警 [{alert_name}] ({instance}) 未绑定任何通知渠道/通知人且无全局兜底渠道，不发送通知。（同一告警 1 小时内只记一次）",
+                )
                 continue
 
             # 3. 构造规范化的时间（统一 UTC，与引擎/活动表一致）
@@ -651,14 +685,27 @@ def dispatch_active_alerts(
                         # 正常处于 firing 状态，检查是否需要发送重复提醒
                         reminder_interval_minutes = alert_settings.get("reminder_interval_minutes", 30)
                         max_reminders_cap = alert_settings.get("max_reminders_cap", 0)
+                        # 超过该时长仍未恢复的告警停止重复提醒（告警保留在中心，恢复通知不受影响）；0=不限制
+                        reminder_max_age_hours = alert_settings.get("reminder_max_age_hours", 168)
                         if active_rule:
                             reminder_interval_minutes = active_rule.get("reminder_interval_minutes", reminder_interval_minutes)
                             max_reminders_cap = active_rule.get("max_reminders_cap", max_reminders_cap)
-                        
+                            reminder_max_age_hours = active_rule.get("reminder_max_age_hours", reminder_max_age_hours)
+
                         last_notified = db_alert.last_notified_at or db_alert.first_seen_at
                         elapsed_seconds = (now - last_notified).total_seconds()
-                        
-                        if elapsed_seconds >= reminder_interval_minutes * 60:
+
+                        # 告警年龄 = 距首次触发的小时数，用于升级提醒间隔与停发判断
+                        first_seen_ref = db_alert.first_seen_at or last_notified or now
+                        firing_age_hours = max(0.0, (now - first_seen_ref).total_seconds()) / 3600.0
+
+                        if reminder_max_age_hours > 0 and firing_age_hours >= reminder_max_age_hours:
+                            _log_throttled(
+                                f"remind-expired:{fp}",
+                                f"告警 [{alert_name}] ({instance}) 已持续 {firing_age_hours:.0f} 小时未恢复，"
+                                f"超过最大重复提醒时长 {reminder_max_age_hours} 小时，停止重复通知（恢复通知仍会发送）。",
+                            )
+                        elif elapsed_seconds >= _effective_reminder_interval_minutes(reminder_interval_minutes, firing_age_hours) * 60:
                             if max_reminders_cap == 0 or db_alert.notification_count < max_reminders_cap:
                                 db_alert.last_notified_at = now
                                 db_alert.notification_count += 1
@@ -667,9 +714,14 @@ def dispatch_active_alerts(
                                 should_notify = True
                                 logger.info(f"告警 [{alert_name}] ({instance}) 触发重复通知，发送第 {db_alert.notification_count} 次。")
                             else:
-                                logger.info(f"告警 [{alert_name}] ({instance}) 已达最大通知次数 {max_reminders_cap}，跳过发送。")
+                                _log_throttled(
+                                    f"remind-capped:{fp}",
+                                    f"告警 [{alert_name}] ({instance}) 已达最大通知次数 {max_reminders_cap}，跳过发送。",
+                                )
                         else:
-                            logger.info(f"告警 [{alert_name}] ({instance}) 距离上次通知未满 {reminder_interval_minutes} 分钟，跳过发送。")
+                            # 常规"未满间隔"每 30s 评估周期都会走到，降为 debug 防止日志刷屏
+                            effective_interval = _effective_reminder_interval_minutes(reminder_interval_minutes, firing_age_hours)
+                            logger.debug(f"告警 [{alert_name}] ({instance}) 距离上次通知未满 {effective_interval} 分钟，跳过发送。")
 
                 if should_notify:
                     alert_data = {

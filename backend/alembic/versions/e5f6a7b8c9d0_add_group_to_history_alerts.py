@@ -8,6 +8,7 @@ Create Date: 2026-06-23 23:25:00.000000
 存量行 group 为空字符串(无法追溯历史分组),新归档行写入当时的 group。可逆。
 """
 from alembic import op
+from app import alembic_guards as g
 import sqlalchemy as sa
 
 revision = 'e5f6a7b8c9d0'
@@ -17,11 +18,11 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column(
+    g.add_column_if_missing(op, 
         'monitoring_history_alerts',
         sa.Column('group', sa.String(length=60), nullable=False, server_default=''),
     )
 
 
 def downgrade() -> None:
-    op.drop_column('monitoring_history_alerts', 'group')
+    g.drop_column_if_exists(op, 'monitoring_history_alerts', 'group')

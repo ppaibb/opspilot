@@ -8,6 +8,7 @@ from __future__ import annotations
 import sqlalchemy as sa
 
 from alembic import op
+from app import alembic_guards as g
 
 revision = "20260921_db_query_log_database"
 down_revision = "20260921_cert_renew_cooldown"
@@ -16,11 +17,11 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column(
+    g.add_column_if_missing(op, 
         "db_query_logs",
         sa.Column("database", sa.String(length=100), nullable=False, server_default=""),
     )
 
 
 def downgrade() -> None:
-    op.drop_column("db_query_logs", "database")
+    g.drop_column_if_exists(op, "db_query_logs", "database")

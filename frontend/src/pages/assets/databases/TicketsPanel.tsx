@@ -282,17 +282,20 @@ export function TicketsTab({
         </Space>
         <Space>
           <Button icon={<ReloadOutlined />} onClick={refetch}>刷新</Button>
-          <Button type="primary" icon={<PlusOutlined />} disabled={!canSubmit || instances.length === 0}
-            title={canSubmit ? undefined : '需要「SQL 工单提交」权限'}
-            onClick={() => { form.resetFields(); setSubmitOpen(true) }}>
-            提交工单
-          </Button>
+          {canSubmit && (
+            <Button type="primary" icon={<PlusOutlined />} disabled={instances.length === 0}
+              onClick={() => { form.resetFields(); setSubmitOpen(true) }}>
+              提交工单
+            </Button>
+          )}
         </Space>
       </Flex>
 
       {instances.length === 0 && (
         <Alert type="info" showIcon style={{ marginBottom: 12 }}
-          message="还没有数据源，请先到「数据源」Tab 添加数据库实例"
+          message={has('action.db.manage')
+            ? '还没有数据源，请先到「数据源」Tab 添加数据库实例'
+            : '还没有可用数据源，请联系管理员添加'}
         />
       )}
 
@@ -503,7 +506,7 @@ function SubmitTicketDrawer({
                   </Tooltip>
                 </Space>
               }
-              extra="分号分隔多语句；点右侧表名快速插入 `库`.`表`；提交即自动审核：DROP DATABASE/TABLE、TRUNCATE、无 WHERE 的 UPDATE/DELETE 会被直接拒绝"
+              extra="提交即自动审核：DROP DATABASE/TABLE、TRUNCATE、无 WHERE 的 UPDATE/DELETE 会被直接拒绝"
             >
               <Row gutter={12}>
                 <Col span={8}>

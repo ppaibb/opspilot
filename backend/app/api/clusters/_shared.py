@@ -814,6 +814,12 @@ def _preserve_secret_data_before_apply(dyn, doc: dict) -> str | None:
         doc["stringData"] = existing["stringData"]
     return None
 
+# server-side apply 的 fieldManager：apiserver 对 apply-patch 强制要求
+# （缺了直接 422 "fieldManager: Required value"），固定为一个稳定标识，
+# 同源重复 apply 不会因管理者不同而冲突。
+_SSA_FIELD_MANAGER = "opspilot"
+
+
 def _apply_single_doc(dyn, doc: dict, dry_run: bool = False) -> dict:
     """对单个文档执行 server-side apply。"""
     resource = _resolve_resource(dyn, doc)
@@ -843,7 +849,7 @@ def _apply_single_doc(dyn, doc: dict, dry_run: bool = False) -> dict:
     }
     body = {k: v for k, v in body.items() if v is not None}
     try:
-        kwargs = {"body": body}
+        kwargs = {"body": body, "field_manager": _SSA_FIELD_MANAGER}
         if dry_run:
             kwargs["dry_run"] = "All"
         if namespace:

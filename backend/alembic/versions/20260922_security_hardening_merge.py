@@ -17,6 +17,7 @@ from __future__ import annotations
 import sqlalchemy as sa
 
 from alembic import op
+from app import alembic_guards as g
 
 revision = "20260922_security_hardening_merge"
 down_revision = ("20260921_db_query_log_database", "65c930eb2160")
@@ -26,7 +27,7 @@ depends_on = None
 
 def upgrade() -> None:
     # ── 高危操作确认票据 ──
-    op.create_table(
+    g.create_table_if_missing(op, 
         "risk_ack_tickets",
         sa.Column("id", sa.String(length=36), nullable=False, comment="票据 UUID"),
         sa.Column("user_id", sa.Integer(), nullable=False, comment="签发给哪位用户"),
@@ -39,10 +40,10 @@ def upgrade() -> None:
         sa.Column("consumed_at", sa.String(length=30), nullable=True, comment="消费时间（一次性）"),
         sa.PrimaryKeyConstraint("id"),
     )
-    op.create_index("ix_risk_ack_tickets_user_id", "risk_ack_tickets", ["user_id"])
+    g.create_index_if_missing(op, "ix_risk_ack_tickets_user_id", "risk_ack_tickets", ["user_id"])
 
     # ── SSH 主机指纹钉扎 ──
-    op.create_table(
+    g.create_table_if_missing(op, 
         "asset_host_keys",
         sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
         sa.Column("host", sa.String(length=255), nullable=False, comment="主机地址"),
@@ -56,7 +57,7 @@ def upgrade() -> None:
     )
 
     # ── 后台任务租约 ──
-    op.create_table(
+    g.create_table_if_missing(op, 
         "task_leases",
         sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
         sa.Column("lease_key", sa.String(length=120), nullable=False, comment="任务租约键"),
@@ -66,10 +67,10 @@ def upgrade() -> None:
         sa.Column("expires_at", sa.String(length=30), nullable=False, comment="过期时间"),
         sa.PrimaryKeyConstraint("id"),
     )
-    op.create_index("ix_task_leases_lease_key", "task_leases", ["lease_key"], unique=True)
+    g.create_index_if_missing(op, "ix_task_leases_lease_key", "task_leases", ["lease_key"], unique=True)
 
     # ── 用户会话版本 ──
-    op.add_column(
+    g.add_column_if_missing(op, 
         "users",
         sa.Column("token_version", sa.Integer(), nullable=False, server_default=sa.text("0"),
                   comment="会话版本号，重置密码/禁用时递增使旧 JWT 失效"),
@@ -77,9 +78,9 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_column("users", "token_version")
+    g.drop_column_if_exists(op, "users", "token_version")
     op.drop_index("ix_task_leases_lease_key", table_name="task_leases")
-    op.drop_table("task_leases")
-    op.drop_table("asset_host_keys")
+    g.drop_table_if_exists(op, "task_leases")
+    g.drop_table_if_exists(op, "asset_host_keys")
     op.drop_index("ix_risk_ack_tickets_user_id", table_name="risk_ack_tickets")
-    op.drop_table("risk_ack_tickets")
+    g.drop_table_if_exists(op, "risk_ack_tickets")

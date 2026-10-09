@@ -27,6 +27,7 @@ import ClusterYamlWorkbench from '@/components/ClusterYamlWorkbench'
 import ClusterLiveFeed from '@/components/ClusterLiveFeed'
 import { statusTag } from './detail/shared'
 import { TAB_KEYS } from './detail/types'
+import { focusValue } from './detail/useTabParams'
 import OverviewTab from './detail/OverviewTab'
 import NodesTab from './detail/NodesTab'
 import WorkloadsTab from './detail/WorkloadsTab'
@@ -37,6 +38,9 @@ import AuditTab from './detail/AuditTab'
 import GlobalSearchBox from './detail/GlobalSearchBox'
 
 const { Text } = Typography
+
+/** 搜索结果可命中的负载类 Kind（其余搜索命中外落到资源浏览 Tab）。 */
+const WORKLOAD_KINDS = ['Deployment', 'StatefulSet', 'DaemonSet']
 
 // ───────────────────────── 页面主体 ─────────────────────────
 
@@ -69,8 +73,13 @@ export default function ClusterDetailPage() {
     .map((n) => n.name || n)
     .filter((v): v is string => typeof v === 'string')
 
-  const changeTab = (tab: string) => {
-    setSearchParams(tab === 'overview' ? {} : { tab }, { replace: false })
+  const changeTab = (tab: string, locate: Record<string, string> = {}) => {
+    // 筛选态全部走 URL：tab 之外的 ns/kind/q/focus 每次从零重建，
+    // 避免上一个 Tab 的筛选泄漏到下一个 Tab。
+    const params: Record<string, string> = {}
+    if (tab !== 'overview') params.tab = tab
+    for (const [k, v] of Object.entries(locate)) if (v) params[k] = v
+    setSearchParams(params, { replace: false })
   }
 
   const [yamlOpen, setYamlOpen] = useState(false)
@@ -104,15 +113,17 @@ export default function ClusterDetailPage() {
               {statusTag(cluster.status)}
             </Space>
             <Text type="secondary">
-              v{cluster.version} · {cluster.node_count} 节点 · Pod {cluster.pod_usage}/{cluster.pod_capacity} · {cluster.cpu_cores}C / {cluster.mem_gb}G
+              {cluster.version} · {cluster.node_count} 节点 · Pod {cluster.pod_usage}/{cluster.pod_capacity} · {cluster.cpu_cores}C / {cluster.mem_gb}G
             </Text>
           </Space>
         </Space>
         <Space>
-          <GlobalSearchBox clusterId={cluster.cluster_id} onNavigate={(_ns, kind) => {
-            // 搜索结果跳转：Pod → Pods Tab，其余 → 资源浏览 Tab。
-            if (kind === 'Pod') changeTab('pods')
-            else changeTab('resources')
+          <GlobalSearchBox clusterId={cluster.cluster_id} onNavigate={(ns, kind, name) => {
+            // 搜索跳转闭环：把 ns/kind/name 落到目标 Tab 的 URL 参数上并高亮目标行，
+            // 不再只切 Tab（否则跳过去看到的还是默认 Service 列表）。
+            if (kind === 'Pod') changeTab('pods', { ns, q: name, focus: focusValue('Pod', ns, name) })
+            else if (WORKLOAD_KINDS.includes(kind)) changeTab('workloads', { ns, kind, q: name, focus: focusValue(kind, ns, name) })
+            else changeTab('resources', { kind, ns, focus: focusValue(kind, ns, name) })
           }} />
           <Tooltip title="粘贴 YAML 部署任意资源（先试运行后应用）">
             <Button icon={<CodeOutlined />} disabled={!canManage} onClick={() => setYamlOpen(true)}>

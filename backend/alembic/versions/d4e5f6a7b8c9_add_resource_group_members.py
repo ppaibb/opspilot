@@ -12,6 +12,7 @@ assets.group_id 列保留(主机双写,兼容既有前端);本迁移只新增成
 可逆。
 """
 from alembic import op
+from app import alembic_guards as g
 import sqlalchemy as sa
 
 revision = 'd4e5f6a7b8c9'
@@ -21,7 +22,7 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.create_table(
+    g.create_table_if_missing(op, 
         'resource_group_members',
         sa.Column('id', sa.Integer(), primary_key=True, index=True),
         sa.Column('group_id', sa.Integer(), nullable=False, comment="所属分组ID(resource_groups.id)"),
@@ -31,9 +32,9 @@ def upgrade() -> None:
         sa.Column('updated_at', sa.DateTime(), nullable=True),
         sa.UniqueConstraint('resource_type', 'resource_id', name='uq_rgm_resource'),
     )
-    op.create_index('ix_resource_group_members_group_id', 'resource_group_members', ['group_id'])
-    op.create_index('ix_resource_group_members_resource_type', 'resource_group_members', ['resource_type'])
-    op.create_index('ix_resource_group_members_resource_id', 'resource_group_members', ['resource_id'])
+    g.create_index_if_missing(op, 'ix_resource_group_members_group_id', 'resource_group_members', ['group_id'])
+    g.create_index_if_missing(op, 'ix_resource_group_members_resource_type', 'resource_group_members', ['resource_type'])
+    g.create_index_if_missing(op, 'ix_resource_group_members_resource_id', 'resource_group_members', ['resource_id'])
 
     # 把现有主机分组关系搬入成员表
     op.execute(
@@ -62,4 +63,4 @@ def downgrade() -> None:
     op.drop_index('ix_resource_group_members_resource_id', table_name='resource_group_members')
     op.drop_index('ix_resource_group_members_resource_type', table_name='resource_group_members')
     op.drop_index('ix_resource_group_members_group_id', table_name='resource_group_members')
-    op.drop_table('resource_group_members')
+    g.drop_table_if_exists(op, 'resource_group_members')
