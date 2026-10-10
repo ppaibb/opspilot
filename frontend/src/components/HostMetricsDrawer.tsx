@@ -6,14 +6,14 @@ import { useNavigate } from 'react-router-dom'
 import { monitoringApi } from '@/api'
 import type { HostMetricPoint } from '@/types/api'
 import MetricChart from '@/components/monitoring/MetricChart'
-import { RANGE_OPTIONS } from '@/components/monitoring/chartTheme'
+import { CHART_COLORS, RANGE_OPTIONS } from '@/components/monitoring/chartTheme'
 import GrafanaLink from '@/components/monitoring/GrafanaLink'
 import EmptyState from '@/components/monitoring/EmptyState'
 
 const { Text } = Typography
 
-// Host 抽屉用的紧凑时间窗（子集，映射到共用 RANGE_OPTIONS）
-const DRAWER_RANGES = RANGE_OPTIONS.filter((r) => ['5m', '24h', '7d'].includes(r.value))
+// Host 抽屉用的时间窗：默认 1 小时（曲线即时可见），再看 24h/7d 趋势
+const DRAWER_RANGES = RANGE_OPTIONS.filter((r) => ['5m', '1h', '24h', '7d'].includes(r.value))
 
 interface Props {
   open: boolean
@@ -22,9 +22,32 @@ interface Props {
   onClose: () => void
 }
 
+/** 白底图卡：标题行 + 图表体。minWidth:0 防 grid 列被 nowrap 口径文本撑爆溢出。 */
+function ChartCard({ title, color, children, wide = false }: { title: string; color: string; children: React.ReactNode; wide?: boolean }) {
+  return (
+    <div
+      style={{
+        background: '#fff',
+        border: '1px solid #f0f0f0',
+        borderRadius: 10,
+        padding: '12px 12px 6px',
+        minWidth: 0,
+        overflow: 'hidden',
+        gridColumn: wide ? '1 / -1' : undefined,
+      }}
+    >
+      <Flex align="center" gap={8} style={{ marginBottom: 2 }}>
+        <LineChartOutlined style={{ color }} />
+        <Text strong style={{ fontSize: 14 }}>{title}</Text>
+      </Flex>
+      {children}
+    </div>
+  )
+}
+
 export default function HostMetricsDrawer({ open, assetName, assetIp, onClose }: Props) {
   const navigate = useNavigate()
-  const [rangeKey, setRangeKey] = useState('24h')
+  const [rangeKey, setRangeKey] = useState('1h')
   const rangeCfg = DRAWER_RANGES.find((r) => r.value === rangeKey) || DRAWER_RANGES[1]
 
   const { data, isFetching, refetch } = useQuery({
@@ -46,6 +69,20 @@ export default function HostMetricsDrawer({ open, assetName, assetIp, onClose }:
   const memVals = useMemo(() => points.map((p) => (p.memory == null ? null : Number(p.memory))), [points])
   const netInVals = useMemo(() => points.map((p) => (p.networkIn == null ? null : Number(p.networkIn))), [points])
   const netOutVals = useMemo(() => points.map((p) => (p.networkOut == null ? null : Number(p.networkOut))), [points])
+  // 物理盘使用率：后端按 disk_<盘名> 返回多序列
+  const partitions = useMemo(() => data?.disk_partitions ?? [], [data])
+  const diskSeries = useMemo(
+    () =>
+      partitions.map((p, i) => ({
+        name: p,
+        values: points.map((pt) => {
+          const v = pt[`disk_${p}`]
+          return v == null ? null : Number(v)
+        }),
+        color: CHART_COLORS[i % CHART_COLORS.length],
+      })),
+    [points, partitions],
+  )
 
   const notConfigured = data && data.configured === false
   const forbidden = data && (data as { status?: number }).status === 403
@@ -54,7 +91,7 @@ export default function HostMetricsDrawer({ open, assetName, assetIp, onClose }:
     <Drawer
       open={open}
       onClose={onClose}
-      width={560}
+      width={760}
       closable
       styles={{ body: { background: '#f5f6fa', padding: 16 } }}
       title={
@@ -127,64 +164,42 @@ export default function HostMetricsDrawer({ open, assetName, assetIp, onClose }:
           description="确认监控栈内置 Alloy 或主机 Agent 已在采集，且 instance 标签与本机 IP/主机名匹配。"
         />
       ) : (
-        <>
-          <div
-            style={{
-              background: '#fff',
-              border: '1px solid #f0f0f0',
-              borderRadius: 10,
-              padding: '16px 16px 8px',
-              marginBottom: 16,
-            }}
-          >
-            <Flex align="center" gap={8} style={{ marginBottom: 4 }}>
-              <LineChartOutlined style={{ color: '#2f54eb' }} />
-              <Text strong style={{ fontSize: 15 }}>CPU 使用率</Text>
-            </Flex>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+          <ChartCard title="CPU 使用率" color="#2f54eb">
             <MetricChart
               times={times}
               series={[{ name: 'CPU', values: cpuVals, color: '#2f54eb' }]}
               unit="%"
               area
+              height={200}
               subtitle={'avg(rate(node_cpu_seconds_total{mode!="idle"}[5m])) * 100'}
               emptyText="暂无 CPU 数据"
             />
-          </div>
-          <div
-            style={{
-              background: '#fff',
-              border: '1px solid #f0f0f0',
-              borderRadius: 10,
-              padding: '16px 16px 8px',
-              marginBottom: 16,
-            }}
-          >
-            <Flex align="center" gap={8} style={{ marginBottom: 4 }}>
-              <LineChartOutlined style={{ color: '#1677ff' }} />
-              <Text strong style={{ fontSize: 15 }}>内存使用率</Text>
-            </Flex>
+          </ChartCard>
+          <ChartCard title="内存使用率" color="#1677ff">
             <MetricChart
               times={times}
               series={[{ name: '内存', values: memVals, color: '#1677ff' }]}
               unit="%"
               area
+              height={200}
               subtitle={'(1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100'}
               emptyText="暂无内存数据"
             />
-          </div>
-          <div
-            style={{
-              background: '#fff',
-              border: '1px solid #f0f0f0',
-              borderRadius: 10,
-              padding: '16px 16px 8px',
-              marginBottom: 16,
-            }}
-          >
-            <Flex align="center" gap={8} style={{ marginBottom: 4 }}>
-              <LineChartOutlined style={{ color: '#52c41a' }} />
-              <Text strong style={{ fontSize: 15 }}>网络流量</Text>
-            </Flex>
+          </ChartCard>
+          {diskSeries.length > 0 ? (
+            <ChartCard title="磁盘使用率" color="#722ed1" wide>
+              <MetricChart
+                times={times}
+                series={diskSeries}
+                unit="%"
+                height={200}
+                subtitle={`(1 - filesystem_free / filesystem_size) * 100 · 盘：${partitions.join('、')}`}
+                emptyText="暂无磁盘数据"
+              />
+            </ChartCard>
+          ) : null}
+          <ChartCard title="网络流量" color="#52c41a" wide>
             <MetricChart
               times={times}
               series={[
@@ -192,11 +207,12 @@ export default function HostMetricsDrawer({ open, assetName, assetIp, onClose }:
                 { name: '出站', values: netOutVals, color: '#fa8c16' },
               ]}
               unit="MB/s"
+              height={200}
               subtitle={'rate(node_network_receive/transmit_bytes_total[5m]) / 1024 / 1024'}
               emptyText="暂无网络数据"
             />
-          </div>
-        </>
+          </ChartCard>
+        </div>
       )}
     </Drawer>
   )

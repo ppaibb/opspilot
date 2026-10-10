@@ -1,0 +1,3 @@
+# Shell 脚本在 Linux 上执行，CRLF 会导致 `set: pipefail: invalid option name` 类错误
+*.sh text eol=lf
+*.alloy text eol=lf

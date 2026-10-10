@@ -300,6 +300,7 @@ backend/app/api/clusters/       # 原 clusters.py（5920 行）
 - ✅ 权限管理抽屉加权限键搜索（「找不到 action.db.manage」排查=键一直都在：角色行铅笔图标 → 权限配置 → 资产管理组 13 项里，标题是功能名非按钮文案；修法=抽屉加搜索框四路过滤+命中组自动展开；顺带收拾权限组列表——名称断行、图标按钮改带文字链接、权限数带总量；检查-全量 4/4 全绿，详见 `55-权限管理抽屉加权限键搜索.md`）
 - ✅ 内置数据库管理员角色与权限组排序（新增预设：页面+db 四件套+dashboard/ai.ops/im 基线，自动成系统组；排序从标题 Unicode 码点改为系统预设按定义顺序在前/自定义按名称在后——rbac.py 一处修两处 UI 生效；权限组表删冗余「角色标识」列——title 与 role 恒等纯重复，表格收敛四列；契约测试 +2；检查-全量 4/4 全绿，详见 `56-内置数据库管理员角色与权限组排序.md`）
 - ✅ README 整理与截图入库（重写 README：数据刷新 752+52、3 张 mermaid 图——架构总览/Grafana SSO 时序/高危票据时序、25 张页面实拍截图分组展示于 `docs/screenshots/`；截图纪律=等路由标记文字出现再拍防白屏废片；集群详情截图需临时纳管、拍完票据删除恢复原状；检查-全量 4/4 全绿，详见 `57-README整理与截图入库.md`）
+- ✅ 235 全量全新部署与本机接入（全新 Ubuntu 22.04 → Docker → 源码上机构建 → `install.sh --config` 装到 `/data/opspilot`；监控链路 self-check 全绿 + 指标/日志/Grafana SSO 跨机验证；部署机自注册 `testserver-305 (本机)` 并由内置 Alloy 采集；修复 3 个真问题——新增 `.gitattributes` 钉 `*.sh`/`*.alloy` 为 LF（CRLF 在 Linux 执行即炸）、`bootstrap.py` 自注册主机名优先取 `HOST_NAME`（原容器 ID 做名字）+ `install.sh` 注入 app/.env、`prom_instance_regex` 的 `re.escape` 产出 `\-` 触发 VM 422 致主机监控图表抽屉静默全空（日志正常）改字符类零反斜杠转义；详见 `58-235全量全新部署与本机接入.md`）
 
 ---
 
@@ -369,6 +370,7 @@ backend/app/api/clusters/       # 原 clusters.py（5920 行）
     ├── 55-权限管理抽屉加权限键搜索.md
     ├── 56-内置数据库管理员角色与权限组排序.md
     ├── 57-README整理与截图入库.md
+    ├── 58-235全量全新部署与本机接入.md
     └── ../全量功能测试清单.md
 ```
 

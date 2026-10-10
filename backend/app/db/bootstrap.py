@@ -113,7 +113,8 @@ def ensure_localhost_asset() -> None:
             return
 
         # 获取本机信息
-        hostname = socket.gethostname()
+        # 容器内 socket.gethostname() 是容器 ID，主机名取安装脚本注入的 HOST_NAME
+        hostname = (os.environ.get("HOST_NAME") or "").strip() or socket.gethostname()
         # 后端跑在容器里时 UDP 探测只能拿到容器网桥 IP（172.x），
         # 而 Alloy 的 HOST_INSTANCE 取的是安装脚本注入的 MONITORING_HOST——
         # 两者必须一致 host-metrics 才能对上资产，所以 MONITORING_HOST 优先。

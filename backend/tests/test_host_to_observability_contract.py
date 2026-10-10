@@ -45,6 +45,25 @@ def test_prom_instance_regex_escapes_dots_without_backslash():
     assert "[.]" in pattern
 
 
+def test_prom_instance_regex_hyphenated_name_has_no_backslash():
+    """连字符/空格/括号名不得产出反斜杠——VM 对 `\\-` 等转义直接 422（图表静默为空）。
+
+    2026-10-10 235 实测：host-metrics 抽屉全空，根因是 re.escape 生成的
+    `testserver\-305` 让 VM query_range 422 后被降级吞掉；日志链路不走该正则故正常。
+    """
+    pattern = prom_instance_regex("192.168.3.235", "testserver-305 (本机)")
+    assert "\\" not in pattern
+    assert re.fullmatch(pattern, "192.168.3.235")
+    assert re.fullmatch(pattern, "testserver-305 (本机)")
+    assert not re.fullmatch(pattern, "192.168.3.236")
+
+
+def test_prom_instance_regex_special_chars_stay_python_valid():
+    pattern = prom_instance_regex("a(b)[c]{d}e+f*g?h|i$j")
+    assert "\\" not in pattern
+    assert re.fullmatch(pattern, "a(b)[c]{d}e+f*g?h|i$j")
+
+
 def test_prom_instance_regex_empty_inputs():
     assert prom_instance_regex("", "  ") == ""
 

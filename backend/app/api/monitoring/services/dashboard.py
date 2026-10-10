@@ -269,19 +269,34 @@ def _matches_any_scope(value: str, candidates: list[str]) -> bool:
     return False
 
 
+# VM 的 PromQL 解析器把反斜杠转义（`\.`、`\-` 等）当非法 WITH 表达式直接 422——
+# re.escape 的产物一进去整个 query_range 就炸，后端又按空序列降级，图表静默变空。
+# 实测（2026-10-10，VM v1.140.0）：`[.]`/`[(]`/`[-]`/`[+*]`/裸 `-`/裸空格/CJK 全 200，
+# 只要含 `\-` 就 422。故：特殊字符一律改写成字符类，绝不产出反斜杠。
+# `^` 不处理（类包裹 `[^]` 会变成取反）；主机标识中不会出现，出现则退化为锚点语义。
+_VM_REGEX_CLASS_CHARS = set(".()[]{}?*+|$")
+
+
+def _vm_regex_literal(value: str) -> str:
+    """把单个主机标识转成 VictoriaMetrics 可解析的正则片段（无反斜杠）。"""
+    return "".join(f"[{ch}]" if ch in _VM_REGEX_CLASS_CHARS else ch for ch in value)
+
+
 def prom_instance_regex(*values: str) -> str:
     """构造 PromQL instance=~ 的正则：精确匹配主机，可选 ``:port`` 后缀。
 
-    - 点号用 ``[.]`` 字符类而非 ``\\.``（本环境 VictoriaMetrics 对反斜杠转义返回 422）；
+    - 禁止反斜杠转义：本环境 VictoriaMetrics 对 ``\\-``/``\\.`` 一律 422（见上方注释）；
+    - 点号用 ``[.]`` 字符类、括号用 ``[(]``/``[)]``，其余元字符同理包进字符类；
+    - 连字符、空格、CJK 在字符类外是字面量，直接原样输出；
     - 后缀用 ``(:.*)?`` 而不是 ``.*``，避免 ``192.168.1.1`` 误匹配 ``192.168.1.10``；
-    - 其余正则元字符走 ``re.escape``，防止主机名注入破坏表达式。
+    - pattern 同时要求被 Python ``re.fullmatch`` 与 VM 正则接受（契约测试双重约束）。
     """
     parts: list[str] = []
     for raw in values:
         s = str(raw or "").strip()
         if not s:
             continue
-        parts.append(re.escape(s).replace(r"\.", "[.]"))
+        parts.append(_vm_regex_literal(s))
     if not parts:
         return ""
     alt = parts[0] if len(parts) == 1 else f"({'|'.join(parts)})"

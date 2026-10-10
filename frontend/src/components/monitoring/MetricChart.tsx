@@ -59,7 +59,8 @@ export default function MetricChart({
   }
 
   const option = {
-    grid: { left: 56, right: 24, top: subtitle ? 40 : 16, bottom: 32 },
+    // legend 仅多序列时渲染，单序列给图更多纵向空间
+    grid: { left: 56, right: 24, top: series.length > 1 ? 40 : 12, bottom: 32 },
     legend: series.length > 1 ? { type: 'scroll', top: 8, textStyle: { fontSize: 11 } } : undefined,
     tooltip: {
       trigger: 'axis',
@@ -71,7 +72,8 @@ export default function MetricChart({
       data: times,
       boundaryGap: false,
       axisLine: { lineStyle: { color: cssColor('--line', '#e5e7eb') } },
-      axisLabel: { ...axisLabel(), rotate: times.length > 8 ? 20 : 0 },
+      // 不旋转：斜排长标签在窄抽屉里最挤，改自动隐藏重叠标签
+      axisLabel: { ...axisLabel(), rotate: 0, hideOverlap: true },
     },
     yAxis: {
       type: 'value',
@@ -107,11 +109,22 @@ export default function MetricChart({
   return (
     <div>
       {subtitle ? (
-        <Text type="secondary" style={{ display: 'block', marginBottom: 4, fontSize: 12 }}>
+        <Text
+          type="secondary"
+          title={subtitle}
+          style={{
+            display: 'block',
+            marginBottom: 4,
+            fontSize: 11,
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+          }}
+        >
           口径：{subtitle}
         </Text>
       ) : null}
-      <ReactECharts option={option} style={{ height: subtitle ? height - 18 : height }} notMerge lazyUpdate />
+      <ReactECharts option={option} style={{ height: subtitle ? height - 16 : height }} notMerge lazyUpdate />
     </div>
   )
 }
