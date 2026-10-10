@@ -45,7 +45,7 @@ frontend/dist-ssr/
 
 # ── 日志 ──
 *.log
-logs/
+/logs
 backend/logs/
 backend_server.log
 scp_err.log
@@ -92,6 +92,7 @@ Thumbs.db
 .pytest_cache/
 gui-test-screenshots/
 .artifacts/
+.playwright-cli/
 **/__pycache__/
 **/.pytest_cache/
 extract_pods_jars.sh

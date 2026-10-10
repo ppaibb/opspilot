@@ -1,5 +1,7 @@
 # Logs
-logs
+# 注意：裸 `logs` 会匹配任意层级同名目录，曾把 src/pages/monitoring/logs 整页吞掉；
+# 改为锚定 frontend 根下的 logs（*.log 已覆盖日志文件）
+/logs
 *.log
 npm-debug.log*
 yarn-debug.log*
