@@ -29,6 +29,9 @@ class Asset(Base):
     ssh_password = Column(String(200), nullable=True, comment="主机独立密码（如不使用统管凭证）")
     credential_ref = Column(String(50), nullable=True, comment="绑定的凭证ID(credentials)")
     cloud_credential_ref = Column(String(50), nullable=True, comment="导入该主机的云账号凭证ID(AK/SK)")
+    # 保存云端身份而非凭证 ID：同账号换 AK/SK 仍能更新，不同项目不能误覆盖。
+    cloud_account_id = Column(String(64), default="", comment="云账号身份ID")
+    cloud_project_id = Column(String(64), default="", comment="云项目身份ID")
     cpu_cores = Column(Float, default=0.0, comment="CPU 核数（配置）")
     memory_gb = Column(Float, default=0.0, comment="内存容量 GB（配置）")
     system_disk_gb = Column(Float, default=0.0, comment="系统盘容量 GB（配置）")

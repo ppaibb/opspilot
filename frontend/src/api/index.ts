@@ -62,7 +62,10 @@ export const assetsApi = {
   ping: (data: { ip: string; port: number; user: string; password?: string; credential_id?: string; pkey_content?: string; asset_id?: string }) =>
     client.post('/assets/ping', data).then((r) => r.data),
   sync: (data: CloudSyncRequest) =>
-    client.post<CloudSyncPreviewResponse & CloudSyncImportResponse>('/assets/sync', data).then((r) => r.data),
+    client.post<CloudSyncPreviewResponse & CloudSyncImportResponse>('/assets/sync', data, {
+      // 华为云需要跨项目分页并补查轻量详情，为这条操作设置独立超时。
+      timeout: data.provider === 'huawei' ? 180_000 : 30_000,
+    }).then((r) => r.data),
   getCloudRegions: (data: { provider: string; credential_id?: string; access_key?: string; secret_key?: string }) =>
     client.post<CloudRegionsResponse>('/assets/cloud/regions', data).then((r) => r.data),
   refreshConfig: (id: string) => client.post(`/assets/${id}/refresh-config`).then((r) => r.data),

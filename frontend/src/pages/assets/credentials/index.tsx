@@ -392,7 +392,7 @@ export default function CredentialsPage() {
       >
         <Form form={form} layout="vertical">
           <Form.Item name="name" label="凭证名称" rules={[{ required: true, message: '请输入凭证名称' }]}>
-            <Input prefix={<KeyOutlined />} placeholder="例如 阿里云生产账号 AK/SK" />
+            <Input prefix={<KeyOutlined />} placeholder="例如 华为云生产账号 AK/SK" />
           </Form.Item>
           <Form.Item name="type" label="凭证类型" rules={[{ required: true }]} initialValue="Password">
             <Select options={Object.entries(TYPE_MAP).map(([k, v]) => ({ value: k, label: v.text }))} />
@@ -451,13 +451,13 @@ export default function CredentialsPage() {
           {credType === 'AccessKey' && (
             <>
               <Form.Item name="access_key" label="Access Key ID" rules={editingId ? [] : [{ required: true, message: '请输入 Access Key ID' }]}>
-                <Input placeholder={editingId ? '留空则不修改' : '例如 LTAIxxxxxxxxxxxxx'} />
+                <Input placeholder={editingId ? '留空则不修改' : '请输入云厂商 Access Key ID'} />
               </Form.Item>
               <Form.Item name="secret_key" label="Access Key Secret" rules={editingId ? [] : [{ required: true, message: '请输入 Access Key Secret' }]}>
                 <Input.Password placeholder={editingId ? '留空则不修改' : '请输入 Access Key Secret'} />
               </Form.Item>
               <Text type="secondary" style={{ fontSize: 12 }}>
-                保存后 AK/SK 将以加密形式入库，页面与列表永不回显；阿里云账单、证书自动签发等模块可直接引用。
+                保存后 AK/SK 将加密存储，编辑时不回显；华为云等云厂商的主机导入可直接引用。
               </Text>
             </>
           )}

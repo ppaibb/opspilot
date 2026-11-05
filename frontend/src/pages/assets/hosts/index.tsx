@@ -42,13 +42,15 @@ import RelationCard from '@/components/RelationCard'
 import WgMembershipDrawer from '@/components/WgMembershipDrawer'
 import HostMetricsDrawer from '@/components/HostMetricsDrawer'
 import HostLogsDrawer from '@/components/HostLogsDrawer'
-import type { AssetResponse, AssetCreate, CredentialCreate, MonitoringTargetItem, LogTargetItem, CloudInstanceItem } from '@/types/api'
+import type { AssetResponse, AssetCreate, CredentialCreate, MonitoringTargetItem, LogTargetItem, CloudInstanceItem, CloudSyncRequest } from '@/types/api'
+import { isLightCloudInstance, mergeCloudSelection } from './cloudSync'
 
 // 云厂商 / 来源展示映射
 const PROVIDER_META: Record<string, { label: string; sourceTag: string; tagColor: string }> = {
   aliyun:       { label: '阿里云',   sourceTag: 'ECS', tagColor: 'blue' },
   tencent:      { label: '腾讯云',   sourceTag: 'CVM', tagColor: 'blue' },
   aws:          { label: 'AWS',      sourceTag: 'EC2', tagColor: 'blue' },
+  huawei:       { label: '华为云',   sourceTag: 'ECS', tagColor: 'blue' },
   proxmox:      { label: 'Proxmox', sourceTag: 'PVE', tagColor: 'geekblue' },
   vmware:       { label: 'VMware',  sourceTag: 'VM',  tagColor: 'geekblue' },
   'on-premise': { label: '物理机',   sourceTag: '自建主机', tagColor: 'geekblue' },
@@ -106,7 +108,7 @@ export default function HostsPage() {
   const [cloudSyncOpen, setCloudSyncOpen]       = useState(false)
   const [hostKeysOpen, setHostKeysOpen]         = useState(false)
   const [syncStep, setSyncStep]                 = useState<'form' | 'preview'>('form')
-  const [syncProvider, setSyncProvider]         = useState<'aliyun' | 'tencent' | 'aws'>('aliyun')
+  const [syncProvider, setSyncProvider]         = useState<CloudSyncRequest['provider']>('aliyun')
   const [syncUseSaved, setSyncUseSaved]         = useState(true)
   const [syncCredId, setSyncCredId]             = useState<string>('')
   const [syncAK, setSyncAK]                     = useState('')
@@ -117,6 +119,7 @@ export default function HostsPage() {
   const [syncInstances, setSyncInstances]       = useState<CloudInstanceItem[]>([])
   const [syncSelectedIds, setSyncSelectedIds]   = useState<string[]>([])
   const [syncImporting, setSyncImporting]       = useState(false)
+  const [syncWarnings, setSyncWarnings]       = useState<string[]>([])
 
   // ── 新增凭证快捷弹窗 ──
   const [credModalOpen, setCredModalOpen]       = useState(false)
@@ -451,6 +454,7 @@ export default function HostsPage() {
     setSyncInstances([])
     setSyncSelectedIds([])
     setSyncProgress({})
+    setSyncWarnings([])
     setCloudSyncOpen(true)
   }
 
@@ -474,6 +478,7 @@ export default function HostsPage() {
     setSyncScanning(true)
     setSyncInstances([])
     setSyncProgress({})
+    setSyncWarnings([])
 
     // 1) 后台拉取全部区域（用户无需感知）
     let regions: string[]
@@ -499,20 +504,29 @@ export default function HostsPage() {
 
     const allInstances: CloudInstanceItem[] = []
     const failedRegions: string[] = []
+    const regionWarnings: Record<string, string[]> = {}
+    // 同步维护本轮任务快照，避免读取闭包中的初始 pending 状态而误报全部成功。
+    const updateProgress = (region: string, state: typeof progress[string]) => {
+      progress[region] = state
+      setSyncProgress({ ...progress })
+    }
     const scanRegion = async (region: string, isRetry = false) => {
-      setSyncProgress((prev) => ({ ...prev, [region]: { status: 'scanning' } }))
+      updateProgress(region, { status: 'scanning' })
       try {
         const res = await assetsApi.sync({ provider: syncProvider, region, ...credArgs, instance_ids: null })
         if (res.success && res.preview && res.instances) {
           allInstances.push(...res.instances)
-          setSyncProgress((prev) => ({ ...prev, [region]: { status: 'success', count: res.instances.length } }))
+          regionWarnings[region] = res.warnings ?? []
+          updateProgress(region, { status: 'success', count: res.instances.length })
         } else {
           if (!isRetry) failedRegions.push(region)
-          setSyncProgress((prev) => ({ ...prev, [region]: { status: 'failed' } }))
+          regionWarnings[region] = [res.message || '资源查询失败']
+          updateProgress(region, { status: 'failed' })
         }
-      } catch {
+      } catch (error: unknown) {
         if (!isRetry) failedRegions.push(region)
-        setSyncProgress((prev) => ({ ...prev, [region]: { status: 'failed' } }))
+        regionWarnings[region] = [extractAxiosDetail(error) ?? '网络异常，资源查询失败']
+        updateProgress(region, { status: 'failed' })
       }
     }
 
@@ -536,9 +550,11 @@ export default function HostsPage() {
     setSyncSelectedIds(uniq.filter((i) => !i.is_imported).map((i) => i.instance_id))
     setSyncScanning(false)
     setSyncStep('preview')
+    const warnings = regions.flatMap((region) => (regionWarnings[region] ?? []).map((text) => `${region}：${text}`))
+    setSyncWarnings(warnings)
     const finalFailedCount = Object.values(progress).filter(p => p.status === 'failed').length
-    if (finalFailedCount > 0) {
-      message.warning(`扫描完成，共发现 ${uniq.length} 台实例（${finalFailedCount} 个区域失败）`)
+    if (finalFailedCount > 0 || warnings.length > 0) {
+      message.warning(`扫描完成，共发现 ${uniq.length} 台实例（${finalFailedCount > 0 ? `${finalFailedCount} 个区域失败` : '部分项目或实例未能获取'}）`)
     } else {
       message.success(`扫描完成，共发现 ${uniq.length} 台实例`)
     }
@@ -561,16 +577,19 @@ export default function HostsPage() {
         instance_ids: syncSelectedIds,
       })
       if (res.success) {
-        const count = syncSelectedIds.length
+        const count = (res.imported_count ?? syncSelectedIds.length) + (res.updated_count ?? 0)
         message.success(res.message || `成功导入 ${count} 台主机`)
+        if (res.warnings?.length) message.warning(res.warnings.join('；'), 8)
         queryClient.invalidateQueries({ queryKey: ['assets'] })
         setCloudSyncOpen(false)
+        setSyncAK('')
+        setSyncSK('')
         // 导入成功引导：提示用户绑定 SSH 凭证
         modal.info({
           title: '主机导入成功',
           content: (
             <div>
-              <p>已成功导入 {count} 台主机。</p>
+              <p>{res.message || `已成功导入 ${count} 台主机。`}</p>
               <p style={{ marginTop: 8, color: '#faad14' }}>
                 <strong>下一步：</strong>这些主机需要绑定 SSH 凭证才能进行配置采集和远程操作。
                 您可以在列表中找到这些主机（显示"待配置"标签），点击编辑为其绑定凭证。
@@ -1067,6 +1086,7 @@ export default function HostsPage() {
                           label: '云厂商',
                           options: [
                             { value: 'aliyun', label: '阿里云' },
+                            { value: 'huawei', label: '华为云' },
                             { value: 'tencent', label: '腾讯云' },
                             { value: 'aws', label: 'AWS' },
                           ],
@@ -1245,19 +1265,27 @@ export default function HostsPage() {
             </Flex>
           }
           open={cloudSyncOpen}
-          onCancel={() => setCloudSyncOpen(false)}
+          onCancel={() => {
+            if (syncScanning || syncImporting) return
+            setCloudSyncOpen(false)
+            setSyncAK('')
+            setSyncSK('')
+          }}
+          closable={!syncScanning && !syncImporting}
+          maskClosable={!syncScanning && !syncImporting}
           footer={null}
           width={syncStep === 'preview' ? 1000 : 600}
           destroyOnClose
         >
           {syncStep === 'form' && (
             <Flex vertical gap={16} style={{ paddingTop: 12 }}>
-              <Form layout="vertical">
+              <Form layout="vertical" disabled={syncScanning}>
                 <Form.Item label="云厂商" required>
                   <Radio.Group value={syncProvider} onChange={(e) => setSyncProvider(e.target.value)}>
                     <Radio.Button value="aliyun">阿里云</Radio.Button>
                     <Radio.Button value="tencent">腾讯云</Radio.Button>
                     <Radio.Button value="aws">AWS</Radio.Button>
+                    <Radio.Button value="huawei">华为云</Radio.Button>
                   </Radio.Group>
                 </Form.Item>
 
@@ -1334,6 +1362,14 @@ export default function HostsPage() {
 
           {syncStep === 'preview' && (
             <Flex vertical gap={16} style={{ paddingTop: 12 }}>
+              {syncWarnings.length > 0 && (
+                <Alert
+                  type="warning"
+                  showIcon
+                  message="部分资源未能获取"
+                  description={<ul style={{ margin: 0, paddingLeft: 20 }}>{syncWarnings.map((text, index) => <li key={index}>{text}</li>)}</ul>}
+                />
+              )}
               <Alert
                 message={`共扫描到 ${syncInstances.length} 台实例，已导入 ${syncInstances.filter((i) => i.is_imported).length} 台，可新增 ${syncInstances.filter((i) => !i.is_imported).length} 台`}
                 type="info"
@@ -1352,8 +1388,12 @@ export default function HostsPage() {
                         dataSource={syncInstances.filter((i) => ['ECS', 'CVM', 'EC2'].includes(i.cloud_resource_type))}
                         rowSelection={{
                           selectedRowKeys: syncSelectedIds,
-                          onChange: (keys) => setSyncSelectedIds(keys as string[]),
-                          getCheckboxProps: (r) => ({ disabled: r.is_imported }),
+                          onChange: (keys) => setSyncSelectedIds((current) => mergeCloudSelection(
+                            current,
+                            syncInstances.filter((i) => !isLightCloudInstance(i.cloud_resource_type)).map((i) => i.instance_id),
+                            keys as string[],
+                          )),
+                          getCheckboxProps: (r) => ({ disabled: r.is_imported && syncProvider !== 'huawei' }),
                         }}
                         columns={[
                           { title: '实例名称', dataIndex: 'name', width: 180 },
@@ -1378,16 +1418,20 @@ export default function HostsPage() {
                   },
                   {
                     key: 'light',
-                    label: '轻量服务器 (SWAS/Lighthouse/Lightsail)',
+                    label: '轻量服务器 (SWAS/Lighthouse/Lightsail/Flexus L)',
                     children: (
                       <Table
                         rowKey="instance_id"
                         size="small"
-                        dataSource={syncInstances.filter((i) => ['SWAS', 'Lighthouse', 'Lightsail'].includes(i.cloud_resource_type))}
+                        dataSource={syncInstances.filter((i) => isLightCloudInstance(i.cloud_resource_type))}
                         rowSelection={{
                           selectedRowKeys: syncSelectedIds,
-                          onChange: (keys) => setSyncSelectedIds(keys as string[]),
-                          getCheckboxProps: (r) => ({ disabled: r.is_imported }),
+                          onChange: (keys) => setSyncSelectedIds((current) => mergeCloudSelection(
+                            current,
+                            syncInstances.filter((i) => isLightCloudInstance(i.cloud_resource_type)).map((i) => i.instance_id),
+                            keys as string[],
+                          )),
+                          getCheckboxProps: (r) => ({ disabled: r.is_imported && syncProvider !== 'huawei' }),
                         }}
                         columns={[
                           { title: '实例名称', dataIndex: 'name', width: 180 },
@@ -1414,7 +1458,7 @@ export default function HostsPage() {
               />
 
               <Flex justify="space-between">
-                <Button onClick={() => setSyncStep('form')}>返回</Button>
+                <Button disabled={syncImporting} onClick={() => setSyncStep('form')}>返回</Button>
                 <Button
                   type="primary"
                   icon={<CloudSyncOutlined />}

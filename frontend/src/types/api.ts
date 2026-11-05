@@ -955,7 +955,7 @@ export interface IngressTlsStatusItem {
 
 // ── 云同步 ──
 export interface CloudSyncRequest {
-  provider: 'aliyun' | 'tencent' | 'aws'
+  provider: 'aliyun' | 'tencent' | 'aws' | 'huawei'
   region: string
   credential_id?: string
   access_key?: string
@@ -983,11 +983,15 @@ export interface CloudSyncPreviewResponse {
   success: boolean
   preview: boolean
   instances: CloudInstanceItem[]
+  warnings?: string[]
 }
 
 export interface CloudSyncImportResponse {
   success: boolean
   message: string
+  imported_count?: number
+  updated_count?: number
+  warnings?: string[]
 }
 
 export interface CloudRegionsResponse {

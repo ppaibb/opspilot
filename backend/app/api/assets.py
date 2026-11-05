@@ -178,6 +178,9 @@ def resolve_aliyun_keys(
             return "", "", str(exc.detail)
         if not is_access_key_type(cred.type):
             return "", "", "所选凭证类型不是 AccessKey/AKSK"
+        # AK/SK 日期沿用长期有效的预警语义；明确标记失效的凭证不能继续使用。
+        if cred.status == "expired":
+            return "", "", "所选云账号凭证已过期，请更新后重试"
 
         raw = get_credential_content(db, credential_id, current_user)
         final_access_key, final_secret_key = parse_access_key_content(raw)
@@ -375,13 +378,15 @@ def infer_cloud_resource_type(asset: Asset) -> str:
         if "lightsail" in status_text:
             return "Lightsail"
         return "EC2"
+    if provider == "huawei":
+        return "FlexusL" if "flexus" in status_text else "ECS"
     return ""
 
 
 def infer_asset_source(asset: Asset) -> str:
     """区分云同步资产与手动录入资产，用于前端控制云元数据是否可编辑。"""
     provider = str(asset.provider or "").strip().lower()
-    if provider in {"aliyun", "tencent", "aws"} and not str(asset.instance_id or "").startswith("ins-"):
+    if provider in {"aliyun", "tencent", "aws", "huawei"} and not str(asset.instance_id or "").startswith("ins-"):
         return "cloud_sync"
     if infer_cloud_resource_type(asset):
         return "cloud_sync"
@@ -1789,6 +1794,10 @@ def resolve_cloud_regions(provider: str, access_key: str, secret_key: str) -> li
         return fetch_tencent_region_ids(access_key, secret_key)
     if normalized == "aws":
         return fetch_aws_region_ids(access_key, secret_key)
+    if normalized == "huawei":
+        from app.services.huawei_cloud import HuaweiCloud
+
+        return HuaweiCloud(access_key, secret_key).regions()
     raise ValueError("不支持的云厂商")
 
 
@@ -1822,9 +1831,9 @@ def get_cloud_regions(
     current_user: User = Depends(get_current_user),
     _=Depends(require_permissions("action.assets.hosts.manage")),
 ):
-    """按云厂商动态拉取可用区域列表（阿里云/腾讯云/AWS）。"""
+    """按云厂商动态拉取可用区域列表（阿里云/腾讯云/AWS/华为云）。"""
     provider = (req.provider or "").strip().lower()
-    if provider not in {"aliyun", "tencent", "aws"}:
+    if provider not in {"aliyun", "tencent", "aws", "huawei"}:
         return {"success": False, "message": "不支持的云厂商", "regions": []}
 
     access_key, secret_key, err = resolve_aliyun_keys(
@@ -1839,6 +1848,11 @@ def get_cloud_regions(
             return {"success": False, "message": "未获取到可用区域列表", "regions": []}
         return {"success": True, "regions": regions}
     except Exception as e:
+        if provider == "huawei":
+            from app.services.huawei_cloud import HuaweiCloudError
+
+            message = str(e) if isinstance(e, HuaweiCloudError) else "华为云区域查询失败，请检查凭证和授权"
+            return {"success": False, "message": message, "regions": []}
         return {"success": False, "message": f"拉取区域列表失败: {str(e)}", "regions": []}
 
 
@@ -1852,7 +1866,7 @@ def sync_assets(
     """云账号同步主机的接入网关。"""
     scanned_hosts: List[dict] = []
     provider = (req.provider or "").strip().lower()
-    if provider not in {"aliyun", "tencent", "aws"}:
+    if provider not in {"aliyun", "tencent", "aws", "huawei"}:
         return {"success": False, "message": "不支持的云厂商或未实现"}
 
     access_key, secret_key, err = resolve_aliyun_keys(
@@ -1860,6 +1874,11 @@ def sync_assets(
     )
     if err:
         return {"success": False, "message": err}
+
+    if provider == "huawei":
+        from app.services.huawei_asset_sync import sync_huawei_assets
+
+        return sync_huawei_assets(db, req, access_key, secret_key)
 
     cloud_cred_ref = req.credential_id
     if not cloud_cred_ref and req.access_key:

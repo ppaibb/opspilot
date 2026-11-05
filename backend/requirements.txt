@@ -28,6 +28,10 @@ boto3==1.43.67
 tencentcloud-sdk-python==3.1.153
 alibabacloud-swas-open20200601==4.0.0
 pyvmomi==9.1.0.0
+huaweicloudsdkcore==3.1.220
+huaweicloudsdkecs==3.1.220
+huaweicloudsdkiam==3.1.220
+huaweicloudsdkrms==3.1.220
 
 # 测试依赖
 pytest==9.1.1
