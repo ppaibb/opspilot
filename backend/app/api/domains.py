@@ -25,75 +25,14 @@ from app.models.asset import DomainRecord, DomainDNSRecord
 from app.models.credential import Credential
 from app.models.user import User
 from app.services.credential_access import ensure_credential_access, filter_credentials_for_user
+from app.services import domain_resources
+from app.services.dns_providers.base import DNSProviderError
+from app.services.dns_providers.registry import DNS_PROVIDERS, provider_metadata
 
 router = APIRouter()
 
 
-DOMAIN_PROVIDER_REGISTRY: dict[str, dict] = {
-    "aliyun": {
-        "label": "Alibaba Cloud DNS",
-        "supports_acme": True,
-        "supports_cert_distribution": True,
-    },
-    "tencent": {
-        "label": "Tencent Cloud DNSPod",
-        "supports_acme": True,
-        "supports_cert_distribution": True,
-    },
-    "aws": {
-        "label": "AWS Route53",
-        "supports_acme": True,
-        "supports_cert_distribution": True,
-    },
-    "cloudflare": {
-        "label": "Cloudflare DNS",
-        "supports_acme": True,
-        "supports_cert_distribution": True,
-    },
-    "godaddy": {
-        "label": "GoDaddy DNS",
-        "supports_acme": False,
-        "supports_cert_distribution": False,
-    },
-    "huawei": {
-        "label": "Huawei Cloud DNS",
-        "supports_acme": True,
-        "supports_cert_distribution": True,
-    },
-    "azure": {
-        "label": "Azure DNS",
-        "supports_acme": True,
-        "supports_cert_distribution": True,
-    },
-    "gcp": {
-        "label": "Google Cloud DNS",
-        "supports_acme": True,
-        "supports_cert_distribution": True,
-    },
-    "digitalocean": {
-        "label": "DigitalOcean DNS",
-        "supports_acme": True,
-        "supports_cert_distribution": False,
-    },
-    "custom": {
-        "label": "Custom Provider",
-        "supports_acme": False,
-        "supports_cert_distribution": False,
-    },
-}
-
-DOMAIN_FALLBACK_CANDIDATES: dict[str, list[str]] = {
-    "aliyun": ["opspilot.com", "opspilot.cn", "opspilot.net"],
-    "tencent": ["example.cn", "example.net", "service.cn"],
-    "aws": ["example.com", "example.org", "infra.example.com"],
-    "cloudflare": ["example.io", "edge.example.io"],
-    "huawei": ["example.cloud", "example.cn"],
-    "azure": ["example.azure", "corp.example.com"],
-    "gcp": ["example.gcp", "service.example.com"],
-    "digitalocean": ["example.do", "edge.example.do"],
-    "godaddy": ["example.com", "brand-example.com"],
-    "custom": ["example.com"],
-}
+DOMAIN_PROVIDER_REGISTRY = {item["key"]: item for item in provider_metadata()}
 
 DOMAIN_ACCOUNT_ALLOWED_TYPES = {"accesskey", "token", "api token", "ak/sk", "aksk"}
 
@@ -103,6 +42,14 @@ class DomainProviderItem(BaseModel):
     label: str
     supports_acme: bool
     supports_cert_distribution: bool
+    supports_import: bool = False
+    supports_dns_records: bool = False
+    credential_types: list[str] = []
+    supports_multi_values: bool = False
+    supports_proxy: bool = False
+    supports_priority: bool = False
+    can_rename_records: bool = True
+    record_types: list[str] = []
 
 
 class DomainAccountItem(BaseModel):
@@ -115,11 +62,13 @@ class DomainAccountItem(BaseModel):
 
 class DomainAccountDomainsRequest(BaseModel):
     account_id: str
+    provider: str = ""
 
 
 class DomainImportRequest(BaseModel):
     account_id: str
     domain: str
+    provider: str = ""
     remark: str = ""
 
 
@@ -144,6 +93,7 @@ class DomainResponse(BaseModel):
     acme_enabled: str = "no"
     cert_targets: str = ""
     records_count: int = 0
+    provider_zone_id: str = ""
 
     class Config:
         from_attributes = True
@@ -189,26 +139,45 @@ class DomainDNSRecordResponse(BaseModel):
     ttl: int
     remark: str = ""
     updated_at: str = ""
+    provider_record_id: str = ""
+    record_values: list[str] = []
+    proxied: bool | None = None
+    priority: int | None = None
+    read_only: bool = False
 
 
 class DomainDNSRecordCreate(BaseModel):
     host: str = "@"
     record_type: str = "A"
-    record_value: str
+    record_value: str = ""
     ttl: int = 600
     remark: str = ""
+    record_values: list[str] | None = None
+    proxied: bool | None = None
+    priority: int | None = None
 
 
 class DomainDNSRecordUpdate(BaseModel):
     host: str = "@"
     record_type: str = "A"
-    record_value: str
+    record_value: str = ""
     ttl: int = 600
     remark: str = ""
+    record_values: list[str] | None = None
+    proxied: bool | None = None
+    priority: int | None = None
 
 
 def now_ts() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def cloud_operation(operation):
+    """适配器只抛可展示错误，在接口边界转换为真实HTTP失败，便于审计。"""
+    try:
+        return operation()
+    except DNSProviderError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from None
 
 
 def parse_utc_to_local(utc_str: str) -> str:
@@ -397,6 +366,7 @@ def add_aliyun_dns_record(
     record_type: str,
     value: str,
     ttl: int,
+    priority: int | None = None,
 ) -> str:
     """调用阿里云 API 添加解析记录"""
     endpoint = "https://alidns.aliyuncs.com/"
@@ -415,6 +385,8 @@ def add_aliyun_dns_record(
         "Value": value,
         "TTL": str(ttl),
     }
+    if priority is not None:
+        params["Priority"] = str(priority)
     params["Signature"] = sign_aliyun_rpc(params, secret_key, method="POST")
     try:
         resp = requests.post(endpoint, data=params, timeout=12)
@@ -422,7 +394,7 @@ def add_aliyun_dns_record(
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"添加阿里云解析记录失败：网络异常({str(e)})")
 
-    if resp.status_code >= 400:
+    if resp.status_code >= 400 or (isinstance(payload, dict) and payload.get("Code")):
         message = payload.get("Message") if isinstance(payload, dict) else ""
         raise HTTPException(status_code=400, detail=f"添加阿里云解析记录失败：{message}")
         
@@ -517,7 +489,7 @@ def delete_aliyun_dns_record_by_id(
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"删除阿里云解析记录失败：网络异常({str(e)})")
 
-    if resp.status_code >= 400:
+    if resp.status_code >= 400 or (isinstance(payload, dict) and payload.get("Code")):
         message = payload.get("Message") if isinstance(payload, dict) else ""
         raise HTTPException(status_code=400, detail=f"删除阿里云解析记录失败：{message}")
 
@@ -530,6 +502,7 @@ def update_aliyun_dns_record_by_id(
     record_type: str,
     value: str,
     ttl: int,
+    priority: int | None = None,
 ) -> None:
     """调用阿里云 API 修改解析记录"""
     endpoint = "https://alidns.aliyuncs.com/"
@@ -548,6 +521,8 @@ def update_aliyun_dns_record_by_id(
         "Value": value,
         "TTL": str(ttl),
     }
+    if priority is not None:
+        params["Priority"] = str(priority)
     params["Signature"] = sign_aliyun_rpc(params, secret_key, method="POST")
     try:
         resp = requests.post(endpoint, data=params, timeout=12)
@@ -555,7 +530,7 @@ def update_aliyun_dns_record_by_id(
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"修改阿里云解析记录失败：网络异常({str(e)})")
 
-    if resp.status_code >= 400:
+    if resp.status_code >= 400 or (isinstance(payload, dict) and payload.get("Code")):
         message = payload.get("Message") if isinstance(payload, dict) else ""
         raise HTTPException(status_code=400, detail=f"修改阿里云解析记录失败：{message}")
 
@@ -812,7 +787,7 @@ def fetch_aliyun_domains(access_key: str, secret_key: str) -> list[str]:
             break
         page_number += 1
         if page_number > 50:
-            break
+            raise HTTPException(status_code=502, detail="阿里云分页超过上限，已停止同步")
 
     return sorted(list(dict.fromkeys(result)))
 
@@ -877,6 +852,8 @@ def fetch_aliyun_domain_records(access_key: str, secret_key: str, domain_name: s
 
             result.append(
                 {
+                    "provider_record_id": str(item.get("RecordId") or ""),
+                    "priority": item.get("Priority"),
                     "host": host,
                     "record_type": record_type,
                     "record_value": value,
@@ -891,7 +868,7 @@ def fetch_aliyun_domain_records(access_key: str, secret_key: str, domain_name: s
             break
         page_number += 1
         if page_number > 50:
-            break
+            raise HTTPException(status_code=502, detail="阿里云分页超过上限，已停止同步")
 
     return result
 
@@ -974,16 +951,7 @@ def validate_ttl(ttl: int) -> int:
 
 
 def serialize_dns_record(row: DomainDNSRecord) -> dict:
-    return {
-        "id": int(row.id),
-        "domain_id": int(row.domain_id),
-        "host": row.host or "@",
-        "record_type": (row.record_type or "A").upper(),
-        "record_value": row.record_value or "",
-        "ttl": int(row.ttl or 600),
-        "remark": row.remark or "",
-        "updated_at": row.updated_at or "",
-    }
+    return domain_resources.serialize_record(row)
 
 
 def backfill_dns_records_from_legacy(db: Session, domain: DomainRecord) -> int:
@@ -1037,67 +1005,13 @@ def sync_domain_expiry(
         db.commit()
 
 
-def sync_domain_dns_records(
-    db: Session,
-    domain: DomainRecord,
-    current_user: User | None = None,
-) -> None:
-    """
-    同步 DNS 解析记录 (domain_dns_records)：获取云端真实记录，合并(upsert)并清理本地失效记录。
-    """
-    provider = normalize_provider_key(domain.provider or "")
-
-    if provider == "aliyun" and domain.account_id:
-        try:
-            access_key, secret_key = resolve_account_keys(db, domain.account_id, current_user)
-            remote_records = fetch_aliyun_domain_records(access_key, secret_key, domain.domain or "")
-            if remote_records is not None:
-                local_records = db.query(DomainDNSRecord).filter(DomainDNSRecord.domain_id == domain.id).all()
-                local_map = {(r.host, r.record_type, r.record_value): r for r in local_records}
-                
-                remote_keys = set()
-                for item in remote_records:
-                    host = normalize_record_host(str(item.get("host") or "@"))
-                    record_type = validate_record_type(str(item.get("record_type") or "A"))
-                    record_value = validate_record_value(str(item.get("record_value") or ""))
-                    ttl_raw = int(item.get("ttl") or 600)
-                    ttl = min(max(ttl_raw, 60), 86400)
-                    remark = (str(item.get("remark") or "").strip())[:255]
-                    updated_at = str(item.get("updated_at") or now_ts())
-                    
-                    key = (host, record_type, record_value)
-                    remote_keys.add(key)
-                    
-                    if key in local_map:
-                        row = local_map[key]
-                        row.ttl = ttl
-                        row.remark = remark
-                        row.updated_at = updated_at
-                    else:
-                        row = DomainDNSRecord(
-                            domain_id=int(domain.id),
-                            host=host,
-                            record_type=record_type,
-                            record_value=record_value,
-                            ttl=ttl,
-                            remark=remark,
-                            updated_at=updated_at,
-                        )
-                        db.add(row)
-                
-                # 清除云端已经不存在的记录
-                for key, row in local_map.items():
-                    if key not in remote_keys:
-                        db.delete(row)
-                        
-                domain.updated_at = now_ts()
-                db.commit()
-        except Exception:
-            pass
-    elif provider == "custom":
-        local_count = db.query(DomainDNSRecord).filter(DomainDNSRecord.domain_id == domain.id).count()
-        if local_count == 0:
+def sync_domain_dns_records(db: Session, domain: DomainRecord, current_user: User | None = None) -> None:
+    """云域名通过统一适配器完整同步；错误显式上抛，禁止吞错后假装成功。"""
+    if normalize_provider_key(domain.provider) == "custom":
+        if db.query(DomainDNSRecord).filter(DomainDNSRecord.domain_id == domain.id).count() == 0:
             backfill_dns_records_from_legacy(db, domain)
+        return
+    domain_resources.sync_records(db, domain, current_user)
 
 
 def sync_domain_from_provider(
@@ -1132,8 +1046,8 @@ def sync_domain_dns_records_throttled(
     last = _DNS_SYNC_LAST_TS.get(domain_id)
     if last is not None and (now - last) < _DNS_SYNC_THROTTLE_SECONDS:
         return
-    _DNS_SYNC_LAST_TS[domain_id] = now
     sync_domain_dns_records(db, domain, current_user)
+    _DNS_SYNC_LAST_TS[domain_id] = now
 
 
 def sync_aliyun_dns_records_if_empty(
@@ -1186,6 +1100,7 @@ def serialize_domain(record: DomainRecord, db: Session = None, current_user: Use
         "acme_enabled": (getattr(record, "acme_enabled", "no") or "no"),
         "cert_targets": (getattr(record, "cert_targets", "") or ""),
         "records_count": records_count,
+        "provider_zone_id": record.provider_zone_id or "",
     }
 
 
@@ -1211,15 +1126,7 @@ def build_domain_accounts(db: Session, current_user: User | None = None) -> list
 
 @router.get("/providers", response_model=List[DomainProviderItem])
 def get_domain_providers():
-    return [
-        {
-            "key": key,
-            "label": item["label"],
-            "supports_acme": bool(item["supports_acme"]),
-            "supports_cert_distribution": bool(item["supports_cert_distribution"]),
-        }
-        for key, item in DOMAIN_PROVIDER_REGISTRY.items()
-    ]
+    return provider_metadata()
 
 
 @router.get("/accounts", response_model=List[DomainAccountItem])
@@ -1235,39 +1142,21 @@ def get_account_domains(
     payload: DomainAccountDomainsRequest,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    _=Depends(require_permissions("action.assets.domains.manage")),
 ):
-    account_id = (payload.account_id or "").strip()
-    if not account_id:
-        raise HTTPException(status_code=400, detail="account_id 不能为空")
-
-    accounts = build_domain_accounts(db, current_user)
-    target = next((a for a in accounts if a["account_id"] == account_id), None)
-    if not target:
-        raise HTTPException(status_code=404, detail="域名账户不存在")
-
-    provider = target["provider_key"]
-    candidates: list[str] = []
-    source = "fallback"
-    if provider == "aliyun":
-        access_key, secret_key = resolve_account_keys(db, account_id, current_user)
-        candidates = fetch_aliyun_domains(access_key, secret_key)
-        source = "aliyun-api"
-    else:
-        candidates = list(DOMAIN_FALLBACK_CANDIDATES.get(provider, DOMAIN_FALLBACK_CANDIDATES["custom"]))
-        candidates.append(f"managed-{account_id.lower()[-4:]}.example.com")
-
-    existing = {
-        (row.domain or "").strip().lower()
-        for row in db.query(DomainRecord).all()
-    }
-    final_list = sorted(list({d for d in candidates if d and d.lower() not in existing}))
-    return {
-        "account_id": account_id,
-        "provider_key": provider,
-        "provider_label": provider_label(provider),
-        "source": source,
-        "domains": [{"domain": d, "display_domain": decode_domain(d)} for d in final_list],
-    }
+    account_id = payload.account_id.strip()
+    account = next((item for item in build_domain_accounts(db, current_user) if item["account_id"] == account_id), None)
+    if account is None:
+        raise HTTPException(status_code=404, detail="域名账户不存在或无权使用")
+    provider = normalize_provider_key(payload.provider or account["provider_key"])
+    adapter, _credential = cloud_operation(lambda: domain_resources.load_adapter(db, provider, account_id, current_user))
+    zones = cloud_operation(adapter.list_zones)
+    existing = {row.domain.lower() for row in db.query(DomainRecord).all()}
+    return {"account_id": account_id, "provider_key": provider, "provider_label": provider_label(provider),
+            "source": f"{provider}-api", "domains": [
+                {"domain": zone.name, "display_domain": decode_domain(zone.name), "zone_id": zone.id}
+                for zone in zones if zone.name.lower() not in existing
+            ]}
 
 
 @router.post("/import", response_model=DomainResponse)
@@ -1277,50 +1166,20 @@ def import_domain(
     current_user: User = Depends(get_current_user),
     _=Depends(require_permissions("action.assets.domains.manage")),
 ):
-    account_id = (payload.account_id or "").strip()
-    if not account_id:
-        raise HTTPException(status_code=400, detail="请选择域名账户")
-
-    domain = validate_domain_format(payload.domain)
-    exists = db.query(DomainRecord).filter(DomainRecord.domain == domain).first()
-    if exists:
-        raise HTTPException(status_code=400, detail="该域名已存在")
-
-    accounts = build_domain_accounts(db, current_user)
-    target = next((a for a in accounts if a["account_id"] == account_id), None)
-    if not target:
-        raise HTTPException(status_code=404, detail="域名账户不存在")
-
-    created_at = now_ts()
-    new_row = DomainRecord(
-        domain=domain,
-        dns_credential=target["account_name"],
-        root_domain=parse_root_domain(domain),
-        record_type="A",
-        record_value="-",
-        provider=target["provider_key"],
-        status="active",
-        account_id=target["account_id"],
-        account_name=target["account_name"],
-        created_at=created_at,
-        updated_at=created_at,
-        expires_at="",
-        expire_reminder_days=30,
-        remark=(payload.remark or "").strip()[:255],
-        acme_enabled="no",
-        cert_targets="",
-    )
-    db.add(new_row)
-    db.commit()
-    db.refresh(new_row)
-
-    # 导入时立即从云端或 WHOIS 同步到期时间及解析记录
+    name = validate_domain_format(payload.domain)
+    account = next((item for item in build_domain_accounts(db, current_user) if item["account_id"] == payload.account_id), None)
+    if account is None:
+        raise HTTPException(status_code=404, detail="域名账户不存在或无权使用")
+    provider = normalize_provider_key(payload.provider or account["provider_key"])
+    domain = cloud_operation(lambda: domain_resources.import_domain(db, provider, payload.account_id, name, payload.remark, current_user))
+    # 保留导入后立即查询到期日期的原有行为，不让新纳管域名等24小时周期。
+    # 查询失败保留未知值，由既有后台任务再次尝试，不伪造到期日期。
     try:
-        sync_domain_from_provider(db, new_row, current_user)
+        sync_domain_expiry(db, domain, current_user)
     except Exception:
-        pass
-
-    return serialize_domain(new_row, db, current_user)
+        db.rollback()
+        logging.getLogger(__name__).warning("导入域名的到期日期暂未查询成功，将由周期任务重试")
+    return serialize_domain(domain, db, current_user)
 
 
 @router.get("", response_model=List[DomainResponse])
@@ -1348,185 +1207,104 @@ def get_domains(
 
 @router.get("/{domain_id}/records", response_model=List[DomainDNSRecordResponse])
 def get_domain_dns_records(
-    domain_id: int,
-    q: str = "",
-    db: Session = Depends(get_db),
+    domain_id: int, q: str = "", db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     domain = db.query(DomainRecord).filter(DomainRecord.id == domain_id).first()
-    if not domain:
+    if domain is None:
         raise HTTPException(status_code=404, detail="域名记录未找到")
-
+    if domain.account_id:
+        domain_resources.check_domain_access(db, domain, current_user)
+    if domain.provider in DNS_PROVIDERS and domain.account_id:
+        cloud_operation(lambda: sync_domain_dns_records_throttled(db, domain, current_user))
+    elif domain.provider == "custom":
+        sync_domain_dns_records(db, domain, current_user)
     query = db.query(DomainDNSRecord).filter(DomainDNSRecord.domain_id == domain_id)
-    keyword = (q or "").strip()
-    if keyword:
-        query = query.filter(
-            or_(
-                DomainDNSRecord.host.ilike(f"%{keyword}%"),
-                DomainDNSRecord.record_type.ilike(f"%{keyword}%"),
-                DomainDNSRecord.record_value.ilike(f"%{keyword}%"),
-                DomainDNSRecord.remark.ilike(f"%{keyword}%"),
-            )
-        )
-    # 查看解析记录时只做「解析记录」的增量同步（带节流），
-    # 不再同步域名到期时间——到期时间由后台定时任务维护，避免阻塞读接口。
-    try:
-        sync_domain_dns_records_throttled(db, domain, current_user)
-    except Exception:
-        pass
+    if q.strip():
+        keyword = q.strip()
+        query = query.filter(or_(DomainDNSRecord.host.ilike(f"%{keyword}%"),
+            DomainDNSRecord.record_type.ilike(f"%{keyword}%"), DomainDNSRecord.record_values_json.ilike(f"%{keyword}%"),
+            DomainDNSRecord.record_value.ilike(f"%{keyword}%"), DomainDNSRecord.remark.ilike(f"%{keyword}%")))
+    return [serialize_dns_record(row) for row in query.order_by(DomainDNSRecord.id.desc()).all()]
 
-    rows = query.order_by(DomainDNSRecord.id.desc()).all()
-    return [serialize_dns_record(row) for row in rows]
+
+@router.post("/{domain_id}/sync")
+def refresh_domain_records(
+    domain_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user),
+    _=Depends(require_permissions("action.assets.domains.manage")),
+):
+    """显式刷新云端快照，只同步DNS数据，不修改云端记录。"""
+    domain = db.query(DomainRecord).filter(DomainRecord.id == domain_id).first()
+    if domain is None:
+        raise HTTPException(status_code=404, detail="域名不存在")
+    count = cloud_operation(lambda: domain_resources.sync_records(db, domain, current_user))
+    import time
+
+    _DNS_SYNC_LAST_TS[domain_id] = time.monotonic()
+    return {"records_count": count}
 
 
 @router.post("/{domain_id}/records", response_model=DomainDNSRecordResponse)
 def create_domain_dns_record(
-    domain_id: int,
-    payload: DomainDNSRecordCreate,
-    db: Session = Depends(get_db),
+    domain_id: int, payload: DomainDNSRecordCreate, db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
     _=Depends(require_permissions("action.assets.domains.manage")),
 ):
     domain = db.query(DomainRecord).filter(DomainRecord.id == domain_id).first()
-    if not domain:
+    if domain is None:
         raise HTTPException(status_code=404, detail="域名记录未找到")
-
-    host = normalize_record_host(payload.host)
-    record_type = validate_record_type(payload.record_type)
-    record_value = validate_record_value(payload.record_value)
-    ttl = validate_ttl(payload.ttl)
-
-    # 如果是阿里云托管域名，在创建本地记录前调用阿里云 API 新增解析记录
-    if normalize_provider_key(domain.provider or "") == "aliyun" and domain.account_id:
-        access_key, secret_key = resolve_account_keys(db, domain.account_id, current_user)
-        add_aliyun_dns_record(
-            access_key=access_key,
-            secret_key=secret_key,
-            domain_name=domain.domain,
-            host=host,
-            record_type=record_type,
-            value=record_value,
-            ttl=ttl,
-        )
-
-    row = DomainDNSRecord(
-        domain_id=domain_id,
-        host=host,
-        record_type=record_type,
-        record_value=record_value,
-        ttl=ttl,
-        remark=(payload.remark or "").strip()[:255],
-        updated_at=now_ts(),
-    )
+    if domain.provider != "custom":
+        row = cloud_operation(lambda: domain_resources.save_record(db, domain, payload, current_user))
+        return serialize_dns_record(row)
+    row = DomainDNSRecord(domain_id=domain_id, host=normalize_record_host(payload.host),
+        record_type=validate_record_type(payload.record_type), record_value=validate_record_value(payload.record_value),
+        ttl=validate_ttl(payload.ttl), remark=payload.remark.strip()[:255], updated_at=now_ts())
     db.add(row)
     domain.updated_at = now_ts()
     db.commit()
-    db.refresh(row)
     return serialize_dns_record(row)
 
 
 @router.put("/{domain_id}/records/{record_id}", response_model=DomainDNSRecordResponse)
 def update_domain_dns_record(
-    domain_id: int,
-    record_id: int,
-    payload: DomainDNSRecordUpdate,
-    db: Session = Depends(get_db),
+    domain_id: int, record_id: int, payload: DomainDNSRecordUpdate, db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
     _=Depends(require_permissions("action.assets.domains.manage")),
 ):
     domain = db.query(DomainRecord).filter(DomainRecord.id == domain_id).first()
-    if not domain:
-        raise HTTPException(status_code=404, detail="域名记录未找到")
-
-    row = db.query(DomainDNSRecord).filter(
-        DomainDNSRecord.id == record_id,
-        DomainDNSRecord.domain_id == domain_id,
-    ).first()
-    if not row:
-        raise HTTPException(status_code=404, detail="解析记录不存在")
-
-    new_host = normalize_record_host(payload.host)
-    new_record_type = validate_record_type(payload.record_type)
-    new_record_value = validate_record_value(payload.record_value)
-    new_ttl = validate_ttl(payload.ttl)
-
-    # 如果是阿里云托管域名，调用阿里云 API 修改解析记录
-    if normalize_provider_key(domain.provider or "") == "aliyun" and domain.account_id:
-        access_key, secret_key = resolve_account_keys(db, domain.account_id, current_user)
-        ali_record_id = get_aliyun_record_id(
-            access_key=access_key,
-            secret_key=secret_key,
-            domain_name=domain.domain,
-            host=row.host,
-            record_type=row.record_type,
-            value=row.record_value,
-        )
-        if not ali_record_id:
-            raise HTTPException(status_code=400, detail="未在阿里云上找到此解析记录对应的 ID，修改失败。")
-        update_aliyun_dns_record_by_id(
-            access_key=access_key,
-            secret_key=secret_key,
-            record_id=ali_record_id,
-            host=new_host,
-            record_type=new_record_type,
-            value=new_record_value,
-            ttl=new_ttl,
-        )
-
-    row.host = new_host
-    row.record_type = new_record_type
-    row.record_value = new_record_value
-    row.ttl = new_ttl
-    row.remark = (payload.remark or "").strip()[:255]
-    row.updated_at = now_ts()
+    row = db.query(DomainDNSRecord).filter(DomainDNSRecord.id == record_id, DomainDNSRecord.domain_id == domain_id).first()
+    if domain is None or row is None:
+        raise HTTPException(status_code=404, detail="域名或解析记录不存在")
+    if domain.provider != "custom":
+        row = cloud_operation(lambda: domain_resources.save_record(db, domain, payload, current_user, row))
+        return serialize_dns_record(row)
+    row.host, row.record_type = normalize_record_host(payload.host), validate_record_type(payload.record_type)
+    row.record_value, row.ttl = validate_record_value(payload.record_value), validate_ttl(payload.ttl)
+    row.record_values_json = ""
+    row.remark, row.updated_at = payload.remark.strip()[:255], now_ts()
     domain.updated_at = now_ts()
     db.commit()
-    db.refresh(row)
     return serialize_dns_record(row)
 
 
 @router.delete("/{domain_id}/records/{record_id}")
 def delete_domain_dns_record(
-    domain_id: int,
-    record_id: int,
-    db: Session = Depends(get_db),
+    domain_id: int, record_id: int, db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
     _=Depends(require_permissions("action.assets.domains.manage")),
     _risk=Depends(require_risk_ack("action.assets.domains.manage", "delete")),
 ):
-    """删除解析记录（与域名删除同键同动作：domains:delete 二次确认）。"""
+    """删除真实云端记录；保留 domains:delete 一次性风险票据守卫。"""
     domain = db.query(DomainRecord).filter(DomainRecord.id == domain_id).first()
-    if not domain:
-        raise HTTPException(status_code=404, detail="域名记录未找到")
-
-    row = db.query(DomainDNSRecord).filter(
-        DomainDNSRecord.id == record_id,
-        DomainDNSRecord.domain_id == domain_id,
-    ).first()
-    if not row:
-        raise HTTPException(status_code=404, detail="解析记录不存在")
-
-    # 如果是阿里云托管域名，在删除本地记录前，调用阿里云 API 删除解析记录
-    if normalize_provider_key(domain.provider or "") == "aliyun" and domain.account_id:
-        access_key, secret_key = resolve_account_keys(db, domain.account_id, current_user)
-        ali_record_id = get_aliyun_record_id(
-            access_key=access_key,
-            secret_key=secret_key,
-            domain_name=domain.domain,
-            host=row.host,
-            record_type=row.record_type,
-            value=row.record_value,
-        )
-        if ali_record_id:
-            delete_aliyun_dns_record_by_id(
-                access_key=access_key,
-                secret_key=secret_key,
-                record_id=ali_record_id,
-            )
-
-    db.delete(row)
-    domain.updated_at = now_ts()
-    db.commit()
+    row = db.query(DomainDNSRecord).filter(DomainDNSRecord.id == record_id, DomainDNSRecord.domain_id == domain_id).first()
+    if domain is None or row is None:
+        raise HTTPException(status_code=404, detail="域名或解析记录不存在")
+    if domain.provider != "custom":
+        cloud_operation(lambda: domain_resources.delete_record(db, domain, row, current_user))
+    else:
+        db.delete(row)
+        domain.updated_at = now_ts()
+        db.commit()
     return {"message": "success"}
 
 
@@ -1543,6 +1321,21 @@ def create_domain(
         raise HTTPException(status_code=400, detail="该域名已存在")
 
     provider_key = normalize_provider_key(payload.provider)
+    if provider_key != "custom":
+        if payload.acme_enabled and not DOMAIN_PROVIDER_REGISTRY.get(provider_key, {}).get("supports_acme"):
+            raise HTTPException(status_code=400, detail="该厂商暂未接入ACME证书签发")
+        expires_at = parse_expire_date(payload.expires_at) if payload.expires_at else ""
+        reminder_days = int(payload.expire_reminder_days or 30)
+        if not 0 <= reminder_days <= 365:
+            raise HTTPException(status_code=400, detail="到期提醒天数需在0-365之间")
+        row = cloud_operation(lambda: domain_resources.import_domain(
+            db, provider_key, payload.account_id, domain, payload.remark, current_user,
+        ))
+        row.expires_at, row.expire_reminder_days = expires_at, reminder_days
+        row.status = payload.status
+        row.acme_enabled = "yes" if payload.acme_enabled else "no"
+        db.commit()
+        return serialize_domain(row, db, current_user)
     created_at = (payload.created_at or "").strip() or now_ts()
     
     expires_at = (payload.expires_at or "").strip()
@@ -1612,6 +1405,9 @@ def update_domain(
     if not row:
         raise HTTPException(status_code=404, detail="域名记录未找到")
 
+    if payload.acme_enabled and not DOMAIN_PROVIDER_REGISTRY.get(row.provider, {}).get("supports_acme"):
+        raise HTTPException(status_code=400, detail="该厂商暂未接入ACME证书签发")
+
     row.remark = (payload.remark or "").strip()[:255]
     # 到期时间留空 = 不修改（与凭证编辑「留空不改」口径一致）；
     # 不能走 parse_expire_date("") 的 +365 天默认，否则清空日期保存会把到期时间静默推后一年
@@ -1658,6 +1454,8 @@ def batch_delete_domains(
         db.query(DomainDNSRecord).filter(DomainDNSRecord.domain_id == domain_id).delete()
         db.delete(row)
         success_count += 1
+    from app.services.credential_usage import sync_credential_usage
+    sync_credential_usage(db)
     db.commit()
     return {"success_count": success_count, "failed": failed}
 
@@ -1674,6 +1472,8 @@ def delete_domain(
         raise HTTPException(status_code=404, detail="域名记录未找到")
     db.query(DomainDNSRecord).filter(DomainDNSRecord.domain_id == domain_id).delete()
     db.delete(row)
+    from app.services.credential_usage import sync_credential_usage
+    sync_credential_usage(db)
     db.commit()
     return {"message": "success"}
 

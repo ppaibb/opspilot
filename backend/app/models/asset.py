@@ -1,7 +1,7 @@
 """
 资产管理模型
 """
-from sqlalchemy import Column, Integer, String, Float
+from sqlalchemy import Boolean, Column, Integer, String, Float, Text
 from app.db.database import Base
 
 class Asset(Base):
@@ -56,6 +56,7 @@ class DomainRecord(Base):
     status = Column(String(50), default="active")
     account_id = Column(String(80), default="", comment="域名账户ID（通常映射凭证ID）")
     account_name = Column(String(120), default="", comment="域名账户展示名")
+    provider_zone_id = Column(String(128), default="", comment="厂商域名Zone ID，写操作前复查归属")
     created_at = Column(String(30), default="", comment="加入系统时间")
     updated_at = Column(String(30), default="", comment="最近修改时间")
     expires_at = Column(String(20), default="", comment="到期时间 YYYY-MM-DD")
@@ -77,3 +78,10 @@ class DomainDNSRecord(Base):
     ttl = Column(Integer, default=600, comment="TTL 秒")
     remark = Column(String(255), default="", comment="解析记录备注")
     updated_at = Column(String(30), default="", comment="最近更新时间")
+
+    # 保留旧单值列用于兼容；完整值写入 Text，支持长 TXT 和华为云多值记录集。
+    provider_record_id = Column(String(128), default="", comment="厂商解析记录或记录集ID")
+    record_values_json = Column(Text, default="", comment="完整解析值JSON数组")
+    proxied = Column(Boolean, nullable=True, comment="Cloudflare代理开关；其他厂商为空")
+    priority = Column(Integer, nullable=True, comment="单值MX优先级")
+    read_only = Column(Boolean, default=False, comment="厂商系统记录或暂不支持的类型只读")

@@ -163,6 +163,11 @@ export const domainsApi = {
   batchDelete: (ids: number[]) => client.post('/domains/batch-delete', { ids }).then((r) => r.data),
   providers: () => client.get<DomainProviderItem[]>('/domains/providers').then((r) => r.data),
   accounts: () => client.get<DomainAccountItem[]>('/domains/accounts').then((r) => r.data),
+  accountDomains: (data: { provider: string; account_id: string }) =>
+    client.post<{ domains: Array<{ domain: string; display_domain: string; zone_id: string }> }>('/domains/account-domains', data, { timeout: 120_000 }).then((r) => r.data),
+  importDomain: (data: { provider: string; account_id: string; domain: string; remark?: string }) =>
+    client.post<DomainResponse>('/domains/import', data, { timeout: 120_000 }).then((r) => r.data),
+  syncRecords: (domainId: number) => client.post<{ records_count: number }>(`/domains/${domainId}/sync`, undefined, { timeout: 120_000 }).then((r) => r.data),
   listRecords: (domainId: number, q?: string) => client.get<DomainDNSRecordResponse[]>(`/domains/${domainId}/records`, { params: { q } }).then((r) => r.data),
   createRecord: (domainId: number, data: DomainDNSRecordCreate) => client.post<DomainDNSRecordResponse>(`/domains/${domainId}/records`, data).then((r) => r.data),
   updateRecord: (domainId: number, recordId: number, data: DomainDNSRecordCreate) => client.put<DomainDNSRecordResponse>(`/domains/${domainId}/records/${recordId}`, data).then((r) => r.data),

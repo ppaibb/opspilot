@@ -32,6 +32,7 @@ huaweicloudsdkcore==3.1.220
 huaweicloudsdkecs==3.1.220
 huaweicloudsdkiam==3.1.220
 huaweicloudsdkrms==3.1.220
+huaweicloudsdkdns==3.1.220
 
 # 测试依赖
 pytest==9.1.1

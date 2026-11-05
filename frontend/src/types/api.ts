@@ -368,6 +368,7 @@ export interface DomainResponse {
   acme_enabled?: string
   cert_targets?: string
   records_count?: number
+  provider_zone_id?: string
 }
 
 export interface DomainCreate {
@@ -405,6 +406,11 @@ export interface DomainDNSRecordResponse {
   ttl: number
   remark?: string
   updated_at?: string
+  provider_record_id?: string
+  record_values?: string[]
+  proxied?: boolean | null
+  priority?: number | null
+  read_only?: boolean
 }
 
 export interface DomainDNSRecordCreate {
@@ -413,6 +419,9 @@ export interface DomainDNSRecordCreate {
   record_value: string
   ttl?: number
   remark?: string
+  record_values?: string[]
+  proxied?: boolean
+  priority?: number
 }
 
 export interface DomainProviderItem {
@@ -420,6 +429,14 @@ export interface DomainProviderItem {
   label: string
   supports_acme: boolean
   supports_cert_distribution: boolean
+  supports_import: boolean
+  supports_dns_records: boolean
+  credential_types: string[]
+  supports_multi_values: boolean
+  supports_proxy: boolean
+  supports_priority: boolean
+  can_rename_records: boolean
+  record_types: string[]
 }
 
 export interface DomainAccountItem {

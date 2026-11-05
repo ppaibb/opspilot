@@ -4,7 +4,7 @@
 from sqlalchemy.orm import Session
 from sqlalchemy import func, or_
 
-from app.models.asset import Asset
+from app.models.asset import Asset, DomainRecord
 from app.models.credential import Credential
 
 
@@ -31,4 +31,5 @@ def sync_credential_usage(db: Session, cred_ids: set[str] | None = None) -> None
             .filter(or_(Asset.credential_ref == cred.cred_id, Asset.cloud_credential_ref == cred.cred_id))
             .scalar()
         ) or 0
-        cred.used_by = int(count)
+        domain_count = db.query(func.count(DomainRecord.id)).filter(DomainRecord.account_id == cred.cred_id).scalar() or 0
+        cred.used_by = int(count + domain_count)

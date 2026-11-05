@@ -1,8 +1,8 @@
-import { useState, useCallback, useMemo } from 'react'
+import { useState, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
-  Table, Button, Space, Input, Tag, Drawer, Form, Select, App, Tooltip, Popconfirm,
+  Table, Button, Space, Input, Tag, Drawer, Form, Select, App, Tooltip,
   Badge, Flex, Typography, Card, Statistic, Row, Col, Switch, InputNumber, Dropdown,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
@@ -14,10 +14,13 @@ import {
 } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import { domainsApi, credentialsApi } from '@/api'
-import { useRiskConfirm } from '@/hooks/usePermission'
+import { usePermission, useRiskConfirm } from '@/hooks/usePermission'
 import { useCrudResource } from '@/hooks/useCrudResource'
 import GroupSidebar from '@/components/GroupSidebar'
-import type { DomainResponse, DomainCreate, DomainUpdate, DomainDNSRecordResponse, DomainDNSRecordCreate } from '@/types/api'
+import type { DomainResponse, DomainCreate, DomainUpdate } from '@/types/api'
+
+import CloudDomainImportDrawer from './CloudDomainImportDrawer'
+import DNSRecordsDrawer from './DNSRecordsDrawer'
 
 const { Text, Paragraph } = Typography
 
@@ -51,6 +54,10 @@ export default function DomainsPage() {
   const acmeEnabled = Form.useWatch('acme_enabled', form)
 
   const { confirm } = useRiskConfirm()
+  const { has } = usePermission()
+  const canManage = has('action.assets.domains.manage')
+  const [importOpen, setImportOpen] = useState(false)
+  const { data: providers = [] } = useQuery({ queryKey: ['domain-providers'], queryFn: domainsApi.providers })
   const { modal, message } = App.useApp()
 
   const { data: credentials = [] } = useQuery({
@@ -110,7 +117,7 @@ export default function DomainsPage() {
     } else {
       setEditingId(null)
       form.resetFields()
-      form.setFieldsValue({ provider: 'aliyun', status: 'active', expire_reminder_days: 30, acme_enabled: false })
+      form.setFieldsValue({ provider: 'custom', status: 'active', expire_reminder_days: 30, acme_enabled: false })
     }
     setDrawerOpen(true)
   }, [form])
@@ -144,7 +151,7 @@ export default function DomainsPage() {
   const columns: ColumnsType<DomainResponse> = [
     {
       title: '域名', dataIndex: 'domain', width: 200, fixed: 'left',
-      render: (v: string, r) => <a onClick={() => openDrawer(r)}>{r.display_domain || v || '-'}</a>,
+      render: (v: string, r) => canManage ? <a onClick={() => openDrawer(r)}>{r.display_domain || v || '-'}</a> : (r.display_domain || v || '-'),
     },
     { title: '根域名', dataIndex: 'root_domain', width: 160, render: (v: string) => v || '-' },
     {
@@ -189,6 +196,7 @@ export default function DomainsPage() {
     {
       title: '操作', key: 'action', width: 100, fixed: 'right',
       render: (_: unknown, r) => {
+        if (!canManage) return null
         const moreItems: MenuProps['items'] = [
           { key: 'delete', icon: <DeleteOutlined />, label: '删除域名', danger: true },
         ]
@@ -287,12 +295,15 @@ export default function DomainsPage() {
               </Button>
             )}
           </Space>
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => openDrawer()}>新增域名</Button>
+          {canManage && <Space>
+            <Button onClick={() => setImportOpen(true)} disabled={!providers.some((item) => item.supports_import)}>导入云域名</Button>
+            <Button type="primary" icon={<PlusOutlined />} onClick={() => openDrawer()}>新增本地域名</Button>
+          </Space>}
         </Flex>
 
         <Table<DomainResponse>
           rowKey="id"
-          rowSelection={{ selectedRowKeys: selectedKeys, onChange: (keys) => setSelectedKeys(keys as string[]) }}
+          rowSelection={canManage ? { selectedRowKeys: selectedKeys, onChange: (keys) => setSelectedKeys(keys as string[]) } : undefined}
           columns={columns}
           dataSource={filtered}
           loading={isLoading}
@@ -304,7 +315,7 @@ export default function DomainsPage() {
 
       {/* ── 新增/编辑抽屉 ── */}
       <Drawer
-        title={editingId ? '编辑域名' : '新增域名'}
+        title={editingId ? '编辑域名' : '新增本地域名'}
         open={drawerOpen}
         onClose={() => setDrawerOpen(false)}
         width={480}
@@ -312,23 +323,18 @@ export default function DomainsPage() {
       >
         <Form form={form} layout="vertical">
           <Form.Item name="domain" label="域名" rules={[{ required: true, message: '请输入域名' }]}>
-            <Input prefix={<GlobalOutlined />} placeholder="例如 app.example.com" />
+            <Input prefix={<GlobalOutlined />} placeholder="例如 app.example.com" disabled={!!editingId} />
           </Form.Item>
           <Form.Item name="root_domain" label="根域名（可选）">
-            <Input placeholder="例如 example.com" />
+            <Input placeholder="例如 example.com" disabled={!!editingId} />
           </Form.Item>
           <Form.Item name="provider" label="服务商" rules={[{ required: true }]}>
-            <Select options={[
-              { value: 'aliyun', label: '阿里云 DNS' },
-              { value: 'tencent', label: '腾讯云 DNSPod' },
-              { value: 'aws', label: 'AWS Route53' },
-              { value: 'cloudflare', label: 'Cloudflare' },
-              { value: 'custom', label: '自定义服务商' },
-            ]} />
+            <Select disabled={!!editingId} options={(editingId ? providers : providers.filter((item) => item.key === 'custom'))
+              .map((item) => ({ value: item.key, label: item.label }))} />
           </Form.Item>
 
           <Form.Item name="acme_enabled" label="启用 ACME 自动证书申请" valuePropName="checked">
-            <Switch />
+            <Switch disabled={!providers.find((item) => item.key === form.getFieldValue('provider'))?.supports_acme} />
           </Form.Item>
 
           {acmeEnabled && (
@@ -364,146 +370,8 @@ export default function DomainsPage() {
       </Drawer>
 
       {/* ── DNS 记录列表 Drawer (带快速模糊搜索) ── */}
-      <DNSRecordsDrawer domain={recordsDomain} onClose={() => setRecordsDomain(null)} />
+      {recordsDomain && <DNSRecordsDrawer key={recordsDomain.id} domain={recordsDomain} providers={providers} onClose={() => setRecordsDomain(null)} />}
+      {importOpen && <CloudDomainImportDrawer providers={providers} onClose={() => setImportOpen(false)} />}
     </Flex>
-  )
-}
-
-// ── DNS 解析记录抽屉（带 Input.Search 搜索与类型筛选） ──
-function DNSRecordsDrawer({ domain, onClose }: { domain: DomainResponse | null; onClose: () => void }) {
-  const queryClient = useQueryClient()
-  const { confirm } = useRiskConfirm()
-  const { message } = App.useApp()
-  const [form] = Form.useForm<DomainDNSRecordCreate>()
-  const [editingRecordId, setEditingRecordId] = useState<number | null>(null)
-
-  // 搜索与类型筛选
-  const [recordSearch, setRecordSearch] = useState('')
-  const [recordTypeFilter, setRecordTypeFilter] = useState<string>('ALL')
-
-  const { data: records = [], isLoading } = useQuery({
-    queryKey: ['domain-records', domain?.id],
-    queryFn: () => domainsApi.listRecords(domain!.id),
-    enabled: !!domain,
-  })
-
-  const saveMut = useMutation({
-    mutationFn: (data: DomainDNSRecordCreate) =>
-      editingRecordId
-        ? domainsApi.updateRecord(domain!.id, editingRecordId, data)
-        : domainsApi.createRecord(domain!.id, data),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['domain-records', domain?.id] })
-      queryClient.invalidateQueries({ queryKey: ['domains'] })
-      form.resetFields()
-      setEditingRecordId(null)
-      message.success('保存成功')
-    },
-    onError: () => message.error('操作失败'),
-  })
-
-  const deleteMut = useMutation({
-    mutationFn: (recordId: number) => domainsApi.deleteRecord(domain!.id, recordId),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['domain-records', domain?.id] })
-      queryClient.invalidateQueries({ queryKey: ['domains'] })
-      message.success('删除成功')
-    },
-  })
-
-  const filteredRecords = useMemo(() => {
-    return records.filter((r) => {
-      const matchSearch = !recordSearch || r.host.includes(recordSearch) || r.record_value.includes(recordSearch)
-      const matchType = recordTypeFilter === 'ALL' || r.record_type === recordTypeFilter
-      return matchSearch && matchType
-    })
-  }, [records, recordSearch, recordTypeFilter])
-
-  const handleAdd = () => {
-    form.validateFields().then((values) => saveMut.mutate(values))
-  }
-
-  const editRecord = (r: DomainDNSRecordResponse) => {
-    setEditingRecordId(r.id)
-    form.setFieldsValue({ host: r.host, record_type: r.record_type, record_value: r.record_value, ttl: r.ttl, remark: r.remark })
-  }
-
-  const columns: ColumnsType<DomainDNSRecordResponse> = [
-    { title: '主机记录', dataIndex: 'host', width: 120, render: (v: string) => v || '-' },
-    { title: '类型', dataIndex: 'record_type', width: 80, render: (v: string) => <Tag color="blue">{v || '-'}</Tag> },
-    { title: '记录值', dataIndex: 'record_value', ellipsis: true, render: (v: string) => v || '-' },
-    { title: 'TTL', dataIndex: 'ttl', width: 80, render: (v: number) => v ?? '-' },
-    {
-      title: '操作', key: 'action', width: 100,
-      render: (_: unknown, r) => (
-        <Space size="small">
-          <Button size="small" icon={<EditOutlined />} onClick={() => editRecord(r)} />
-          <Popconfirm title="删除该记录？" onConfirm={() => confirm('domains:delete', () => deleteMut.mutate(r.id))}>
-            <Button size="small" danger icon={<DeleteOutlined />} />
-          </Popconfirm>
-        </Space>
-      ),
-    },
-  ]
-
-  return (
-    <Drawer
-      title={domain ? `DNS 解析记录 · ${domain.domain}` : 'DNS 解析记录'}
-      open={!!domain}
-      onClose={onClose}
-      width={720}
-    >
-      <Form form={form} layout="inline" style={{ marginBottom: 16, rowGap: 8, flexWrap: 'wrap' }}>
-        <Form.Item name="host" initialValue="@">
-          <Input placeholder="主机记录" style={{ width: 100 }} />
-        </Form.Item>
-        <Form.Item name="record_type" initialValue="A">
-          <Select style={{ width: 90 }} options={['A', 'AAAA', 'CNAME', 'MX', 'TXT', 'NS'].map((v) => ({ value: v, label: v }))} />
-        </Form.Item>
-        <Form.Item name="record_value" rules={[{ required: true, message: '请输入记录值' }]}>
-          <Input placeholder="记录值" style={{ width: 160 }} />
-        </Form.Item>
-        <Form.Item name="ttl" initialValue={600}>
-          <InputNumber placeholder="TTL" style={{ width: 90 }} />
-        </Form.Item>
-        <Form.Item>
-          <Button type="primary" onClick={handleAdd} loading={saveMut.isPending}>
-            {editingRecordId ? '更新' : '添加'}
-          </Button>
-        </Form.Item>
-      </Form>
-
-      <Flex justify="space-between" align="center" style={{ marginBottom: 12 }}>
-        <Input.Search
-          placeholder="搜索主机记录或解析值"
-          value={recordSearch}
-          onChange={(e) => setRecordSearch(e.target.value)}
-          allowClear
-          style={{ width: 240 }}
-        />
-        <Select
-          value={recordTypeFilter}
-          onChange={setRecordTypeFilter}
-          style={{ width: 120 }}
-          options={[
-            { value: 'ALL', label: '全部类型' },
-            { value: 'A', label: 'A 记录' },
-            { value: 'CNAME', label: 'CNAME' },
-            { value: 'TXT', label: 'TXT 记录' },
-            { value: 'MX', label: 'MX 邮件' },
-            { value: 'AAAA', label: 'AAAA (IPv6)' },
-          ]}
-        />
-      </Flex>
-
-      <Table<DomainDNSRecordResponse>
-        rowKey="id"
-        columns={columns}
-        dataSource={filteredRecords}
-        loading={isLoading}
-        size="small"
-        pagination={{ defaultPageSize: 15 }}
-      />
-    </Drawer>
   )
 }

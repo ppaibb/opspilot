@@ -12,7 +12,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.api import assets
 from app.core.crypto import encrypt_secret
-from app.models.asset import Asset
+from app.models.asset import Asset, DomainRecord
 from app.models.credential import Credential
 from app.services import huawei_cloud as cloud
 from app.services import huawei_asset_sync as sync
@@ -82,6 +82,7 @@ def db():
     # ASGI 同步路由运行在线程池，测试共享同一内存库，避免不同连接产生空库。
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     Asset.__table__.create(engine)
+    DomainRecord.__table__.create(engine)
     Credential.__table__.create(engine)
     with Session(engine) as session:
         yield session
