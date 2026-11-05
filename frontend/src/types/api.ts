@@ -394,6 +394,7 @@ export interface DomainUpdate {
   status?: string
   acme_enabled?: boolean
   cert_targets?: string
+  account_id?: string
 }
 
 export interface DomainDNSRecordResponse {

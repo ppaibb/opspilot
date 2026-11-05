@@ -49,6 +49,7 @@ export default function DomainsPage() {
 
   const [form] = Form.useForm<DomainCreate>()
   const acmeEnabled = Form.useWatch('acme_enabled', form)
+  const selectedProvider = Form.useWatch('provider', form)
 
   const { confirm } = useRiskConfirm()
   const { modal, message } = App.useApp()
@@ -57,6 +58,16 @@ export default function DomainsPage() {
     queryKey: ['credentials'],
     queryFn: () => credentialsApi.list(),
   })
+
+  // 域名账户：凭证管理中类型为 AccessKey/Token 的云 API 凭证，按服务商推断归属
+  const { data: domainAccounts = [] } = useQuery({
+    queryKey: ['domain-accounts'],
+    queryFn: () => domainsApi.accounts(),
+  })
+
+  const accountOptions = domainAccounts
+    .filter((a) => !selectedProvider || a.provider_key === selectedProvider)
+    .map((a) => ({ value: a.account_id, label: `${a.account_name}（${a.provider_label}）` }))
 
   const { data: domains = [], isLoading } = useQuery<DomainResponse[]>({
     queryKey: ['domains'],
@@ -101,6 +112,7 @@ export default function DomainsPage() {
         domain: dom.domain,
         root_domain: dom.root_domain,
         provider: dom.provider,
+        account_id: dom.account_id || undefined,
         status: dom.status,
         expires_at: dom.expires_at,
         expire_reminder_days: dom.expire_reminder_days,
@@ -117,7 +129,12 @@ export default function DomainsPage() {
 
   const handleSave = () => {
     form.validateFields().then((values) => {
-      saveMut.mutate({ id: editingId ?? undefined, data: values })
+      // 编辑时用户主动清空账户下拉 = 解绑：isFieldTouched 区分“没动过”和“清空了”
+      const data: Record<string, unknown> = { ...values }
+      if (editingId && form.isFieldTouched('account_id') && values.account_id === undefined) {
+        data.account_id = ''
+      }
+      saveMut.mutate({ id: editingId ?? undefined, data: data as DomainCreate | DomainUpdate })
       if (values.acme_enabled) {
         modal.info({
           title: 'ACME 自动证书申请已触发',
@@ -318,13 +335,40 @@ export default function DomainsPage() {
             <Input placeholder="例如 example.com" />
           </Form.Item>
           <Form.Item name="provider" label="服务商" rules={[{ required: true }]}>
-            <Select options={[
-              { value: 'aliyun', label: '阿里云 DNS' },
-              { value: 'tencent', label: '腾讯云 DNSPod' },
-              { value: 'aws', label: 'AWS Route53' },
-              { value: 'cloudflare', label: 'Cloudflare' },
-              { value: 'custom', label: '自定义服务商' },
-            ]} />
+            <Select
+              options={[
+                { value: 'aliyun', label: '阿里云 DNS' },
+                { value: 'tencent', label: '腾讯云 DNSPod' },
+                { value: 'huawei', label: '华为云 DNS' },
+                { value: 'aws', label: 'AWS Route53' },
+                { value: 'cloudflare', label: 'Cloudflare' },
+                { value: 'custom', label: '自定义服务商' },
+              ]}
+              onChange={(v) => {
+                const cur = form.getFieldValue('account_id') as string | undefined
+                if (cur) {
+                  const acc = domainAccounts.find((a) => a.account_id === cur)
+                  if (acc && acc.provider_key !== v) form.setFieldsValue({ account_id: undefined })
+                }
+              }}
+            />
+          </Form.Item>
+          <Form.Item
+            name="account_id"
+            label="域名账户"
+            extra="用于同步解析记录；不选则不同步"
+          >
+            <Select
+              placeholder="选择域名账户（凭证管理中的云 API 凭证）"
+              allowClear
+              options={accountOptions}
+              onChange={(v) => {
+                const acc = domainAccounts.find((a) => a.account_id === v)
+                if (acc && acc.provider_key !== selectedProvider) {
+                  form.setFieldsValue({ provider: acc.provider_key })
+                }
+              }}
+            />
           </Form.Item>
 
           <Form.Item name="acme_enabled" label="启用 ACME 自动证书申请" valuePropName="checked">

@@ -1,7 +1,7 @@
 """
 域名资产管理接口
 """
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import base64
 import hashlib
 import hmac
@@ -174,6 +174,8 @@ class DomainUpdate(BaseModel):
     status: str = "active"
     acme_enabled: bool = False
     cert_targets: str = ""
+    # 域名账户：None=本次不改，""=解绑，非空=绑定到该凭证（编辑页可给已建域名补关联）
+    account_id: str | None = None
 
 
 class DomainBatchDeleteRequest(BaseModel):
@@ -687,12 +689,18 @@ def parse_access_key_content(raw: str) -> tuple[str, str]:
                 parsed.get("access_key")
                 or parsed.get("accessKey")
                 or parsed.get("AccessKeyId")
+                or parsed.get("access_key_id")
+                or parsed.get("SecretId")
+                or parsed.get("secret_id")
+                or parsed.get("secretId")
                 or ""
             ).strip()
             secret_key = str(
                 parsed.get("secret_key")
                 or parsed.get("secretKey")
                 or parsed.get("AccessKeySecret")
+                or parsed.get("SecretKey")
+                or parsed.get("secret_key")
                 or ""
             ).strip()
             if access_key and secret_key:
@@ -717,6 +725,7 @@ def parse_access_key_content(raw: str) -> tuple[str, str]:
         kv.get("access_key")
         or kv.get("accesskey")
         or kv.get("accesskeyid")
+        or kv.get("secretid")
         or ""
     ).strip()
     secret_key = (
@@ -728,11 +737,17 @@ def parse_access_key_content(raw: str) -> tuple[str, str]:
     return access_key, secret_key
 
 
-def resolve_account_keys(
+def resolve_account_credential(
     db: Session,
     account_id: str,
     current_user: User | None = None,
-) -> tuple[str, str]:
+) -> tuple[Credential, str, str]:
+    """解析域名账户凭证：返回（凭证行，AccessKey/SecretKey）。
+
+    三家云厂商在凭证管理里的内容格式统一为 JSON {"access_key", "secret_key"}
+    （见 AGENTS.md 凭证接口约定），SecretId/SecretKey 只是腾讯云的叫法，
+    解析时同样兼容。
+    """
     row = db.query(Credential).filter(Credential.cred_id == account_id).first()
     row = ensure_credential_access(
         row,
@@ -746,6 +761,15 @@ def resolve_account_keys(
     access_key, secret_key = parse_access_key_content(raw)
     if not access_key or not secret_key:
         raise HTTPException(status_code=400, detail="凭证内容无法解析 AccessKey/SecretKey，请在凭证管理按 AK/SK 结构保存")
+    return row, access_key, secret_key
+
+
+def resolve_account_keys(
+    db: Session,
+    account_id: str,
+    current_user: User | None = None,
+) -> tuple[str, str]:
+    _, access_key, secret_key = resolve_account_credential(db, account_id, current_user)
     return access_key, secret_key
 
 
@@ -896,6 +920,377 @@ def fetch_aliyun_domain_records(access_key: str, secret_key: str, domain_name: s
     return result
 
 
+def _tencent_dnspod_client(access_key: str, secret_key: str):
+    """构建腾讯云 DNSPod 客户端（复用项目已有的 tencentcloud-sdk-python 依赖）。
+
+    DNSPod 是全局服务、无 Region 概念；沿用 assets.py 里 CVM 全局接口的做法，
+    region 固定传 ap-guangzhou，实际 endpoint 由 HttpProfile 指定。
+    """
+    from tencentcloud.common import credential
+    from tencentcloud.common.profile.client_profile import ClientProfile
+    from tencentcloud.common.profile.http_profile import HttpProfile
+    from tencentcloud.dnspod.v20210323 import dnspod_client
+
+    cred = credential.Credential(access_key, secret_key)
+    http_profile = HttpProfile()
+    http_profile.endpoint = "dnspod.tencentcloudapi.com"
+    client_profile = ClientProfile()
+    client_profile.httpProfile = http_profile
+    return dnspod_client.DnspodClient(cred, "ap-guangzhou", client_profile)
+
+
+def fetch_tencent_domains(access_key: str, secret_key: str) -> list[str]:
+    """调用 DNSPod DescribeDomainList 拉取账户下全部域名。"""
+    from tencentcloud.common.exception.tencent_cloud_sdk_exception import (
+        TencentCloudSDKException,
+    )
+    from tencentcloud.dnspod.v20210323 import models as dnspod_models
+
+    client = _tencent_dnspod_client(access_key, secret_key)
+    result: list[str] = []
+    offset = 0
+    limit = 3000
+    while True:
+        req = dnspod_models.DescribeDomainListRequest()
+        req.Type = "ALL"
+        req.Offset = offset
+        req.Limit = limit
+        try:
+            resp = client.DescribeDomainList(req)
+        except TencentCloudSDKException as e:
+            raise HTTPException(status_code=400, detail=f"拉取腾讯云域名失败：{e.code} {e.message}".strip())
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"拉取腾讯云域名失败：网络异常({str(e)})")
+
+        items = list(getattr(resp, "DomainList", None) or [])
+        for item in items:
+            name = str(getattr(item, "Name", "") or "").strip().lower()
+            if name:
+                result.append(name)
+
+        count_info = getattr(resp, "DomainCountInfo", None)
+        total_count = int(getattr(count_info, "DomainTotal", 0) or 0) if count_info else 0
+        offset += len(items)
+        if not items or (total_count and offset >= total_count) or len(items) < limit:
+            break
+        if offset > 100000:
+            break
+
+    return sorted(list(dict.fromkeys(result)))
+
+
+def fetch_tencent_domain_records(access_key: str, secret_key: str, domain_name: str) -> list[dict]:
+    """调用 DNSPod DescribeRecordList 拉取单个域名的全部解析记录。
+
+    返回与 fetch_aliyun_domain_records 同构的 dict 列表：
+    host / record_type / record_value / ttl / remark / updated_at。
+    同一 (host, type, value) 在多条线路下重复出现时只保留第一条——本地
+    domain_dns_records 表没有线路列，展开存会越同步越多（见 sync 注释）。
+    """
+    from tencentcloud.common.exception.tencent_cloud_sdk_exception import (
+        TencentCloudSDKException,
+    )
+    from tencentcloud.dnspod.v20210323 import models as dnspod_models
+
+    client = _tencent_dnspod_client(access_key, secret_key)
+    result: list[dict] = []
+    seen: set[tuple[str, str, str]] = set()
+    offset = 0
+    limit = 3000
+    while True:
+        req = dnspod_models.DescribeRecordListRequest()
+        req.Domain = domain_name
+        req.Offset = offset
+        req.Limit = limit
+        try:
+            resp = client.DescribeRecordList(req)
+        except TencentCloudSDKException as e:
+            raise HTTPException(status_code=400, detail=f"拉取腾讯云解析记录失败：{e.code} {e.message}".strip())
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"拉取腾讯云解析记录失败：网络异常({str(e)})")
+
+        items = list(getattr(resp, "RecordList", None) or [])
+        for item in items:
+            host = str(getattr(item, "Name", "") or "@").strip() or "@"
+            record_type = str(getattr(item, "Type", "") or "A").strip().upper() or "A"
+            value = str(getattr(item, "Value", "") or "").strip()
+            if not value:
+                continue
+            key = (host.lower(), record_type, value)
+            if key in seen:
+                continue
+            seen.add(key)
+            try:
+                ttl = int(getattr(item, "TTL", 0) or 600)
+            except Exception:
+                ttl = 600
+            remark = str(getattr(item, "Remark", "") or "").strip()
+            line = str(getattr(item, "Line", "") or "").strip()
+            if line and line != "默认":
+                remark = f"{remark} [线路:{line}]".strip()[:255]
+            updated_at = str(getattr(item, "UpdatedOn", "") or "").strip() or now_ts()
+            result.append(
+                {
+                    "host": host,
+                    "record_type": record_type,
+                    "record_value": value,
+                    "ttl": ttl,
+                    "remark": remark,
+                    "updated_at": updated_at,
+                }
+            )
+
+        count_info = getattr(resp, "RecordCountInfo", None)
+        total_count = int(getattr(count_info, "TotalCount", 0) or 0) if count_info else 0
+        offset += len(items)
+        if not items or (total_count and offset >= total_count) or len(items) < limit:
+            break
+        if offset > 100000:
+            break
+
+    return result
+
+
+HUAWEI_DNS_REGIONS: tuple[str, ...] = ("ap-southeast-3", "cn-north-4")
+"""华为云 DNS 的区域 endpoint 候选。
+
+公网 Zone 是全局资源，但 API 本身是区域 endpoint；最新版官方文档要求
+选 ap-southeast-3，旧版写的是 cn-north-4，两版说法不一致。实现上按顺序
+尝试：先 ap-southeast-3，查不到/报错再试 cn-north-4。区域错了的典型症状
+是 404 或空列表（不是 401），不要误判为 AK/SK 错误。
+无区域主机 dns.myhuaweicloud.com 未出现在官方 SDK region 表里，不用。
+"""
+
+
+def _huawei_encode(value: str) -> str:
+    """RFC 3986 编码：只保留 A-Z a-z 0-9 - _ . ~ 不编码，其余 %XY 大写。"""
+    return quote(str(value or ""), safe="-_.~")
+
+
+def _huawei_canonical_uri(path: str) -> str:
+    uri = "/".join(_huawei_encode(seg) for seg in path.split("/"))
+    return uri if uri.endswith("/") else uri + "/"
+
+
+def _huawei_canonical_query_string(params: dict) -> str:
+    items = sorted((_huawei_encode(k), _huawei_encode(v)) for k, v in params.items())
+    return "&".join(f"{k}={v}" for k, v in items)
+
+
+def _huawei_signed_get(
+    access_key: str,
+    secret_key: str,
+    region: str,
+    path: str,
+    params: dict,
+) -> requests.Response:
+    """华为云 SDK-HMAC-SHA256 签名 GET（无新增依赖，纯 stdlib + requests）。
+
+    官方《API Request Signing Guide》：CanonicalRequest 六行、StringToSign
+    三行，Signature = Hex(HMAC-SHA256(SK, StringToSign))，SK 直接做 key，
+    没有 AWS SigV4 式多步派生。签名的 query string 与实际发出的 URL 共用
+    同一份已编码字符串，避免 requests 二次编码导致签名不一致。
+    """
+    host = f"dns.{region}.myhuaweicloud.com"
+    sdk_date = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    qs = _huawei_canonical_query_string(params)
+    headers = {"content-type": "application/json", "host": host, "x-sdk-date": sdk_date}
+    signed_headers = "content-type;host;x-sdk-date"
+    canonical_headers = "".join(f"{k}:{v}\n" for k, v in sorted(headers.items()))
+    canonical_request = "\n".join(
+        [
+            "GET",
+            _huawei_canonical_uri(path),
+            qs,
+            canonical_headers,
+            signed_headers,
+            hashlib.sha256(b"").hexdigest(),  # GET 无 body
+        ]
+    )
+    string_to_sign = "\n".join(
+        [
+            "SDK-HMAC-SHA256",
+            sdk_date,
+            hashlib.sha256(canonical_request.encode("utf-8")).hexdigest(),
+        ]
+    )
+    signature = hmac.new(
+        secret_key.encode("utf-8"), string_to_sign.encode("utf-8"), hashlib.sha256
+    ).hexdigest()
+    url = f"https://{host}{path}" + ("?" + qs if qs else "")
+    try:
+        return requests.get(
+            url,
+            headers={
+                "Content-Type": "application/json",
+                "X-Sdk-Date": sdk_date,
+                "Authorization": (
+                    f"SDK-HMAC-SHA256 Access={access_key}, "
+                    f"SignedHeaders={signed_headers}, Signature={signature}"
+                ),
+            },
+            timeout=15,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"华为云 DNS 请求失败：网络异常({str(e)})")
+
+
+def _huawei_list_all(
+    access_key: str,
+    secret_key: str,
+    region: str,
+    path: str,
+    params: dict,
+    items_key: str,
+) -> list[dict]:
+    """华为云 DNS marker 分页拉全量：marker = 上一页最后一条资源的 id。"""
+    out: list[dict] = []
+    marker: str | None = None
+    limit = int(params.get("limit", 500) or 500)
+    for _ in range(50):
+        page_params = dict(params)
+        if marker:
+            page_params["marker"] = marker
+        resp = _huawei_signed_get(access_key, secret_key, region, path, page_params)
+        if resp.status_code >= 400:
+            payload = {}
+            try:
+                payload = resp.json()
+            except Exception:
+                pass
+            code = payload.get("code", "") if isinstance(payload, dict) else ""
+            message = payload.get("message", "") if isinstance(payload, dict) else ""
+            raise HTTPException(
+                status_code=400,
+                detail=f"华为云 DNS 请求失败：HTTP {resp.status_code} {code} {message}".strip(),
+            )
+        try:
+            payload = resp.json()
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"华为云 DNS 返回非 JSON：{str(e)}")
+        page = payload.get(items_key, []) if isinstance(payload, dict) else []
+        if not page:
+            break
+        out.extend(item for item in page if isinstance(item, dict))
+        total = 0
+        metadata = payload.get("metadata", {}) if isinstance(payload, dict) else {}
+        if isinstance(metadata, dict):
+            try:
+                total = int(metadata.get("total_count") or 0)
+            except Exception:
+                total = 0
+        if (total and len(out) >= total) or len(page) < limit:
+            break
+        marker = str(page[-1].get("id") or "")
+        if not marker:
+            break
+    return out
+
+
+def fetch_huawei_domains(access_key: str, secret_key: str) -> list[str]:
+    """调用华为云 DNS ListZones 拉取账户下全部公网 Zone（域名）。"""
+    result: list[str] = []
+    last_error: Exception | None = None
+    for region in HUAWEI_DNS_REGIONS:
+        try:
+            zones = _huawei_list_all(
+                access_key, secret_key, region, "/v2/zones",
+                {"type": "public", "limit": "500"}, "zones",
+            )
+        except Exception as e:  # noqa: BLE001
+            last_error = e
+            continue
+        for zone in zones:
+            name = str(zone.get("name") or "").strip().lower().rstrip(".")
+            if name:
+                result.append(name)
+        if result:
+            break
+    if not result and last_error is not None:
+        raise last_error
+    return sorted(list(dict.fromkeys(result)))
+
+
+def _find_huawei_zone(
+    access_key: str, secret_key: str, apex_domain: str
+) -> tuple[dict, str] | None:
+    """按 apex 精确查找公网 Zone，返回（zone, region）；各区域都找不到返回 None。"""
+    last_error: Exception | None = None
+    for region in HUAWEI_DNS_REGIONS:
+        try:
+            zones = _huawei_list_all(
+                access_key, secret_key, region, "/v2/zones",
+                {"type": "public", "name": apex_domain, "search_mode": "equal", "limit": "100"},
+                "zones",
+            )
+        except Exception as e:  # noqa: BLE001
+            last_error = e
+            continue
+        for zone in zones:
+            name = str(zone.get("name") or "").strip().lower().rstrip(".")
+            if name == apex_domain:
+                return zone, region
+    if last_error is not None:
+        raise last_error
+    return None
+
+
+def fetch_huawei_domain_records(access_key: str, secret_key: str, domain_name: str) -> list[dict]:
+    """调用华为云 DNS ListRecordSets 拉取单个域名的全部解析记录。
+
+    domain_name 可以是子域名（如 www.example.com）：先取 apex 找 Zone，
+    再拉该 Zone 的 recordsets。recordset 的 name 是完整 FQDN（带结尾点号），
+    去掉 zone 后缀即主机头，apex 本身对应 @；一个 recordset 的 records 是
+    数组，展开成一值一行。SOA 等同步不支持的类型由 _normalize_synced_record
+    过滤。Zone 找不到时抛错（而不是返回空列表），避免同步误删本地已有记录。
+    """
+    apex = parse_root_domain(domain_name)
+    found = _find_huawei_zone(access_key, secret_key, apex)
+    if found is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"未在华为云 DNS 找到域名 {domain_name} 对应的 Zone，请确认域名已在华为云 DNS 托管，"
+            "且 AK/SK 有 dns:zone:list / dns:recordset:list 权限",
+        )
+    zone, region = found
+    zone_name = str(zone.get("name") or "").strip().lower().rstrip(".")
+    zone_id = str(zone.get("id") or "")
+    recordsets = _huawei_list_all(
+        access_key, secret_key, region, f"/v2/zones/{zone_id}/recordsets",
+        {"limit": "500"}, "recordsets",
+    )
+    result: list[dict] = []
+    for item in recordsets:
+        rs_name = str(item.get("name") or "").strip().lower().rstrip(".")
+        if rs_name == zone_name:
+            host = "@"
+        elif rs_name.endswith("." + zone_name):
+            host = rs_name[: -(len(zone_name) + 1)]
+        else:
+            host = rs_name
+        record_type = str(item.get("type") or "").strip().upper()
+        try:
+            ttl = int(item.get("ttl") or 300)
+        except Exception:
+            ttl = 300
+        updated_at = parse_utc_to_local(str(item.get("update_at") or ""))
+        for value in item.get("records") or []:
+            value_text = str(value or "").strip()
+            if not value_text:
+                continue
+            result.append(
+                {
+                    "host": host,
+                    "record_type": record_type,
+                    "record_value": value_text,
+                    "ttl": ttl,
+                    "remark": "",
+                    "updated_at": updated_at,
+                }
+            )
+    return result
+
+
 def validate_domain_format(domain: str) -> str:
     full_domain = (domain or "").strip().lower().rstrip(".")
     if not full_domain:
@@ -1037,6 +1432,56 @@ def sync_domain_expiry(
         db.commit()
 
 
+def _fetch_remote_domain_records(
+    provider: str,
+    access_key: str,
+    secret_key: str,
+    domain_name: str,
+) -> list[dict] | None:
+    """按厂商分派解析记录拉取。返回 None 表示该厂商未实现拉取。"""
+    if provider == "aliyun":
+        return fetch_aliyun_domain_records(access_key, secret_key, domain_name)
+    if provider == "tencent":
+        return fetch_tencent_domain_records(access_key, secret_key, domain_name)
+    if provider == "huawei":
+        return fetch_huawei_domain_records(access_key, secret_key, domain_name)
+    return None
+
+
+SYNCED_RECORD_TYPES = {"A", "AAAA", "CNAME", "TXT", "MX", "NS"}
+
+
+def _normalize_synced_record(item: dict) -> dict | None:
+    """归一化一条云端同步回来的解析记录；不支持的类型/非法值返回 None 跳过。
+
+    与用户手动新建记录的严格校验不同：同步是批量操作，一条脏数据不能
+    让整批同步静默失败（此前 validate_record_type 抛异常会被外层吞掉，
+    导致整个域名 0 条记录）。主机头允许多级（如华为云 a.b 子域）。
+    """
+    host = str(item.get("host") or "@").strip().lower().rstrip(".") or "@"
+    record_type = str(item.get("record_type") or "").strip().upper()
+    if record_type not in SYNCED_RECORD_TYPES:
+        return None
+    record_value = str(item.get("record_value") or "").strip()
+    if not record_value or len(record_value) > 255:
+        return None
+    try:
+        ttl = int(item.get("ttl") or 600)
+    except Exception:
+        ttl = 600
+    ttl = min(max(ttl, 60), 86400)
+    remark = str(item.get("remark") or "").strip()[:255]
+    updated_at = str(item.get("updated_at") or now_ts())
+    return {
+        "host": host,
+        "record_type": record_type,
+        "record_value": record_value,
+        "ttl": ttl,
+        "remark": remark,
+        "updated_at": updated_at,
+    }
+
+
 def sync_domain_dns_records(
     db: Session,
     domain: DomainRecord,
@@ -1044,30 +1489,37 @@ def sync_domain_dns_records(
 ) -> None:
     """
     同步 DNS 解析记录 (domain_dns_records)：获取云端真实记录，合并(upsert)并清理本地失效记录。
+
+    要求域名已关联域名账户（account_id 非空）：只有拿着账户 AK/SK 才能调云 API。
+    未关联账户、或厂商未实现拉取时不做任何事——调用方需引导用户先选账户。
     """
     provider = normalize_provider_key(domain.provider or "")
 
-    if provider == "aliyun" and domain.account_id:
+    if provider in {"aliyun", "tencent", "huawei"} and domain.account_id:
         try:
             access_key, secret_key = resolve_account_keys(db, domain.account_id, current_user)
-            remote_records = fetch_aliyun_domain_records(access_key, secret_key, domain.domain or "")
+            remote_records = _fetch_remote_domain_records(
+                provider, access_key, secret_key, domain.domain or ""
+            )
             if remote_records is not None:
                 local_records = db.query(DomainDNSRecord).filter(DomainDNSRecord.domain_id == domain.id).all()
                 local_map = {(r.host, r.record_type, r.record_value): r for r in local_records}
-                
+
                 remote_keys = set()
                 for item in remote_records:
-                    host = normalize_record_host(str(item.get("host") or "@"))
-                    record_type = validate_record_type(str(item.get("record_type") or "A"))
-                    record_value = validate_record_value(str(item.get("record_value") or ""))
-                    ttl_raw = int(item.get("ttl") or 600)
-                    ttl = min(max(ttl_raw, 60), 86400)
-                    remark = (str(item.get("remark") or "").strip())[:255]
-                    updated_at = str(item.get("updated_at") or now_ts())
-                    
+                    normalized = _normalize_synced_record(item)
+                    if normalized is None:
+                        continue
+                    host = normalized["host"]
+                    record_type = normalized["record_type"]
+                    record_value = normalized["record_value"]
+                    ttl = normalized["ttl"]
+                    remark = normalized["remark"]
+                    updated_at = normalized["updated_at"]
+
                     key = (host, record_type, record_value)
                     remote_keys.add(key)
-                    
+
                     if key in local_map:
                         row = local_map[key]
                         row.ttl = ttl
@@ -1084,16 +1536,17 @@ def sync_domain_dns_records(
                             updated_at=updated_at,
                         )
                         db.add(row)
-                
+
                 # 清除云端已经不存在的记录
                 for key, row in local_map.items():
                     if key not in remote_keys:
                         db.delete(row)
-                        
+
                 domain.updated_at = now_ts()
                 db.commit()
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001
+            # 同步失败不阻塞主流程，但要留日志——此前静默吞掉是 0 条记录查无可查的原因之一
+            _logger.warning(f"[Domain DNS Sync] 域名 {domain.domain} 同步失败: {exc}")
     elif provider == "custom":
         local_count = db.query(DomainDNSRecord).filter(DomainDNSRecord.domain_id == domain.id).count()
         if local_count == 0:
@@ -1248,10 +1701,15 @@ def get_account_domains(
     provider = target["provider_key"]
     candidates: list[str] = []
     source = "fallback"
-    if provider == "aliyun":
+    if provider in {"aliyun", "tencent", "huawei"}:
         access_key, secret_key = resolve_account_keys(db, account_id, current_user)
-        candidates = fetch_aliyun_domains(access_key, secret_key)
-        source = "aliyun-api"
+        if provider == "aliyun":
+            candidates = fetch_aliyun_domains(access_key, secret_key)
+        elif provider == "tencent":
+            candidates = fetch_tencent_domains(access_key, secret_key)
+        else:
+            candidates = fetch_huawei_domains(access_key, secret_key)
+        source = f"{provider}-api"
     else:
         candidates = list(DOMAIN_FALLBACK_CANDIDATES.get(provider, DOMAIN_FALLBACK_CANDIDATES["custom"]))
         candidates.append(f"managed-{account_id.lower()[-4:]}.example.com")
@@ -1544,7 +2002,16 @@ def create_domain(
 
     provider_key = normalize_provider_key(payload.provider)
     created_at = (payload.created_at or "").strip() or now_ts()
-    
+
+    # 先解析账户：账户决定了服务商（前端选账户时已同步 provider，后端再兜底一次，
+    # 避免账户与服务商不一致导致同步走错分支）；同时拿到展示名。
+    account_id = (payload.account_id or "").strip()
+    account_name = (payload.account_name or "").strip()
+    if account_id:
+        cred_row, _, _ = resolve_account_credential(db, account_id, current_user)
+        account_name = account_name or cred_row.name
+        provider_key = infer_provider_key(f"{cred_row.name} {cred_row.scope} {cred_row.type}")
+
     expires_at = (payload.expires_at or "").strip()
     if not expires_at:
         # 如果未传入到期时间，且有云商授权，则尝试从云商获取；否则使用 WHOIS
@@ -1564,20 +2031,17 @@ def create_domain(
     reminder_days = int(payload.expire_reminder_days or 30)
     if reminder_days < 0 or reminder_days > 365:
         raise HTTPException(status_code=400, detail="到期提醒天数需在 0-365 之间")
-    account_id = (payload.account_id or "").strip()
-    if account_id:
-        resolve_account_keys(db, account_id, current_user)
 
     row = DomainRecord(
         domain=domain,
-        dns_credential=(payload.dns_credential or "").strip() or provider_label(provider_key),
+        dns_credential=(payload.dns_credential or "").strip() or account_name or provider_label(provider_key),
         root_domain=(payload.root_domain or "").strip().lower() or parse_root_domain(domain),
         record_type=(payload.record_type or "A").strip().upper(),
         record_value=(payload.record_value or "-").strip(),
         provider=provider_key,
         status=(payload.status or "active").strip().lower(),
         account_id=account_id,
-        account_name=(payload.account_name or "").strip(),
+        account_name=account_name,
         created_at=created_at,
         updated_at=now_ts(),
         expires_at=expires_at,
@@ -1623,8 +2087,33 @@ def update_domain(
     row.cert_targets = (payload.cert_targets or "").strip()[:255]
     row.updated_at = now_ts()
 
+    account_changed = False
+    if payload.account_id is not None:
+        new_account_id = (payload.account_id or "").strip()
+        if new_account_id:
+            cred_row, _, _ = resolve_account_credential(db, new_account_id, current_user)
+            account_changed = new_account_id != (row.account_id or "")
+            row.account_id = new_account_id
+            row.account_name = cred_row.name
+            # 账户决定服务商，与新建保持一致，避免账户与服务商错配导致同步走错分支
+            row.provider = infer_provider_key(f"{cred_row.name} {cred_row.scope} {cred_row.type}")
+            if not (row.dns_credential or "").strip():
+                row.dns_credential = cred_row.name
+        else:
+            account_changed = bool(row.account_id)
+            row.account_id = ""
+            row.account_name = ""
+
     db.commit()
     db.refresh(row)
+
+    # 绑定/换绑账户后立即同步一次：已建域名不用删了重加，编辑保存即补拉解析记录
+    if account_changed:
+        try:
+            sync_domain_from_provider(db, row, current_user)
+        except Exception:
+            pass
+
     return serialize_domain(row, db, current_user)
 
 
