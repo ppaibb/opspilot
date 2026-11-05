@@ -52,10 +52,11 @@ def load_adapter(db: Session, provider: str, credential_id: str, user):
 
 def check_domain_access(db: Session, domain: DomainRecord, user) -> None:
     """即使返回缓存也必须检查凭证权限，避免同步节流绕过授权。"""
-    if domain.provider == "custom" and not domain.account_id:
+    credential_id = domain.account_id or domain.snapshot_credential_id
+    if not credential_id:
         return
-    credential = ensure_credential_access(db.query(Credential).filter(Credential.cred_id == domain.account_id).first(), user)
-    if credential.status == "expired":
+    credential = ensure_credential_access(db.query(Credential).filter(Credential.cred_id == credential_id).first(), user)
+    if domain.account_id and credential.status == "expired":
         raise HTTPException(status_code=400, detail="所选 DNS 凭证已过期，请更新后重试")
 
 
@@ -146,11 +147,11 @@ def import_domain(db: Session, provider: str, credential_id: str, name: str, rem
 
 def sync_records(db: Session, domain: DomainRecord, user) -> int:
     adapter, _ = load_adapter(db, domain.provider, domain.account_id, user)
-    zone = adapter.get_zone(domain.domain, domain.provider_zone_id or "")
+    zone = resolve_zone(adapter, domain)
     records = adapter.list_records(zone)
     try:
         _replace_records(db, domain, records)
-        domain.provider_zone_id, domain.updated_at = zone.id, now_ts()
+        domain.provider_zone_id, domain.root_domain, domain.updated_at = zone.id, zone.name, now_ts()
         db.commit()
     except Exception:
         db.rollback()
@@ -158,8 +159,52 @@ def sync_records(db: Session, domain: DomainRecord, user) -> int:
     return len(records)
 
 
+def resolve_zone(adapter, domain: DomainRecord) -> DNSZone:
+    """兼容历史子域名资产；选择完整标签边界上的最长托管Zone，不猜最后两段。"""
+    if domain.provider_zone_id:
+        return adapter.get_zone(domain.root_domain or domain.domain, domain.provider_zone_id)
+    name = canonical_domain(domain.domain)
+    matches = [zone for zone in adapter.list_zones() if name == zone.name or name.endswith("." + zone.name)]
+    matches.sort(key=lambda zone: len(zone.name), reverse=True)
+    if not matches or (len(matches) > 1 and matches[0].name == matches[1].name):
+        raise DNSProviderError("无法唯一验证该域名对应的云端Zone，请检查凭证授权范围", 403)
+    return adapter.get_zone(matches[0].name, matches[0].id)
+
+
+def change_account(db: Session, domain: DomainRecord, provider: str, credential_id: str, user) -> None:
+    """换绑先验证新Zone及完整快照，再修改关联；与元数据由路由统一提交。"""
+    authorization_id = domain.account_id or domain.snapshot_credential_id
+    if authorization_id:
+        # 解绑/修复过期凭证不使用旧密钥，但仍必须拥有旧凭证的授权组权限。
+        old = db.query(Credential).filter(Credential.cred_id == authorization_id).first()
+        ensure_credential_access(old, user)
+    if not credential_id:
+        # 解绑只移除云访问关联，快照继续动态遵守原凭证的授权组限制。
+        domain.snapshot_credential_id = authorization_id or ""
+        domain.account_id = domain.account_name = domain.provider_zone_id = domain.dns_credential = ""
+        # 保留原厂商与只读快照；不能通过解绑把云缓存冒充可写本地域名。
+        sync_credential_usage(db)
+        return
+    adapter, credential = load_adapter(db, provider, credential_id, user)
+    # 不沿用旧账号的远程ID；在新凭证下重新确认同名Zone的归属。
+    target = DomainRecord(domain=domain.domain, root_domain=domain.root_domain, provider_zone_id="")
+    zone = resolve_zone(adapter, target)
+    records = adapter.list_records(zone)
+    try:
+        _replace_records(db, domain, records)
+        domain.account_id, domain.account_name, domain.dns_credential = credential_id, credential.name, credential.name
+        domain.snapshot_credential_id = ""
+        domain.provider, domain.provider_zone_id, domain.root_domain = provider, zone.id, zone.name
+        sync_credential_usage(db)
+    except Exception:
+        db.rollback()
+        raise
+
+
 def _record_input(payload, provider: str) -> DNSRecord:
     spec = get_provider(provider)
+    if not spec.supports_record_write:
+        raise DNSProviderError("该厂商目前仅支持读取和同步，不支持云端写操作", 400)
     host = (payload.host or "@").strip().lower()
     if host != "@" and (len(host) > 120 or any(not re.fullmatch(r"[a-z0-9_-]{1,63}|\*", label) for label in host.split("."))):
         raise HTTPException(status_code=400, detail="主机记录格式非法，请填写相对记录名")
@@ -198,7 +243,7 @@ def _remote_id(adapter, zone: DNSZone, row: DomainDNSRecord) -> str:
 def save_record(db: Session, domain: DomainRecord, payload, user, row: DomainDNSRecord | None = None) -> DomainDNSRecord:
     record = _record_input(payload, domain.provider)
     adapter, _ = load_adapter(db, domain.provider, domain.account_id, user)
-    zone = adapter.get_zone(domain.domain, domain.provider_zone_id or "")
+    zone = resolve_zone(adapter, domain)
     if row is None:
         remote = adapter.create_record(zone, record)
         row = DomainDNSRecord(domain_id=domain.id)
@@ -210,7 +255,7 @@ def save_record(db: Session, domain: DomainRecord, payload, user, row: DomainDNS
     try:
         db.add(row)
         _store_record(row, remote)
-        domain.provider_zone_id, domain.updated_at = zone.id, now_ts()
+        domain.provider_zone_id, domain.root_domain, domain.updated_at = zone.id, zone.name, now_ts()
         db.commit()
     except Exception:
         db.rollback()
@@ -219,9 +264,11 @@ def save_record(db: Session, domain: DomainRecord, payload, user, row: DomainDNS
 
 
 def delete_record(db: Session, domain: DomainRecord, row: DomainDNSRecord, user) -> None:
+    if not get_provider(domain.provider).supports_record_write:
+        raise DNSProviderError("该厂商目前仅支持读取和同步，不支持云端写操作", 400)
     adapter, _ = load_adapter(db, domain.provider, domain.account_id, user)
     writable(DNSRecord(row.provider_record_id or "", row.host, row.record_type, record_values(row), read_only=bool(row.read_only)))
-    zone = adapter.get_zone(domain.domain, domain.provider_zone_id or "")
+    zone = resolve_zone(adapter, domain)
     adapter.delete_record(zone, _remote_id(adapter, zone, row))
     try:
         db.delete(row)

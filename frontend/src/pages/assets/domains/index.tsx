@@ -21,6 +21,7 @@ import type { DomainResponse, DomainCreate, DomainUpdate } from '@/types/api'
 
 import CloudDomainImportDrawer from './CloudDomainImportDrawer'
 import DNSRecordsDrawer from './DNSRecordsDrawer'
+import { credentialMatches } from './providerForm'
 
 const { Text, Paragraph } = Typography
 
@@ -52,6 +53,7 @@ export default function DomainsPage() {
 
   const [form] = Form.useForm<DomainCreate>()
   const acmeEnabled = Form.useWatch('acme_enabled', form)
+  const selectedProvider = Form.useWatch('provider', form)
 
   const { confirm } = useRiskConfirm()
   const { has } = usePermission()
@@ -69,6 +71,11 @@ export default function DomainsPage() {
     queryKey: ['domains'],
     queryFn: () => domainsApi.list(),
   })
+  const editingDomain = domains.find((item) => item.id === editingId)
+  const selectedSpec = providers.find((item) => item.key === selectedProvider)
+  const accountOptions = credentials.filter((item) => item.status !== 'expired'
+    && credentialMatches(item.type, selectedSpec?.credential_types ?? []))
+    .map((item) => ({ value: item.cred_id, label: `${item.name} (${item.type})` }))
 
   const { saveMut, deleteMut } = useCrudResource<DomainCreate | DomainUpdate, number>({
     queryKey: ['domains'],
@@ -108,6 +115,7 @@ export default function DomainsPage() {
         domain: dom.domain,
         root_domain: dom.root_domain,
         provider: dom.provider,
+        account_id: dom.account_id || undefined,
         status: dom.status,
         expires_at: dom.expires_at,
         expire_reminder_days: dom.expire_reminder_days,
@@ -124,7 +132,10 @@ export default function DomainsPage() {
 
   const handleSave = () => {
     form.validateFields().then((values) => {
-      saveMut.mutate({ id: editingId ?? undefined, data: values })
+      // 清空表示显式解绑；未触碰的缺失字段继续使用PATCH的“不修改”语义。
+      const data = editingId && form.isFieldTouched('account_id') && values.account_id === undefined
+        ? { ...values, account_id: '' } : values
+      saveMut.mutate({ id: editingId ?? undefined, data })
       if (values.acme_enabled) {
         modal.info({
           title: 'ACME 自动证书申请已触发',
@@ -329,9 +340,16 @@ export default function DomainsPage() {
             <Input placeholder="例如 example.com" disabled={!!editingId} />
           </Form.Item>
           <Form.Item name="provider" label="服务商" rules={[{ required: true }]}>
-            <Select disabled={!!editingId} options={(editingId ? providers : providers.filter((item) => item.key === 'custom'))
-              .map((item) => ({ value: item.key, label: item.label }))} />
+            <Select options={(editingId ? providers.filter((item) => item.supports_import || item.key === editingDomain?.provider)
+              : providers.filter((item) => item.key === 'custom')).map((item) => ({ value: item.key, label: item.label }))}
+              onChange={() => form.setFieldsValue({ account_id: undefined, acme_enabled: false })} />
           </Form.Item>
+
+          {editingId && <Form.Item name="account_id" label="域名账户"
+            extra="换绑成功后会同步新账户的解析记录；清空表示解绑并保留只读快照"
+            rules={[{ required: selectedProvider !== editingDomain?.provider && selectedProvider !== 'custom', message: '更换厂商时请选择对应账户' }]}>
+            <Select allowClear placeholder="选择关联的云API凭证" options={accountOptions} />
+          </Form.Item>}
 
           <Form.Item name="acme_enabled" label="启用 ACME 自动证书申请" valuePropName="checked">
             <Switch disabled={!providers.find((item) => item.key === form.getFieldValue('provider'))?.supports_acme} />

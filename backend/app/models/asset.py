@@ -55,6 +55,7 @@ class DomainRecord(Base):
     provider = Column(String(50), comment="托管云商，如 aliyun")
     status = Column(String(50), default="active")
     account_id = Column(String(80), default="", comment="域名账户ID（通常映射凭证ID）")
+    snapshot_credential_id = Column(String(80), default="", comment="解绑快照的原凭证授权锚点，不用于云端访问")
     account_name = Column(String(120), default="", comment="域名账户展示名")
     provider_zone_id = Column(String(128), default="", comment="厂商域名Zone ID，写操作前复查归属")
     created_at = Column(String(30), default="", comment="加入系统时间")

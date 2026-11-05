@@ -16,12 +16,15 @@ from app.services.dns_providers.base import (
 
 PAGE_SIZE = 100
 MAX_PAGES = 200
+DNS_REGIONS = ("cn-north-4", "ap-southeast-3")
 
 
 class HuaweiDNS:
     def __init__(self, access_key: str, secret_key: str, client=None):
         self._access_key, self._secret_key = access_key, secret_key
         self._api = client
+        self._injected_client = client is not None
+        self._region = DNS_REGIONS[0]
 
     def _client(self):
         if self._api is None:
@@ -29,10 +32,10 @@ class HuaweiDNS:
             config.timeout, config.ignore_ssl_verification, config.allow_redirects = (5, 15), False, False
             # 公网域名从固定官方地域入口管理；认证方式与官方 DNS SDK 示例一致。
             credentials = BasicCredentials(self._access_key, self._secret_key).with_iam_endpoint(
-                "https://iam.cn-north-4.myhuaweicloud.com"
+                f"https://iam.{self._region}.myhuaweicloud.com"
             )
             self._api = (DnsClient.new_builder().with_credentials(credentials)
-                         .with_region(DnsRegion.CN_NORTH_4).with_http_config(config).build())
+                         .with_region(DnsRegion.static_fields[self._region]).with_http_config(config).build())
         return self._api
 
     def _call(self, method: str, request):
@@ -47,6 +50,25 @@ class HuaweiDNS:
             raise DNSProviderError("华为云 DNS 请求失败，无法确认云端结果，请同步后核对") from None
 
     def list_zones(self) -> list[DNSZone]:
+        """保留另一分支的区域回退能力，仍由官方SDK签名，不再维护手写HMAC。"""
+        if self._injected_client:
+            return self._list_zones_current()
+        last_error, succeeded = None, False
+        for region in DNS_REGIONS:
+            if self._region != region:
+                self._region, self._api = region, None
+            try:
+                zones = self._list_zones_current()
+                succeeded = True
+                if zones:
+                    return zones
+            except DNSProviderError as exc:
+                last_error = exc
+        if succeeded:
+            return []
+        raise last_error or DNSProviderError("华为云DNS区域查询失败")
+
+    def _list_zones_current(self) -> list[DNSZone]:
         result, seen = [], set()
         for page in range(MAX_PAGES):
             response = self._call("list_public_zones", ListPublicZonesRequest(
@@ -65,9 +87,17 @@ class HuaweiDNS:
     def get_zone(self, name: str, zone_id: str = "") -> DNSZone:
         name = canonical_domain(name)
         if zone_id:
-            row = self._call("show_public_zone", ShowPublicZoneRequest(zone_id=zone_id))
-            if row.id == zone_id and canonical_domain(row.name) == name:
-                return DNSZone(zone_id, name)
+            regions = (self._region,) if self._injected_client else tuple(dict.fromkeys((self._region, *DNS_REGIONS)))
+            for region in regions:
+                if self._region != region:
+                    self._region, self._api = region, None
+                try:
+                    row = self._call("show_public_zone", ShowPublicZoneRequest(zone_id=zone_id))
+                    if row.id == zone_id and canonical_domain(row.name) == name:
+                        return DNSZone(zone_id, name)
+                except DNSProviderError:
+                    if self._injected_client:
+                        raise
         else:
             found = next((zone for zone in self.list_zones() if zone.name == name), None)
             if found:

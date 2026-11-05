@@ -59,7 +59,7 @@ def test_explicit_provider_does_not_depend_on_credential_name(db, adapter):
 
 def test_unsupported_provider_never_returns_example_domains(db):
     with pytest.raises(HTTPException):
-        domains.get_account_domains(domains.DomainAccountDomainsRequest(account_id="cred", provider="tencent"), db, ADMIN)
+        domains.get_account_domains(domains.DomainAccountDomainsRequest(account_id="cred", provider="aws"), db, ADMIN)
 
 
 def test_import_validates_cloud_ownership_before_local_write(db, adapter):
@@ -145,6 +145,80 @@ def test_record_write_uses_saved_zone_and_record_ids(db, adapter):
     assert adapter.get_zone.call_args.args == ("example.co.uk", "zone-1")
     assert adapter.update_record.call_args.args[1] == "record-1"
     assert service.serialize_record(result)["record_values"] == ["203.0.113.3", "203.0.113.4"]
+
+
+def test_rebind_validates_new_account_then_replaces_cache(db, adapter):
+    domain = imported(db, adapter)
+    db.add(Credential(cred_id="new-cred", name="更换后的凭证", type="AccessKey", status="active",
+        content=encrypt_secret('{"access_key":"new-access-key","secret_key":"new-secret-key"}')))
+    db.commit()
+    adapter.list_records.return_value = [DNSRecord("new-record", "api", "A", ["203.0.113.9"])]
+    service.change_account(db, domain, "huawei", "new-cred", ADMIN)
+    db.commit()
+    assert domain.account_id == "new-cred"
+    assert domain.provider_zone_id == "zone-1"
+    assert db.query(DomainDNSRecord).one().provider_record_id == "new-record"
+
+
+def test_failed_rebind_preserves_old_binding_and_cache(db, adapter):
+    domain = imported(db, adapter)
+    db.add(Credential(cred_id="new-cred", name="新凭证", type="AccessKey", status="active",
+        content=encrypt_secret('{"access_key":"new-access-key","secret_key":"new-secret-key"}')))
+    db.commit()
+    adapter.get_zone.side_effect = DNSProviderError("新账户没有此域名", 403)
+    with pytest.raises(DNSProviderError):
+        service.change_account(db, domain, "huawei", "new-cred", ADMIN)
+    assert domain.account_id == "cred"
+    assert db.query(DomainDNSRecord).one().provider_record_id == "record-1"
+
+
+def test_unbind_keeps_snapshot_and_clears_cloud_identity(db, adapter):
+    domain = imported(db, adapter)
+    service.change_account(db, domain, "huawei", "", ADMIN)
+    db.commit()
+    assert domain.account_id == domain.account_name == domain.provider_zone_id == ""
+    assert db.query(DomainDNSRecord).count() == 1
+
+
+def test_unbound_snapshot_preserves_credential_permissions(db, adapter):
+    domain = imported(db, adapter)
+    credential = db.query(Credential).one()
+    credential.allowed_roles = '["管理员"]'
+    db.commit()
+    service.change_account(db, domain, "huawei", "", ADMIN)
+    db.commit()
+    outsider = SimpleNamespace(role="只读", permission_overrides="")
+    assert credential.used_by == 1
+    with pytest.raises(HTTPException) as caught:
+        domains.get_domain_dns_records(domain.id, db=db, current_user=outsider)
+    assert caught.value.status_code == 403
+    with pytest.raises(HTTPException):
+        service.change_account(db, domain, "huawei", "cred", outsider)
+    credential.status = "expired"
+    db.commit()
+    assert len(domains.get_domain_dns_records(domain.id, db=db, current_user=ADMIN)) == 1
+
+
+def test_snapshot_acl_migration_is_idempotent(monkeypatch):
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+    from sqlalchemy import inspect, text
+
+    path = Path(__file__).resolve().parents[1] / "alembic/versions/20261105_dns_snapshot_acl.py"
+    spec = importlib.util.spec_from_file_location("dns_snapshot_acl_migration", path)
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+    engine = create_engine("sqlite://")
+    with engine.begin() as connection:
+        connection.execute(text("CREATE TABLE domain_records (id INTEGER PRIMARY KEY)"))
+        monkeypatch.setattr(migration, "op", Operations(MigrationContext.configure(connection)))
+        migration.upgrade()
+        migration.upgrade()
+        assert len(inspect(connection).get_columns("domain_records")) == 2
+        migration.downgrade()
+        migration.downgrade()
+        assert len(inspect(connection).get_columns("domain_records")) == 1
+    engine.dispose()
 
 
 def test_protected_record_cannot_be_deleted(db, adapter):

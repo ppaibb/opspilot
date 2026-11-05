@@ -23,7 +23,9 @@ export default function DNSRecordsDrawer({ domain, providers, onClose }: {
   const recordType = Form.useWatch('record_type', form) ?? 'A'
   const proxied = Form.useWatch('proxied', form)
   const spec = providers.find((item) => item.key === domain.provider)
+  const canSync = has('action.assets.domains.manage') && !!spec?.supports_dns_records && !!domain.account_id
   const canManage = has('action.assets.domains.manage') && !!spec?.supports_dns_records
+    && spec.supports_record_write !== false && (domain.provider === 'custom' || !!domain.account_id)
   const records = useQuery({ queryKey: ['domain-records', domain.id], queryFn: () => domainsApi.listRecords(domain.id), retry: false })
   const refresh = () => {
     queryClient.invalidateQueries({ queryKey: ['domain-records', domain.id] })
@@ -78,10 +80,12 @@ export default function DNSRecordsDrawer({ domain, providers, onClose }: {
       <Flex vertical gap={16}>
         {records.isError && <Alert type="error" showIcon message="解析记录读取失败" description={extractAxiosDetail(records.error) ?? '请重新同步后重试'} />}
         {!spec?.supports_dns_records && <Alert type="info" message="该厂商尚未接入云端解析管理，当前仅显示已有记录" />}
+        {domain.provider !== 'custom' && !domain.account_id && <Alert type="info" message="当前域名未关联账户，请在域名编辑中绑定凭证后同步" />}
+        {spec?.supports_record_write === false && <Alert type="info" message="该厂商当前支持读取和同步，解析记录为只读" />}
         <Flex justify="space-between" gap={12} wrap>
           <Input.Search aria-label="搜索解析记录" placeholder="搜索记录名称、类型或解析值" value={search} onChange={(event) => setSearch(event.target.value)} style={{ width: 300 }} allowClear />
           <Space>
-            {canManage && spec?.supports_import && <Button icon={<ReloadOutlined />} loading={syncMutation.isPending} onClick={() => syncMutation.mutate()}>同步云端</Button>}
+            {canSync && spec?.supports_import && <Button icon={<ReloadOutlined />} loading={syncMutation.isPending} onClick={() => syncMutation.mutate()}>同步云端</Button>}
             {canManage && <Button type="primary" icon={<PlusOutlined />} onClick={() => openForm(null)}>新增解析记录</Button>}
           </Space>
         </Flex>

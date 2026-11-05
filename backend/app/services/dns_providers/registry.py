@@ -6,6 +6,7 @@ from typing import Callable
 from app.services.dns_providers.base import DNSAdapter, DNSProviderError, RECORD_TYPES
 from app.services.dns_providers.cloudflare import CloudflareDNS
 from app.services.dns_providers.huawei import HuaweiDNS
+from app.services.dns_providers.tencent import TencentDNS
 
 
 @dataclass(frozen=True)
@@ -19,6 +20,7 @@ class DNSProviderSpec:
     supports_priority: bool = False
     can_rename_records: bool = True
     supports_acme: bool = False
+    supports_record_write: bool = True
 
 
 def _aliyun_factory(access_key: str, secret_key: str):
@@ -32,6 +34,7 @@ DNS_PROVIDERS = {
         DNSProviderSpec("aliyun", "阿里云 DNS", ("AccessKey",), _aliyun_factory, supports_priority=True, supports_acme=True),
         DNSProviderSpec("huawei", "华为云 DNS", ("AccessKey",), HuaweiDNS, supports_multi_values=True, can_rename_records=False),
         DNSProviderSpec("cloudflare", "Cloudflare DNS", ("Token",), CloudflareDNS, supports_proxy=True, supports_priority=True),
+        DNSProviderSpec("tencent", "腾讯云 DNSPod", ("AccessKey",), TencentDNS, supports_priority=True, supports_record_write=False),
     )
 }
 
@@ -49,9 +52,10 @@ def provider_metadata() -> list[dict]:
         "supports_proxy": spec.supports_proxy, "supports_priority": spec.supports_priority,
         "can_rename_records": spec.can_rename_records, "record_types": list(RECORD_TYPES),
         "supports_acme": spec.supports_acme, "supports_cert_distribution": spec.key == "aliyun",
+        "supports_record_write": spec.supports_record_write,
     } for spec in DNS_PROVIDERS.values()]
     # 历史资产可以继续展示其厂商，但不能把尚未实现的能力标记为可用。
-    for key, label in (("tencent", "腾讯云 DNSPod"), ("aws", "AWS Route53"), ("azure", "Azure DNS"),
+    for key, label in (("aws", "AWS Route53"), ("azure", "Azure DNS"),
                        ("gcp", "Google Cloud DNS"), ("digitalocean", "DigitalOcean DNS"),
                        ("godaddy", "GoDaddy DNS"), ("custom", "自定义（本地记录）")):
         result.append({"key": key, "label": label, "supports_import": False,
@@ -59,4 +63,5 @@ def provider_metadata() -> list[dict]:
                        "supports_multi_values": False, "supports_proxy": False, "supports_priority": False,
                        "can_rename_records": True, "record_types": list(RECORD_TYPES),
                        "supports_acme": False, "supports_cert_distribution": False})
+        result[-1]["supports_record_write"] = key == "custom"
     return result

@@ -127,7 +127,8 @@ def test_metadata_only_advertises_implemented_capabilities():
     assert specs["huawei"]["supports_multi_values"]
     assert specs["cloudflare"]["supports_proxy"]
     assert not specs["cloudflare"]["supports_acme"]
-    assert not specs["tencent"]["supports_import"]
+    assert specs["tencent"]["supports_import"]
+    assert not specs["tencent"]["supports_record_write"]
 
 
 def test_aliyun_adapter_keeps_remote_id_and_mx_priority_zero(monkeypatch):

@@ -31,5 +31,9 @@ def sync_credential_usage(db: Session, cred_ids: set[str] | None = None) -> None
             .filter(or_(Asset.credential_ref == cred.cred_id, Asset.cloud_credential_ref == cred.cred_id))
             .scalar()
         ) or 0
-        domain_count = db.query(func.count(DomainRecord.id)).filter(DomainRecord.account_id == cred.cred_id).scalar() or 0
+        # 只读快照仍依赖原凭证的授权规则，也计引用，防止凭证被误删。
+        domain_count = db.query(func.count(DomainRecord.id)).filter(or_(
+            DomainRecord.account_id == cred.cred_id,
+            DomainRecord.snapshot_credential_id == cred.cred_id,
+        )).scalar() or 0
         cred.used_by = int(count + domain_count)

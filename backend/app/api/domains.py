@@ -44,6 +44,7 @@ class DomainProviderItem(BaseModel):
     supports_cert_distribution: bool
     supports_import: bool = False
     supports_dns_records: bool = False
+    supports_record_write: bool = True
     credential_types: list[str] = []
     supports_multi_values: bool = False
     supports_proxy: bool = False
@@ -118,6 +119,8 @@ class DomainCreate(BaseModel):
 
 
 class DomainUpdate(BaseModel):
+    account_id: str | None = None
+    provider: str | None = None
     remark: str = ""
     expires_at: str = ""
     expire_reminder_days: int = 30
@@ -660,12 +663,14 @@ def parse_access_key_content(raw: str) -> tuple[str, str]:
         if isinstance(parsed, dict):
             access_key = str(
                 parsed.get("access_key")
+                or parsed.get("SecretId")
                 or parsed.get("accessKey")
                 or parsed.get("AccessKeyId")
                 or ""
             ).strip()
             secret_key = str(
                 parsed.get("secret_key")
+                or parsed.get("SecretKey")
                 or parsed.get("secretKey")
                 or parsed.get("AccessKeySecret")
                 or ""
@@ -690,6 +695,7 @@ def parse_access_key_content(raw: str) -> tuple[str, str]:
 
     access_key = (
         kv.get("access_key")
+        or kv.get("secretid")
         or kv.get("accesskey")
         or kv.get("accesskeyid")
         or ""
@@ -1213,7 +1219,7 @@ def get_domain_dns_records(
     domain = db.query(DomainRecord).filter(DomainRecord.id == domain_id).first()
     if domain is None:
         raise HTTPException(status_code=404, detail="域名记录未找到")
-    if domain.account_id:
+    if domain.account_id or domain.snapshot_credential_id:
         domain_resources.check_domain_access(db, domain, current_user)
     if domain.provider in DNS_PROVIDERS and domain.account_id:
         cloud_operation(lambda: sync_domain_dns_records_throttled(db, domain, current_user))
@@ -1405,14 +1411,24 @@ def update_domain(
     if not row:
         raise HTTPException(status_code=404, detail="域名记录未找到")
 
-    if payload.acme_enabled and not DOMAIN_PROVIDER_REGISTRY.get(row.provider, {}).get("supports_acme"):
+    provider = normalize_provider_key(payload.provider or row.provider)
+    if payload.acme_enabled and not DOMAIN_PROVIDER_REGISTRY.get(provider, {}).get("supports_acme"):
         raise HTTPException(status_code=400, detail="该厂商暂未接入ACME证书签发")
+
+    # 所有纯字段校验先完成，避免换绑成功后再因日期格式错误留下部分更新。
+    expiry = parse_expire_date(payload.expires_at) if (payload.expires_at or "").strip() else None
+    if payload.account_id is not None:
+        account_id = payload.account_id.strip()
+        if account_id != (row.account_id or "") or provider != row.provider:
+            cloud_operation(lambda: domain_resources.change_account(db, row, provider, account_id, current_user))
+    elif provider != row.provider:
+        raise HTTPException(status_code=400, detail="更换厂商时请选择对应的域名账户")
 
     row.remark = (payload.remark or "").strip()[:255]
     # 到期时间留空 = 不修改（与凭证编辑「留空不改」口径一致）；
     # 不能走 parse_expire_date("") 的 +365 天默认，否则清空日期保存会把到期时间静默推后一年
-    if (payload.expires_at or "").strip():
-        row.expires_at = parse_expire_date(payload.expires_at)
+    if expiry is not None:
+        row.expires_at = expiry
     row.expire_reminder_days = int(payload.expire_reminder_days or 30)
     row.status = (payload.status or "active").strip().lower()
     row.acme_enabled = "yes" if payload.acme_enabled else "no"

@@ -389,12 +389,14 @@ export interface DomainCreate {
 }
 
 export interface DomainUpdate {
+  provider?: string
   remark?: string
   expires_at?: string
   expire_reminder_days?: number
   status?: string
   acme_enabled?: boolean
   cert_targets?: string
+  account_id?: string
 }
 
 export interface DomainDNSRecordResponse {
@@ -431,6 +433,7 @@ export interface DomainProviderItem {
   supports_cert_distribution: boolean
   supports_import: boolean
   supports_dns_records: boolean
+  supports_record_write?: boolean
   credential_types: string[]
   supports_multi_values: boolean
   supports_proxy: boolean
