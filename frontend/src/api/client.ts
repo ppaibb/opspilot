@@ -1,4 +1,4 @@
-import axios from 'axios'
+import axios, { AxiosHeaders } from 'axios'
 import type { AxiosError, AxiosRequestConfig, InternalAxiosRequestConfig } from 'axios'
 import { useAuthStore } from '@/store/auth'
 
@@ -73,16 +73,65 @@ client.interceptors.request.use((config: InternalAxiosRequestConfig) => {
 
 // ── 响应拦截：统一错误处理 ──
 // 登录接口本身返回 401 是"密码错误"，不应跳转，排除掉
-const AUTH_SKIP_PATHS = ['/auth/login']
+const AUTH_SKIP_PATHS = ['/auth/login', '/auth/refresh']
+
+interface RetryableRequestConfig extends AxiosRequestConfig {
+  _authRefreshRetried?: boolean
+}
+
+interface RefreshResponse {
+  access_token: string
+  refresh_token: string
+}
+
+// 并发 401 共用一次轮换请求。Refresh token 是单次消费品，多次并发轮换会被
+// 后端判为重放并撤销整个 family，因此这里必须做 single-flight。
+let refreshPromise: Promise<RefreshResponse> | null = null
+
+async function refreshAccessToken(): Promise<RefreshResponse> {
+  const refreshToken = useAuthStore.getState().refreshToken
+  if (!refreshToken) throw new Error('缺少 refresh token')
+  if (!refreshPromise) {
+    refreshPromise = client.post<RefreshResponse>('/auth/refresh', {
+      refresh_token: refreshToken,
+    }).then((response) => {
+      const tokens = response.data
+      useAuthStore.getState().setTokens(tokens.access_token, tokens.refresh_token)
+      return tokens
+    }).finally(() => {
+      refreshPromise = null
+    })
+  }
+  return refreshPromise
+}
 
 client.interceptors.response.use(
   (res) => res,
-  (error: AxiosError) => {
+  async (error: AxiosError) => {
     const url = error.config?.url ?? ''
     const isSkipped = AUTH_SKIP_PATHS.some((p) => url.includes(p))
     const status = error.response?.status
 
-    if (status === 401 && !isSkipped) {
+    const original = error.config as RetryableRequestConfig | undefined
+    if (
+      status === 401
+      && !isSkipped
+      && original
+      && !original._authRefreshRetried
+      && useAuthStore.getState().refreshToken
+    ) {
+      original._authRefreshRetried = true
+      try {
+        const tokens = await refreshAccessToken()
+        const headers = AxiosHeaders.from(original.headers as AxiosHeaders | undefined)
+        headers.set('Authorization', `Bearer ${tokens.access_token}`)
+        original.headers = headers
+        return client.request(original)
+      } catch {
+        useAuthStore.getState().logout()
+        window.location.href = '/login'
+      }
+    } else if (status === 401 && !isSkipped) {
       useAuthStore.getState().logout()
       window.location.href = '/login'
     }

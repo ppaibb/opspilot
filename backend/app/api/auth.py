@@ -2,16 +2,17 @@
 认证与授权系统 (已迁移至强关系型数据库与环境密钥)
 遵循 Google Python Style Guide
 """
-from datetime import datetime, timedelta
+from datetime import datetime
+import ipaddress
 from typing import Optional
-from jose import jwt
 from fastapi import APIRouter, HTTPException, Request, status, Depends
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
 from app.core.config import settings
-from app.core.login_rate_limit import LoginRateLimiter
-from app.core.passwords import verify_password
+from app.core.login_rate_limit import DatabaseLoginRateLimiter
+from app.core.passwords import hash_password, verify_password
+from app.core.tokens import create_access_token
 from app.core.rbac import (
     ACTION_RISK_LEVELS,
     PERMISSION_DEFAULTS,
@@ -25,15 +26,26 @@ from app.core.security import (
 )
 from app.db.database import get_db
 from app.models.user import User
+from app.models.refresh_token import RefreshToken
 from app.core.security import get_current_user, normalize_user_status
+from app.services.refresh_tokens import (
+    RefreshTokenRejected,
+    issue_refresh_token,
+    refresh_token_digest,
+    revoke_refresh_token,
+    rotate_refresh_token,
+)
 
 router = APIRouter()
 
-_LOGIN_RATE_LIMITER = LoginRateLimiter(
+_LOGIN_RATE_LIMITER = DatabaseLoginRateLimiter(
     max_attempts=settings.LOGIN_MAX_FAILED_ATTEMPTS,
     window_seconds=settings.LOGIN_FAILURE_WINDOW_SECONDS,
     lock_seconds=settings.LOGIN_LOCK_SECONDS,
 )
+
+# 用户不存在时仍执行同等成本的 bcrypt 校验，降低用户名枚举的时序侧信道。
+DUMMY_PASSWORD_HASH = hash_password("opspilot-dummy-password-never-used")
 
 # ===== 数据模型 =====
 class LoginRequest(BaseModel):
@@ -42,46 +54,98 @@ class LoginRequest(BaseModel):
 
 class TokenResponse(BaseModel):
     access_token: str
+    refresh_token: str
     token_type: str
     user: dict
 
-def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
-    """构建安全的 JWT 授权凭证"""
-    to_encode = data.copy()
-    expire = datetime.utcnow() + (expires_delta or timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES))
-    to_encode.update({"exp": expire})
-    return jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+
+class RefreshRequest(BaseModel):
+    refresh_token: str
 
 def _request_source_ip(request: Request) -> str:
-    """提取登录来源 IP，优先使用反向代理透传的首个来源地址。"""
+    """仅在直连来源属于可信代理网段时读取 X-Forwarded-For。"""
     headers = getattr(request, "headers", {}) or {}
-    forwarded_for = str(headers.get("x-forwarded-for") or "").strip()
-    if forwarded_for:
-        return forwarded_for.split(",", 1)[0].strip()
     client = getattr(request, "client", None)
-    return client.host if client else "-"
+    direct_ip = str(client.host if client else "-").strip()
+    try:
+        address = ipaddress.ip_address(direct_ip)
+        trusted = any(
+            address in ipaddress.ip_network(item.strip(), strict=False)
+            for item in settings.TRUSTED_PROXY_CIDRS.split(",")
+            if item.strip()
+        )
+    except ValueError:
+        trusted = False
+    if trusted:
+        forwarded_for = str(headers.get("x-forwarded-for") or "").strip()
+        candidate = forwarded_for.split(",", 1)[0].strip()
+        try:
+            return str(ipaddress.ip_address(candidate))
+        except ValueError:
+            pass
+    return direct_ip or "-"
+
+
+def _rate_check(key: str, db: Session) -> tuple[bool, str]:
+    """兼容旧测试注入的内存限流器，生产默认使用数据库限流器。"""
+    try:
+        return _LOGIN_RATE_LIMITER.check_allowed(key, db=db)
+    except TypeError:
+        return _LOGIN_RATE_LIMITER.check_allowed(key)
+
+
+def _rate_failure(key: str, db: Session) -> None:
+    try:
+        _LOGIN_RATE_LIMITER.record_failure(key, db=db)
+    except TypeError:
+        _LOGIN_RATE_LIMITER.record_failure(key)
+
+
+def _rate_success(key: str, db: Session) -> None:
+    try:
+        _LOGIN_RATE_LIMITER.record_success(key, db=db)
+    except TypeError:
+        _LOGIN_RATE_LIMITER.record_success(key)
+
+
+def _user_payload(user: User) -> dict:
+    """构造登录/刷新共用的非敏感用户响应。"""
+    return {
+        "id": user.id,
+        "username": user.username,
+        "name": user.name,
+        "email": user.email,
+        "role": user.role,
+        "department": user.department,
+        "status": normalize_user_status(getattr(user, "status", "active")),
+        "permissions": resolve_effective_permissions(user),
+    }
 
 
 def run_login_flow(req: LoginRequest, *, request: Request, db: Session):
     """执行登录主流程，拆出同步函数便于安全契约测试。"""
     source_ip = _request_source_ip(request)
     rate_key = _LOGIN_RATE_LIMITER.build_key(req.username, source_ip)
-    allowed, lock_reason = _LOGIN_RATE_LIMITER.check_allowed(rate_key)
+    allowed, lock_reason = _rate_check(rate_key, db)
     if not allowed:
         raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=lock_reason)
 
     # 从数据库检索用户
     user = db.query(User).filter(User.username == req.username).first()
     
-    if not user or not verify_password(req.password, user.hashed_password):
-        _LOGIN_RATE_LIMITER.record_failure(rate_key)
+    password_ok = verify_password(
+        req.password,
+        user.hashed_password if user else DUMMY_PASSWORD_HASH,
+    )
+    if not user or not password_ok:
+        _rate_failure(rate_key, db)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="用户名或密码错误",
             headers={"WWW-Authenticate": "Bearer"},
         )
     if normalize_user_status(getattr(user, "status", "active")) != "active":
-        _LOGIN_RATE_LIMITER.record_failure(rate_key)
+        _rate_failure(rate_key, db)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="当前账号已被禁用",
@@ -89,26 +153,19 @@ def run_login_flow(req: LoginRequest, *, request: Request, db: Session):
         )
 
     # 密码正确，生成 Token 并返回
-    _LOGIN_RATE_LIMITER.record_success(rate_key)
+    _rate_success(rate_key, db)
     # ver = 会话版本号：与 users.token_version 配套，重置密码/禁用后旧 token 全部失效。
     token = create_access_token(
         data={"sub": req.username, "role": user.role, "ver": int(getattr(user, "token_version", 0) or 0)}
     )
+    refresh_token = issue_refresh_token(db, user)
     user.last_login_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     db.commit()
     return {
         "access_token": token,
+        "refresh_token": refresh_token,
         "token_type": "bearer",
-        "user": {
-            "id": user.id,
-            "username": user.username,
-            "name": user.name,
-            "email": user.email,
-            "role": user.role,
-            "department": user.department,
-            "status": normalize_user_status(getattr(user, "status", "active")),
-            "permissions": resolve_effective_permissions(user),
-        }
+        "user": _user_payload(user),
     }
 
 
@@ -119,6 +176,37 @@ async def login(req: LoginRequest, request: Request, db: Session = Depends(get_d
     接收用户凭证并提供标准的 Bearer Token。
     """
     return run_login_flow(req, request=request, db=db)
+
+
+@router.post("/refresh", response_model=TokenResponse)
+def refresh_session(req: RefreshRequest, db: Session = Depends(get_db)):
+    """单次轮换 refresh token，并签发新的 access token。"""
+    record = db.query(RefreshToken).filter(
+        RefreshToken.token_hash == refresh_token_digest(req.refresh_token)
+    ).first()
+    user = db.query(User).filter(User.id == record.user_id).first() if record else None
+    if not user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="登录状态已失效")
+    try:
+        next_refresh = rotate_refresh_token(db, req.refresh_token, user)
+    except RefreshTokenRejected as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
+    access = create_access_token(
+        {"sub": user.username, "role": user.role, "ver": int(user.token_version or 0)}
+    )
+    return {
+        "access_token": access,
+        "refresh_token": next_refresh,
+        "token_type": "bearer",
+        "user": _user_payload(user),
+    }
+
+
+@router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
+def logout_session(req: RefreshRequest, db: Session = Depends(get_db)):
+    """撤销 refresh token 所属的完整会话族。"""
+    revoke_refresh_token(db, req.refresh_token)
+    return None
 
 # ===== Token 验证接口（用于前端免密登录保护） =====
 @router.get("/me")

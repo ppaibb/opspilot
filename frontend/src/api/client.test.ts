@@ -6,8 +6,10 @@ import { useAuthStore } from '@/store/auth'
 vi.mock('axios', async () => {
   const actual = await vi.importActual<typeof import('axios')>('axios')
   const post = vi.fn()
+  const request = vi.fn()
   const create = vi.fn(() => ({
     post,
+    request,
     interceptors: {
       request: { use: vi.fn() },
       response: { use: vi.fn() },
@@ -68,5 +70,39 @@ describe('api/client explicit risk ticket', () => {
       },
       { skipRiskTicketAttach: true },
     )
+  })
+})
+
+describe('api/client refresh rotation', () => {
+  beforeEach(() => {
+    useAuthStore.setState({
+      token: 'expired-access',
+      refreshToken: 'refresh-1',
+      userInfo: { id: 1, username: 'alice', role: 'user' },
+    })
+  })
+
+  it('refreshes once and retries the original request with the new access token', async () => {
+    const axios = (await import('axios')).default as unknown as {
+      create: ReturnType<typeof vi.fn>
+    }
+    const instance = axios.create.mock.results.at(-1)?.value
+    const rejected = instance.interceptors.response.use.mock.calls[0][1]
+    instance.post.mockResolvedValueOnce({
+      data: { access_token: 'access-2', refresh_token: 'refresh-2' },
+    })
+    instance.request.mockResolvedValueOnce({ data: { ok: true } })
+
+    const original = { url: '/assets', headers: new AxiosHeaders() }
+    const result = await rejected({ response: { status: 401 }, config: original })
+
+    expect(instance.post).toHaveBeenCalledWith('/auth/refresh', {
+      refresh_token: 'refresh-1',
+    })
+    expect(instance.request).toHaveBeenCalledOnce()
+    expect(instance.request.mock.calls[0][0].headers.get('Authorization')).toBe('Bearer access-2')
+    expect(useAuthStore.getState().token).toBe('access-2')
+    expect(useAuthStore.getState().refreshToken).toBe('refresh-2')
+    expect(result).toEqual({ data: { ok: true } })
   })
 })

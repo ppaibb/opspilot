@@ -40,12 +40,11 @@ from urllib.parse import quote, urlencode, urlparse, urlunparse
 import requests
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import RedirectResponse, Response, StreamingResponse
-from jose import JWTError, jwt
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.api.monitoring import read_monitoring_config
-from app.core.config import settings
+from app.core.tokens import TokenValidationError, decode_jwt, encode_jwt
 from app.core.rbac import normalize_role_name
 from app.core.security import get_current_user, require_permissions
 from app.db.database import get_db
@@ -201,7 +200,7 @@ def _create_grafana_sso_token(user: User, expire_at: datetime) -> str:
         "type": GRAFANA_SSO_TYPE,
         "exp": expire_at,
     }
-    return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+    return encode_jwt(payload)
 
 
 def _create_grafana_session_token(user: User) -> str:
@@ -219,19 +218,14 @@ def _create_grafana_session_token(user: User) -> str:
         "type": GRAFANA_SESSION_TYPE,
         "exp": datetime.utcnow() + timedelta(seconds=GRAFANA_SESSION_EXPIRE_SECONDS),
     }
-    return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+    return encode_jwt(payload)
 
 
 def _decode_grafana_sso_token(raw_token: str, expected_type: str) -> dict:
     """解码并校验 Grafana 登录类 Token，类型不符一律拒绝。"""
     try:
-        payload = jwt.decode(
-            raw_token,
-            settings.SECRET_KEY,
-            algorithms=[settings.ALGORITHM],
-            audience=GRAFANA_SSO_AUDIENCE,
-        )
-    except JWTError as exc:
+        payload = decode_jwt(raw_token, audience=GRAFANA_SSO_AUDIENCE)
+    except TokenValidationError as exc:
         raise HTTPException(status_code=401, detail="Grafana 登录凭证非法或已过期") from exc
     if payload.get("type") != expected_type:
         raise HTTPException(status_code=401, detail="Grafana 登录凭证类型非法")

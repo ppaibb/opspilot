@@ -4,6 +4,7 @@ import { Layout, Menu, Dropdown, Avatar, theme, Tooltip, Space } from 'antd'
 import { LogoutOutlined, LeftOutlined, RightOutlined } from '@ant-design/icons'
 import type { MenuProps } from 'antd'
 import { useAuthStore } from '@/store/auth'
+import { authApi } from '@/api'
 import { useMenuItems } from './menuConfig'
 import Breadcrumbs from './Breadcrumbs'
 import GlobalSearch from './GlobalSearch'
@@ -19,6 +20,7 @@ export default function MainLayout() {
   const location = useLocation()
   const userInfo = useAuthStore((s) => s.userInfo)
   const logout = useAuthStore((s) => s.logout)
+  const refreshToken = useAuthStore((s) => s.refreshToken)
   const { token: themeToken } = theme.useToken()
   // 菜单树：由 appRoutes 派生并按当前用户权限过滤（admin 全显）
   const menuItems = useMenuItems()
@@ -74,6 +76,7 @@ export default function MainLayout() {
 
   const handleUserMenuClick: MenuProps['onClick'] = ({ key }) => {
     if (key === 'logout') {
+      if (refreshToken) void authApi.logout(refreshToken).catch(() => undefined)
       logout()
       navigate('/login')
     }

@@ -18,7 +18,7 @@ from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from jose import jwt
+import jwt
 
 from app.api import grafana_sso
 from app.api.grafana_sso import (

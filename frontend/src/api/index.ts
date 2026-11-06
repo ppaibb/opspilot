@@ -21,6 +21,12 @@ export const imApi = {
 // ── Auth ──
 export const authApi = {
   login: (data: LoginRequest) => client.post<TokenResponse>('/auth/login', data).then((r) => r.data),
+  refresh: (refreshToken: string) => client.post<TokenResponse>('/auth/refresh', {
+    refresh_token: refreshToken,
+  }).then((r) => r.data),
+  logout: (refreshToken: string) => client.post('/auth/logout', {
+    refresh_token: refreshToken,
+  }).then((r) => r.data),
   getMe: () => client.get('/auth/me').then((r) => r.data),
   /** 风险等级表（后端返回 {"levels": {...}} 信封，调用方取 .levels） */
   getRiskLevels: () => client.get<RiskLevelsResponse>('/auth/risk-levels').then((r) => r.data),

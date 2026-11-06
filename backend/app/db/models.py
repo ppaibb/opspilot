@@ -54,6 +54,7 @@ from app.models.wireguard import WireGuardNetwork, WireGuardPeer  # noqa: F401
 from app.models.monitoring_shadow_alert import MonitoringShadowAlert  # noqa: F401
 from app.models.root_cause import AlertRootCause  # noqa: F401
 from app.models.risk_ticket import RiskAckTicket  # noqa: F401
+from app.models.refresh_token import LoginAttempt, RefreshToken  # noqa: F401
 from app.models.asset_host_key import AssetHostKey  # noqa: F401
 from app.models.change_ticket import ChangeTicket  # noqa: F401
 from app.models.task_lease import TaskLease  # noqa: F401

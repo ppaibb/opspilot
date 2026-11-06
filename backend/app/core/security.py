@@ -4,13 +4,12 @@
 import uuid
 from datetime import timedelta
 
-from jose import JWTError, jwt
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from app.core.config import settings
+from app.core.tokens import TokenValidationError, decode_access_token
 from app.core.rbac import (
     ACTION_RISK_LEVELS,
     PERMISSION_DEFAULTS,
@@ -82,14 +81,14 @@ def get_current_user(
     )
 
     try:
-        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        payload = decode_access_token(token)
         username = payload.get("sub")
         if not username:
             raise credentials_exception
         # 一次性票据反向隔离：SSE 票据即使未过期也不得冒充 access token。
         if str(payload.get("scope") or "") == SSE_TICKET_SCOPE:
             raise credentials_exception
-    except JWTError:
+    except TokenValidationError:
         raise credentials_exception
 
     user = db.query(User).filter(User.username == username).first()

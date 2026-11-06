@@ -42,8 +42,8 @@ from app.core.security import get_current_user, require_permissions
 setup_logging()
 from contextlib import asynccontextmanager
 import asyncio
-from jose import JWTError, jwt
 from app.core.config import settings
+from app.core.tokens import TokenValidationError, decode_access_token
 from app.db.database import Base, engine, SessionLocal
 from app.db import models as db_models  # noqa: F401
 from app.db.bootstrap import ensure_bootstrap_admin, ensure_localhost_asset, ensure_monitoring_config
@@ -417,7 +417,7 @@ async def audit_write_operations(request, call_next):
     display_name = "未知用户"
     if token:
         try:
-            payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+            payload = decode_access_token(token)
             username = payload.get("sub") or username
             db = SessionLocal()
             try:
@@ -428,7 +428,7 @@ async def audit_write_operations(request, call_next):
                     display_name = username
             finally:
                 db.close()
-        except JWTError:
+        except TokenValidationError:
             pass
 
     db = SessionLocal()
