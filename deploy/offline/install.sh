@@ -13,10 +13,20 @@ IMAGES_DIR="$ROOT/images"
 APP_COMPOSE="$ROOT/app/docker-compose.yaml"
 MON_COMPOSE="$ROOT/monitoring/docker-compose.yaml"
 ENV_FILE="$ROOT/.env"
+MANIFEST_FILE="$ROOT/manifest.json"
 
 log()  { printf '\033[1;32m[OpsPilot]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[warn]\033[0m %s\n' "$*"; }
 die()  { printf '\033[1;31m[error]\033[0m %s\n' "$*" >&2; exit 1; }
+
+backup_private_file() {
+  local source="$1"
+  [[ -f "$source" ]] || return 0
+  local backup="${source}.bak.$(date +%Y%m%d%H%M%S)"
+  cp -p "$source" "$backup"
+  chmod 600 "$backup"
+  log "已备份配置: $backup"
+}
 
 require_docker() {
   command -v docker >/dev/null 2>&1 || die "未安装 docker"
@@ -31,6 +41,7 @@ require_docker() {
 }
 
 load_images() {
+  verify_manifest
   log "导入离线镜像 ..."
   local n=0
   shopt -s nullglob
@@ -41,7 +52,83 @@ load_images() {
   done
   shopt -u nullglob
   [[ $n -gt 0 ]] || warn "images/ 下没有 .tar，跳过导入"
+  verify_loaded_image_ids
   log "镜像导入完成（$n 个）"
+}
+
+verify_loaded_image_ids() {
+  local ref expected actual
+  while IFS='|' read -r ref expected; do
+    [[ -n "$ref" ]] || continue
+    actual="$(docker image inspect --format '{{.Id}}' "$ref" 2>/dev/null)" || die "manifest 镜像未成功导入: $ref"
+    [[ "$actual" == "$expected" ]] || die "manifest 镜像 ID 不匹配: $ref"
+  done < <(python3 - "$MANIFEST_FILE" <<'PY'
+import json
+import pathlib
+import sys
+
+for item in json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))["images"].values():
+    print(f"{item['ref']}|{item['image_id']}")
+PY
+  )
+}
+
+verify_manifest() {
+  command -v python3 >/dev/null 2>&1 || die "校验 manifest 需要 python3"
+  command -v sha256sum >/dev/null 2>&1 || die "校验离线制品需要 sha256sum"
+  [[ -f "$MANIFEST_FILE" ]] || die "缺少制品清单: $MANIFEST_FILE"
+  python3 - "$MANIFEST_FILE" "$IMAGES_DIR" <<'PY'
+import hashlib
+import json
+import pathlib
+import sys
+
+manifest = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+images_dir = pathlib.Path(sys.argv[2]).resolve()
+required = {"backend", "frontend", "postgres"}
+missing = required - set(manifest.get("images", {}))
+if missing:
+    raise SystemExit(f"manifest 缺少镜像: {sorted(missing)}")
+for name, item in manifest["images"].items():
+    archive = (images_dir / item["archive"]).resolve()
+    if images_dir not in archive.parents or not archive.is_file():
+        raise SystemExit(f"manifest 制品不存在或路径越界: {name}")
+    digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+    if digest != item.get("sha256"):
+        raise SystemExit(f"manifest 校验失败: {name}")
+PY
+}
+
+apply_manifest_images() {
+  local assignments key value
+  assignments="$(python3 - "$MANIFEST_FILE" <<'PY'
+import json
+import pathlib
+import shlex
+import sys
+
+images = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))["images"]
+mapping = {
+    "backend": "OPSPILOT_BACKEND_IMAGE", "frontend": "OPSPILOT_FRONTEND_IMAGE",
+    "victoriametrics": "VM_IMAGE", "victorialogs": "VLOGS_IMAGE",
+    "grafana": "GRAFANA_IMAGE", "alloy": "ALLOY_IMAGE",
+}
+for name, variable in mapping.items():
+    if name in images:
+        print(f"{variable}={images[name]['ref']}")
+PY
+)"
+  while IFS='=' read -r key value; do
+    [[ -n "$key" ]] || continue
+    printf -v "$key" '%s' "$value"
+    export "$key"
+    if grep -q "^${key}=" "$ENV_FILE"; then
+      sed -i "s|^${key}=.*|${key}=${value}|" "$ENV_FILE"
+    else
+      printf '%s=%s\n' "$key" "$value" >> "$ENV_FILE"
+    fi
+  done <<< "$assignments"
+  chmod 600 "$ENV_FILE"
 }
 
 rand() {
@@ -95,8 +182,8 @@ gen_env_interactive() {
   db_pass="$(rand)"
   secret="$(rand)"
   enc="$(rand)"
-  admin_pass="Aa1!$(rand | cut -c1-16)"
-  grafana_pass="$(rand | cut -c1-16)"
+  admin_pass="Aa1!$(rand | cut -c1-20)"
+  grafana_pass="Aa1!$(rand | cut -c1-20)"
 
   ask_secret db_pass "PostgreSQL 密码" "$db_pass"
   ask_secret secret "SECRET_KEY" "$secret"
@@ -164,6 +251,47 @@ EOF
   log "初始管理员账号: admin（密码仅保存在受限配置文件中）"
 }
 
+validate_configuration() {
+  set -a
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+  set +a
+  local required=(INSTALL_DIR PUBLIC_URL FRONTEND_PORT BACKEND_PORT POSTGRES_PASSWORD SECRET_KEY CREDENTIAL_ENCRYPTION_KEY INIT_ADMIN_USERNAME INIT_ADMIN_PASSWORD)
+  local key
+  for key in "${required[@]}"; do
+    [[ -n "${!key:-}" ]] || die "必填配置为空: $key"
+  done
+  [[ ${#POSTGRES_PASSWORD} -ge 24 ]] || die "POSTGRES_PASSWORD 至少 24 个字符"
+  [[ ${#INIT_ADMIN_PASSWORD} -ge 24 ]] || die "INIT_ADMIN_PASSWORD 至少 24 个字符"
+  [[ "$INIT_ADMIN_PASSWORD" =~ [A-Z] && "$INIT_ADMIN_PASSWORD" =~ [a-z] && "$INIT_ADMIN_PASSWORD" =~ [0-9] && "$INIT_ADMIN_PASSWORD" =~ [^a-zA-Z0-9] ]] \
+    || die "INIT_ADMIN_PASSWORD 必须包含大小写字母、数字和符号"
+  [[ ${#SECRET_KEY} -ge 32 ]] || die "SECRET_KEY 至少 32 个字符"
+  [[ ${#CREDENTIAL_ENCRYPTION_KEY} -ge 32 ]] || die "CREDENTIAL_ENCRYPTION_KEY 至少 32 个字符"
+  [[ "$SECRET_KEY" != "$CREDENTIAL_ENCRYPTION_KEY" ]] || die "SECRET_KEY 与 CREDENTIAL_ENCRYPTION_KEY 不能相同"
+  if [[ "${INSTALL_MONITORING:-true}" == "true" ]]; then
+    [[ -n "${MONITORING_HOST:-}" ]] || die "启用监控时 MONITORING_HOST 必填"
+    [[ ${#GRAFANA_ADMIN_PASSWORD} -ge 24 ]] || die "GRAFANA_ADMIN_PASSWORD 至少 24 个字符"
+  fi
+}
+
+prepare_install_directory() {
+  local target current
+  target="$(readlink -m "$INSTALL_DIR")"
+  current="$(readlink -m "$ROOT")"
+  [[ "$target" != "/" ]] || die "INSTALL_DIR 禁止使用根目录"
+  case "$target" in
+    "$current"/*) die "INSTALL_DIR 不能位于离线包目录内部" ;;
+  esac
+  if [[ "$target" == "$current" ]]; then
+    return 0
+  fi
+  log "复制离线包到安装目录: $target"
+  mkdir -p "$target"
+  cp -a "$ROOT/." "$target/"
+  chmod 600 "$target/.env"
+  exec "$target/install.sh" --config "$target/.env"
+}
+
 ensure_private_monitoring_network() {
   set -a
   # shellcheck disable=SC1090
@@ -186,6 +314,7 @@ ensure_private_monitoring_network() {
 write_backend_env() {
   # 应用容器内 .env（compose env_file）
   local dest="$ROOT/app/.env"
+  backup_private_file "$dest"
   set -a
   # shellcheck disable=SC1090
   source "$ENV_FILE"
@@ -252,8 +381,8 @@ start_app() {
   log "启动应用栈 (db + init + backend + frontend) ..."
   set -a; source "$ENV_FILE"; set +a
   "${COMPOSE[@]}" -f "$APP_COMPOSE" --env-file "$ENV_FILE" up -d
-  wait_http "http://127.0.0.1:${FRONTEND_PORT}/" "前端" 40 || true
-  wait_http "http://127.0.0.1:${BACKEND_PORT}/api/settings/login-page" "后端" 60 || true
+  wait_http "http://127.0.0.1:${FRONTEND_PORT}/" "前端" 40
+  wait_http "http://127.0.0.1:${BACKEND_PORT}/api/settings/login-page" "后端" 60
   # init 容器日志
   "${COMPOSE[@]}" -f "$APP_COMPOSE" --env-file "$ENV_FILE" logs --no-color init-db | tail -n 30 || true
 }
@@ -284,9 +413,9 @@ start_monitoring() {
   fi
   chmod 600 "$ENV_FILE"
   "${COMPOSE[@]}" -f "$MON_COMPOSE" --env-file "$ENV_FILE" up -d
-  wait_http "http://127.0.0.1:${VM_PORT}/-/healthy" "VictoriaMetrics" 40 || true
-  wait_http "http://127.0.0.1:${VLOGS_PORT}/-/healthy" "VictoriaLogs" 40 || true
-  wait_http "http://127.0.0.1:${GRAFANA_PORT}/api/health" "Grafana" 60 || true
+  wait_http "http://127.0.0.1:${VM_PORT}/-/healthy" "VictoriaMetrics" 40
+  wait_http "http://127.0.0.1:${VLOGS_PORT}/-/healthy" "VictoriaLogs" 40
+  wait_http "http://127.0.0.1:${GRAFANA_PORT}/api/health" "Grafana" 60
 }
 
 summary() {
@@ -307,6 +436,21 @@ summary() {
   echo
 }
 
+verify_service_matrix() {
+  local required=(opspilot-db opspilot-backend opspilot-frontend)
+  if [[ "${INSTALL_MONITORING:-true}" == "true" ]]; then
+    required+=(opspilot-victoriametrics opspilot-victorialogs opspilot-grafana opspilot-alloy)
+  fi
+  log "最终服务矩阵:"
+  local container status
+  for container in "${required[@]}"; do
+    status="$(docker inspect --format '{{.State.Status}}' "$container" 2>/dev/null)" \
+      || die "必需容器不存在: $container"
+    printf '  %-30s %s\n' "$container" "$status"
+    [[ "$status" == "running" ]] || die "必需容器未运行: $container ($status)"
+  done
+}
+
 main() {
   local mode="install" config=""
   while [[ $# -gt 0 ]]; do
@@ -319,18 +463,19 @@ main() {
     esac
   done
 
-  require_docker
-
   if [[ "$mode" == "load" ]]; then
+    require_docker
     load_images
     exit 0
   fi
 
-  load_images
-
   if [[ -n "$config" ]]; then
     [[ -f "$config" ]] || die "配置不存在: $config"
-    tr -d '\r' < "$config" > "$ENV_FILE"
+    local normalized
+    normalized="$(mktemp)"
+    tr -d '\r' < "$config" > "$normalized"
+    backup_private_file "$ENV_FILE"
+    mv "$normalized" "$ENV_FILE"
     chmod 600 "$ENV_FILE"
     log "已使用配置 $config"
   elif [[ -f "$ENV_FILE" ]]; then
@@ -341,10 +486,16 @@ main() {
     gen_env_interactive
   fi
 
+  validate_configuration
+  prepare_install_directory
+  require_docker
+  load_images
+  apply_manifest_images
   ensure_private_monitoring_network
   write_backend_env
   start_monitoring_if_needed
   start_app
+  verify_service_matrix
   summary
 }
 

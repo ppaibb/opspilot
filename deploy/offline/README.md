@@ -88,6 +88,10 @@ cd deploy/offline
                          → 专用 Docker 网络 → Grafana:3000
 init 容器只执行 `alembic upgrade head`，成功退出后 backend 才会启动；禁止使用
 `create_all` 或 `stamp head` 跳过迁移历史。
+
+离线包必须包含 `manifest.json`。安装器会先校验每个镜像归档的 SHA-256，导入后再核对
+镜像 ID，并从清单写入实际镜像引用；任一制品、迁移或服务健康检查失败都会以非零状态退出，
+不会打印“安装完成”。已有 `.env` 和 `app/.env` 会以 `0600` 权限备份。
 监控: :8428 VM  :9428 VLogs；Grafana 裸端口默认只绑定 127.0.0.1
 ```
 
