@@ -185,6 +185,9 @@ class RiskChallengeRequest(BaseModel):
     action_id: Optional[str] = None
     action_key: Optional[str] = None
     resource_id: Optional[str] = None
+    http_method: Optional[str] = None
+    route_template: Optional[str] = None
+    request_digest: Optional[str] = None
 
 
 @router.post("/risk-challenge")
@@ -245,6 +248,16 @@ async def risk_challenge(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="当前账号无权确认该高危操作",
         )
+    if short_key and len(authorized_pairs) != 1:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="风险动作短键解析不唯一，请使用完整权限键确认",
+        )
+    if short_key:
+        # 兼容前端短键输入，但数据库只保存唯一规范化全键，消费端不再做
+        # 宽泛别名匹配，避免 assets:delete 一类短键跨资源域复用。
+        permission_key, action_id = authorized_pairs[0]
+        short_key = False
 
     risk_level = max_risk_level(
         [get_risk_level(perm, action) for perm, action in authorized_pairs]
@@ -256,5 +269,8 @@ async def risk_challenge(
         action_id=action_id,
         short_key=short_key,
         resource_id=req.resource_id,
+        http_method=req.http_method,
+        route_template=req.route_template,
+        request_digest=req.request_digest,
     )
     return {"ticket": ticket.id, "expires_at": ticket.expires_at, "risk_level": risk_level}

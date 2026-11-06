@@ -3,7 +3,7 @@
 验证阶段1安全边界：require_risk_ack 恢复强制校验后，
 1. challenge → X-Risk-Ticket → 业务路由 的合法全流程；
 2. 缺票 / 重放 / 过期 / 错动作 / 他人票据 一律 403；
-3. 短键（前端别名）签发的票据能在全键路由上消费；
+3. 短键只在唯一解析时签发，并立即规范化为全权限键；
 4. 票据签发的参数校验与过期清理。
 
 不使用 TestClient：直接调用路由函数与依赖闭包（等价且更轻，
@@ -86,15 +86,21 @@ class RiskChallengeIssuerContract(unittest.TestCase):
         result = challenge({"action_key": "clusters:delete"}, self.db)
         self.assertEqual(result["risk_level"], "high")
         row = self.db.query(RiskAckTicket).filter(RiskAckTicket.id == result["ticket"]).one()
-        self.assertTrue(row.short_key)
-        self.assertEqual(row.permission_key, "clusters")
+        self.assertFalse(row.short_key)
+        self.assertEqual(row.permission_key, FULL_PERM)
         self.assertEqual(row.action_id, "delete")
 
-    def test_short_key_unregistered_action_still_issuable(self):
-        # 未注册风险等级的动作也必须能拿票，否则对应路由会被永久 403。
-        # logs（查看日志，只读）挂了 require_risk_ack 链但未在 ACTION_RISK_LEVELS
-        # 注册等级。（patch_labels 2026-10-08 已登记 medium，不能再当未注册用例。）
-        result = challenge({"action_key": "clusters:logs"}, self.db)
+    def test_ambiguous_short_key_is_rejected(self):
+        """assets:delete 同时命中证书/虚机/集群/域名，不能签发泛用票据。"""
+        with self.assertRaises(HTTPException) as caught:
+            challenge({"action_key": "assets:delete"}, self.db)
+        self.assertEqual(caught.exception.status_code, 422)
+        self.assertIn("不唯一", caught.exception.detail)
+
+    def test_full_key_unregistered_action_still_issuable(self):
+        # 未注册风险等级的动作仍可使用完整权限键拿票；泛化短键可能同时
+        # 命中多个权限域，v2 会拒绝歧义输入而不是签发跨路由票据。
+        result = challenge({"permission_key": FULL_PERM, "action_id": "logs"}, self.db)
         self.assertEqual(result["risk_level"], "low")
 
     def test_read_only_user_cannot_issue_full_permission_ticket(self):
@@ -271,6 +277,85 @@ class RiskAckGuardContract(unittest.TestCase):
         self.db.expire_all()
         row = self.db.query(RiskAckTicket).filter(RiskAckTicket.id == ticket).one()
         self.assertIsNotNone(row.consumed_at)
+
+    def test_ticket_cannot_cross_resource_and_failed_match_does_not_consume(self):
+        ticket = self._fresh_ticket({
+            "permission_key": FULL_PERM,
+            "action_id": FULL_ACTION,
+            "resource_id": "cluster-a",
+        })
+        request = SimpleNamespace(headers={"x-risk-ticket": ticket})
+        with self.assertRaises(HTTPException) as caught:
+            security.consume_risk_ticket(
+                request,
+                TestingSession(),
+                permission_key=FULL_PERM,
+                action_id=FULL_ACTION,
+                user=ADMIN,
+                resource_id="cluster-b",
+            )
+        self.assertEqual(caught.exception.status_code, 403)
+        self.db.expire_all()
+        self.assertIsNone(self.db.get(RiskAckTicket, ticket).consumed_at)
+
+    def test_ticket_cannot_cross_method_route_or_request_digest(self):
+        ticket = challenge({
+            "permission_key": FULL_PERM,
+            "action_id": FULL_ACTION,
+            "resource_id": "cluster-a",
+            "http_method": "DELETE",
+            "route_template": "/api/clusters/{cluster_id}",
+            "request_digest": "sha256:expected",
+        }, self.db)["ticket"]
+        request = SimpleNamespace(headers={"x-risk-ticket": ticket})
+        with self.assertRaises(HTTPException):
+            security.consume_risk_ticket(
+                request,
+                TestingSession(),
+                permission_key=FULL_PERM,
+                action_id=FULL_ACTION,
+                user=ADMIN,
+                resource_id="cluster-a",
+                http_method="PATCH",
+                route_template="/api/clusters/{cluster_id}",
+                request_digest="sha256:expected",
+            )
+        self.db.expire_all()
+        self.assertIsNone(self.db.get(RiskAckTicket, ticket).consumed_at)
+
+    def test_exact_v2_ticket_passes_once(self):
+        ticket = challenge({
+            "permission_key": FULL_PERM,
+            "action_id": FULL_ACTION,
+            "resource_id": "cluster-a",
+            "http_method": "DELETE",
+            "route_template": "/api/clusters/{cluster_id}",
+            "request_digest": "sha256:expected",
+        }, self.db)["ticket"]
+        request = SimpleNamespace(headers={"x-risk-ticket": ticket})
+        security.consume_risk_ticket(
+            request,
+            TestingSession(),
+            permission_key=FULL_PERM,
+            action_id=FULL_ACTION,
+            user=ADMIN,
+            resource_id="cluster-a",
+            http_method="DELETE",
+            route_template="/api/clusters/{cluster_id}",
+            request_digest="sha256:expected",
+        )
+        with self.assertRaises(HTTPException):
+            security.consume_risk_ticket(
+                request,
+                TestingSession(),
+                permission_key=FULL_PERM,
+                action_id=FULL_ACTION,
+                user=ADMIN,
+                resource_id="cluster-a",
+                http_method="DELETE",
+                route_template="/api/clusters/{cluster_id}",
+                request_digest="sha256:expected",
+            )
 
 
 if __name__ == "__main__":

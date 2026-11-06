@@ -168,6 +168,10 @@ def consume_risk_ticket(
     permission_key: str,
     action_id: str,
     user: User,
+    resource_id: str | None = None,
+    http_method: str | None = None,
+    route_template: str | None = None,
+    request_digest: str | None = None,
 ) -> None:
     """原子消费一张高危操作二次确认票据；不满足则一律 403。
 
@@ -203,33 +207,28 @@ def consume_risk_ticket(
         )
 
     # 原子消费：单条 UPDATE 只在票据完全匹配时抢到行，rowcount==1 才算通过。
-    # - 全键票据：permission_key 与 action_id 必须精确匹配当前路由；
-    # - 短键票据：action_id 匹配且票据里的短前缀是当前权限键的任一别名
-    #   （别名生成逻辑与 GET /risk-levels 完全一致）。
+    # 新票据只保存规范化全权限键；历史短键票据不再接受，避免跨路由复用。
+    # 新增绑定字段保持 nullable 是为了滚动升级，但只要签发时写入，消费时就
+    # 必须逐字符匹配。匹配失败不更新 consumed_at，可让用户修正目标后重试。
     now_str = risk_ticket_now()
-    alias_keys = permission_key_aliases(permission_key)
-    matched = (
-        db.query(RiskAckTicket)
-        .filter(
+    query = db.query(RiskAckTicket).filter(
             RiskAckTicket.id == ticket_id,
             RiskAckTicket.user_id == user.id,
             RiskAckTicket.consumed_at.is_(None),
             RiskAckTicket.expires_at > now_str,
-            or_(
-                (
-                    (RiskAckTicket.short_key.is_(False))
-                    & (RiskAckTicket.permission_key == permission_key)
-                    & (RiskAckTicket.action_id == action_id)
-                ),
-                (
-                    (RiskAckTicket.short_key.is_(True))
-                    & (RiskAckTicket.action_id == action_id)
-                    & (RiskAckTicket.permission_key.in_(alias_keys))
-                ),
-            ),
+            RiskAckTicket.short_key.is_(False),
+            RiskAckTicket.permission_key == permission_key,
+            RiskAckTicket.action_id == action_id,
         )
-        .update({"consumed_at": risk_ticket_now()}, synchronize_session=False)
+    bindings = (
+        (RiskAckTicket.resource_id, resource_id),
+        (RiskAckTicket.http_method, str(http_method or "").strip().upper() or None),
+        (RiskAckTicket.route_template, str(route_template or "").strip() or None),
+        (RiskAckTicket.request_digest, str(request_digest or "").strip() or None),
     )
+    for column, expected in bindings:
+        query = query.filter(or_(column.is_(None), column == expected))
+    matched = query.update({"consumed_at": risk_ticket_now()}, synchronize_session=False)
     db.commit()
     if matched != 1:
         raise HTTPException(
@@ -362,6 +361,9 @@ def create_risk_ticket(
     action_id: str,
     short_key: bool,
     resource_id: str | None = None,
+    http_method: str | None = None,
+    route_template: str | None = None,
+    request_digest: str | None = None,
     ttl_seconds: int = 120,
 ) -> RiskAckTicket:
     """签发一张一次性风险确认票据，并顺带清理已过期的历史票据。"""
@@ -377,6 +379,9 @@ def create_risk_ticket(
         permission_key=permission_key,
         action_id=action_id,
         resource_id=(str(resource_id).strip() or None) if resource_id else None,
+        http_method=(str(http_method).strip().upper() or None) if http_method else None,
+        route_template=(str(route_template).strip() or None) if route_template else None,
+        request_digest=(str(request_digest).strip() or None) if request_digest else None,
         short_key=short_key,
         created_at=now_str,
         expires_at=expires,
