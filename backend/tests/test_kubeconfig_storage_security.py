@@ -8,8 +8,10 @@ from app.api.clusters import _shared
 
 
 def test_default_kubeconfig_dir_is_inside_persistent_storage():
-    normalized = Path(_shared.KUBECONFIG_DIR).as_posix()
-    assert normalized.endswith("/app/storage/kubeconfigs")
+    # Dockerfile 把 Python 包复制到 /app/app，而持久卷挂载在 /app/storage。
+    # 精确比较后端根目录下的 storage，防止误落入未挂卷的 app/storage。
+    expected = Path(__file__).resolve().parents[1] / "storage" / "kubeconfigs"
+    assert Path(_shared.KUBECONFIG_DIR).resolve() == expected.resolve()
 
 
 def test_backend_dockerignore_excludes_all_kubeconfig_locations():

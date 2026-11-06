@@ -22,12 +22,15 @@ from ._schemas import ResourceFormPatchRequest
 logger = logging.getLogger(__name__)
 
 _APP_DIR = Path(__file__).resolve().parents[2]
+_BACKEND_DIR = _APP_DIR.parent
 _LEGACY_KUBECONFIG_DIR = _APP_DIR / "kubeconfigs"
 KUBECONFIG_DIR = str(
     Path(
         os.environ.get(
             "OPSPILOT_KUBECONFIG_DIR",
-            str(_APP_DIR / "storage" / "kubeconfigs"),
+            # 容器内代码位于 /app/app，持久卷则挂载在 /app/storage；因此默认
+            # 必须以 backend（容器中的 /app）为根，不能以 Python 包目录为根。
+            str(_BACKEND_DIR / "storage" / "kubeconfigs"),
         )
     )
 )
