@@ -89,6 +89,24 @@ class TestEndToEndApi(unittest.TestCase):
         r = self.client.get("/api/settings/users", headers=headers)
         self.assertIn(r.status_code, (401, 403))
 
+    def test_readonly_user_cannot_issue_user_delete_ticket(self):
+        headers = self._login("viewer01", "View@12345")
+        r = self.client.post(
+            "/api/auth/risk-challenge",
+            headers=headers,
+            json={"action_key": "users:delete"},
+        )
+        self.assertEqual(r.status_code, 403)
+
+    def test_readonly_user_cannot_delete_user_with_forged_ticket(self):
+        headers = self._login("viewer01", "View@12345")
+        admin_id = self.client.get("/api/auth/me", headers=self.admin_headers).json()["id"]
+        r = self.client.delete(
+            f"/api/settings/users/{admin_id}",
+            headers={**headers, "X-Risk-Ticket": "forged-ticket"},
+        )
+        self.assertEqual(r.status_code, 403)
+
     def test_readonly_user_cannot_delete_host(self):
         headers = self._login("viewer01", "View@12345")
         r = self.client.delete("/api/assets/definitely-not-exist", headers=headers)

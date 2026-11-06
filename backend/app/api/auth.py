@@ -231,8 +231,23 @@ async def risk_challenge(
             )
         pairs = [(permission_key, action_id)]
 
+    # 风险确认票据只能为调用者真实拥有的权限签发。票据是二次确认凭据，
+    # 不能被当作绕过 RBAC 的授权凭据；短键可能匹配多组权限，因此保留
+    # 至少一组已授权匹配，消费端还会针对目标路由的全键再次校验。
+    permission_map = resolve_effective_permissions(current_user)
+    authorized_pairs = [
+        (permission, action)
+        for permission, action in pairs
+        if permission_map.get(permission, False)
+    ]
+    if not authorized_pairs:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="当前账号无权确认该高危操作",
+        )
+
     risk_level = max_risk_level(
-        [get_risk_level(perm, action) for perm, action in pairs]
+        [get_risk_level(perm, action) for perm, action in authorized_pairs]
     )
     ticket = create_risk_ticket(
         db,

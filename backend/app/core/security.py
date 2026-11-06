@@ -186,6 +186,15 @@ def consume_risk_ticket(
     Raises:
         HTTPException: 缺票、票据无效/过期/已消费、权限键或动作不匹配（均 403）。
     """
+    # 每次消费都按当前角色和覆盖项重新计算权限。这样即使签票后角色被撤销，
+    # 或某业务路由漏挂显式 require_permissions，票据也不能扩大调用者权限。
+    permission_map = resolve_effective_permissions(user)
+    if not permission_map.get(permission_key, False):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="当前账号无权执行该高危操作",
+        )
+
     ticket_id = str(request.headers.get("x-risk-ticket") or "").strip()
     if not ticket_id:
         raise HTTPException(

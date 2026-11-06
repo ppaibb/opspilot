@@ -41,6 +41,7 @@ TestingSession = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
 ADMIN = User(id=1, username="admin", role="管理员", status="active")
 COLLEAGUE = User(id=2, username="ops2", role="运维", status="active")
+READ_ONLY = User(id=3, username="viewer", role="只读", status="active")
 
 FULL_PERM = "action.assets.clusters.manage"
 FULL_ACTION = "delete"
@@ -95,6 +96,24 @@ class RiskChallengeIssuerContract(unittest.TestCase):
         # 注册等级。（patch_labels 2026-10-08 已登记 medium，不能再当未注册用例。）
         result = challenge({"action_key": "clusters:logs"}, self.db)
         self.assertEqual(result["risk_level"], "low")
+
+    def test_read_only_user_cannot_issue_full_permission_ticket(self):
+        """风险确认不能成为绕过业务 RBAC 的票据铸造接口。"""
+        with self.assertRaises(HTTPException) as caught:
+            challenge(
+                {
+                    "permission_key": "action.settings.users.manage",
+                    "action_id": "delete",
+                },
+                self.db,
+                user=READ_ONLY,
+            )
+        self.assertEqual(caught.exception.status_code, 403)
+
+    def test_read_only_user_cannot_issue_short_permission_ticket(self):
+        with self.assertRaises(HTTPException) as caught:
+            challenge({"action_key": "users:delete"}, self.db, user=READ_ONLY)
+        self.assertEqual(caught.exception.status_code, 403)
 
     def test_short_key_second_round_registered_cluster_actions(self):
         """2026-10-08 二轮补登记的四个动作必须落在注册等级上。
@@ -221,9 +240,35 @@ class RiskAckGuardContract(unittest.TestCase):
             call_guard(guard_for(FULL_PERM, "edit"), ticket)
         self.assertEqual(ctx.exception.status_code, 403)
 
+    def test_permission_revoked_after_issue_cannot_consume_ticket(self):
+        """签票后撤权必须立即生效，票据本身不能冻结旧权限。"""
+        ticket = self._fresh_ticket(
+            {
+                "permission_key": "action.settings.users.manage",
+                "action_id": "delete",
+            }
+        )
+        original_role = ADMIN.role
+        ADMIN.role = "只读"
+        try:
+            with self.assertRaises(HTTPException) as caught:
+                call_guard(
+                    guard_for("action.settings.users.manage", "delete"),
+                    ticket,
+                    user=ADMIN,
+                )
+            self.assertEqual(caught.exception.status_code, 403)
+            row = self.db.query(RiskAckTicket).filter(RiskAckTicket.id == ticket).one()
+            self.assertIsNone(row.consumed_at)
+        finally:
+            ADMIN.role = original_role
+
     def test_full_key_ticket_consumed_marks_row(self):
         ticket = self._fresh_ticket({"permission_key": FULL_PERM, "action_id": FULL_ACTION})
         call_guard(guard_for(FULL_PERM, FULL_ACTION), ticket)
+        # 消费发生在独立请求 Session；清掉当前测试 Session 的 identity map，
+        # 防止 SQLite 全套件运行时读到签发阶段缓存的 consumed_at=None。
+        self.db.expire_all()
         row = self.db.query(RiskAckTicket).filter(RiskAckTicket.id == ticket).one()
         self.assertIsNotNone(row.consumed_at)
 
