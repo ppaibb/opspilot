@@ -4,6 +4,7 @@
     "backend": {"ref": "opspilot/backend:1.0.0", "archive": "opspilot_backend_1.0.0.tar", "sha256": "<sha256>", "image_id": "sha256:<image-id>"},
     "frontend": {"ref": "opspilot/frontend:1.0.0", "archive": "opspilot_frontend_1.0.0.tar", "sha256": "<sha256>", "image_id": "sha256:<image-id>"},
     "postgres": {"ref": "postgres:16-alpine", "archive": "postgres_16-alpine.tar", "sha256": "<sha256>", "image_id": "sha256:<image-id>"},
+    "nginx": {"ref": "nginxinc/nginx-unprivileged:1.27-alpine", "archive": "nginxinc_nginx-unprivileged_1.27-alpine.tar", "sha256": "<sha256>", "image_id": "sha256:<image-id>"},
     "victoriametrics": {"ref": "victoriametrics/victoria-metrics:v1.140.0", "archive": "victoriametrics_victoria-metrics_v1.140.0.tar", "sha256": "<sha256>", "image_id": "sha256:<image-id>"},
     "victorialogs": {"ref": "victoriametrics/victoria-logs:v1.50.0", "archive": "victoriametrics_victoria-logs_v1.50.0.tar", "sha256": "<sha256>", "image_id": "sha256:<image-id>"},
     "grafana": {"ref": "grafana/grafana:11.6.14-security-04", "archive": "grafana_grafana_11.6.14-security-04.tar", "sha256": "<sha256>", "image_id": "sha256:<image-id>"},

@@ -12,6 +12,7 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+    restart: unless-stopped
 
   # 数据库结构只由显式迁移管理；应用进程禁止在启动时自动改表。
   init-db:
@@ -41,13 +42,26 @@ services:
         condition: service_completed_successfully
     volumes:
       - backend-storage:/app/storage
+    healthcheck:
+      test: ['CMD', 'python', '-c', "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/api/settings/login-page', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
 
   frontend:
     build: ./frontend
     ports:
-      - '8080:80'
+      - '8080:8080'
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -qO- http://127.0.0.1:8080/ || exit 1']
+      interval: 15s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
 
 volumes:
   pgdata:

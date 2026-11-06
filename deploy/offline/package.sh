@@ -17,7 +17,7 @@ docker build -t "opspilot/frontend:${TAG}" "$ROOT/frontend"
 # 若 tag 非 1.0.0，同步改 compose 默认（仍保留 1.0.0 便于 env 覆盖）
 log "拉取基础/监控镜像 ..."
 docker pull postgres:16-alpine
-docker pull nginx:1.27-alpine
+docker pull nginxinc/nginx-unprivileged:1.27-alpine
 docker pull node:22-alpine
 docker pull python:3.12-slim
 docker pull victoriametrics/victoria-metrics:v1.140.0
@@ -30,7 +30,7 @@ IMAGES=(
   "opspilot/backend:${TAG}"
   "opspilot/frontend:${TAG}"
   "postgres:16-alpine"
-  "nginx:1.27-alpine"
+  "nginxinc/nginx-unprivileged:1.27-alpine"
   "node:22-alpine"
   "python:3.12-slim"
   "victoriametrics/victoria-metrics:v1.140.0"
@@ -58,7 +58,7 @@ import sys
 output, version, *rows = sys.argv[1:]
 names = {
     "opspilot/backend": "backend", "opspilot/frontend": "frontend",
-    "postgres": "postgres", "nginx": "nginx", "node": "node", "python": "python",
+    "postgres": "postgres", "nginxinc/nginx-unprivileged": "nginx", "node": "node", "python": "python",
     "victoriametrics/victoria-metrics": "victoriametrics",
     "victoriametrics/victoria-logs": "victorialogs",
     "grafana/grafana": "grafana", "grafana/alloy": "alloy",
