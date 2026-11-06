@@ -3,7 +3,7 @@ services:
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: opspilot
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-this-db-password}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: opspilot
     volumes:
       - pgdata:/var/lib/postgresql/data
@@ -13,17 +13,32 @@ services:
       timeout: 3s
       retries: 10
 
+  # 数据库结构只由显式迁移管理；应用进程禁止在启动时自动改表。
+  init-db:
+    build: ./backend
+    env_file: ./backend/.env
+    environment:
+      DATABASE_URL: postgresql+psycopg://opspilot:${POSTGRES_PASSWORD}@db:5432/opspilot
+      DB_AUTO_CREATE_TABLES: '0'
+    command: ["/bin/sh", "-c", "alembic upgrade head"]
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: 'no'
+
   backend:
     build: ./backend
     env_file: ./backend/.env
     environment:
-      DATABASE_URL: postgresql+psycopg://opspilot:${POSTGRES_PASSWORD:-change-this-db-password}@db:5432/opspilot
-      DB_AUTO_CREATE_TABLES: '1'
+      DATABASE_URL: postgresql+psycopg://opspilot:${POSTGRES_PASSWORD}@db:5432/opspilot
+      DB_AUTO_CREATE_TABLES: '0'
     ports:
       - '8001:8001'
     depends_on:
       db:
         condition: service_healthy
+      init-db:
+        condition: service_completed_successfully
     volumes:
       - backend-storage:/app/storage
 

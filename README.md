@@ -194,9 +194,15 @@ cd ..
 ### Docker Compose
 
 ```bash
+cp .env.example .env
+# 将生成结果填入 .env 的 POSTGRES_PASSWORD；不要把 .env 提交到 Git。
+openssl rand -hex 32
 docker compose up -d
 # 前端 http://localhost:8080  后端 http://localhost:8001
 ```
+
+Compose 不提供数据库默认密码，后端关闭运行时自动建表；`init-db` 会在后端
+启动前执行 `alembic upgrade head`，迁移失败时后端不会启动。
 
 ### 校验
 
