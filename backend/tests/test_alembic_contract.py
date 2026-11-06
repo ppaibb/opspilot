@@ -34,16 +34,14 @@ class AlembicContractTest(unittest.TestCase):
         self.assertIn("from app.db import models", env_py)
         self.assertIn("target_metadata = Base.metadata", env_py)
 
-    def test_initial_revision_uses_metadata_baseline(self) -> None:
-        """首个迁移基线必须基于当前 ORM metadata 建表。"""
+    def test_initial_revision_is_present_and_versioned(self) -> None:
+        """首个迁移基线必须保持稳定版本号。"""
         revision_path = BACKEND_DIR / "alembic" / "versions" / "0001_initial_schema.py"
 
         self.assertTrue(revision_path.exists(), "initial Alembic revision must exist")
         revision = revision_path.read_text(encoding="utf-8")
 
         self.assertIn("revision = \"0001_initial_schema\"", revision)
-        self.assertIn("Base.metadata.create_all", revision)
-        self.assertIn("Base.metadata.sorted_tables", revision)
 
 
 if __name__ == "__main__":

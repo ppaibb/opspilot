@@ -1,9 +1,7 @@
-# Alembic 全量迁移验证驱动：重建临时库 → upgrade head → 报告首个错误与 schema 差异。
-# 用法（backend 目录）：
-#   .venv/Scripts/python.exe ../scripts/verify_alembic_full_upgrade.py [--keep-db]
-# 依赖 app.core.config 的 DATABASE_URL（连到哪台 PG，就在哪台建 opspilot_mig_check 临时库）。
+"""验证 Alembic 的空库、存量库和重复升级契约。"""
 from __future__ import annotations
 
+import argparse
 import os
 import subprocess
 import sys
@@ -11,84 +9,154 @@ from pathlib import Path
 
 import sqlalchemy as sa
 
-BACKEND_DIR = Path(__file__).resolve().parent.parent / "backend"
-TEMP_DB = "opspilot_mig_check"
+ROOT_DIR = Path(__file__).resolve().parent.parent
+BACKEND_DIR = ROOT_DIR / "backend"
+LEGACY_FIXTURE = BACKEND_DIR / "tests" / "schema" / "legacy_schema.sql"
+DATABASES = {
+    "empty": "opspilot_mig_check_empty",
+    "legacy": "opspilot_mig_check_legacy",
+}
 
 
 def _admin_engine() -> tuple[str, sa.Engine]:
-    """从应用配置推导管理员连接（连到同实例的 postgres 库）。"""
-    # Settings 从 CWD 读 backend/.env，必须先切目录再导入 app 配置
+    """从应用配置推导同一 PostgreSQL 实例的管理员连接。"""
     os.chdir(BACKEND_DIR)
     sys.path.insert(0, str(BACKEND_DIR))
     from app.core.config import settings as cfg
 
     prefix, rest = cfg.DATABASE_URL.split("@", 1)
     server = rest.rsplit("/", 1)[0]
-    return f"{prefix}@{server}/postgres", sa.create_engine(
-        f"{prefix}@{server}/postgres", isolation_level="AUTOCOMMIT"
-    )
+    admin_url = f"{prefix}@{server}/postgres"
+    return admin_url, sa.create_engine(admin_url, isolation_level="AUTOCOMMIT")
 
 
-def recreate_temp_db(admin_eng: sa.Engine) -> None:
-    with admin_eng.connect() as conn:
-        conn.execute(sa.text(f"DROP DATABASE IF EXISTS {TEMP_DB}"))
-        conn.execute(sa.text(f"CREATE DATABASE {TEMP_DB}"))
+def _database_url(admin_url: str, name: str) -> str:
+    return admin_url.rsplit("/", 1)[0] + f"/{name}"
 
 
-def run_upgrade(temp_url: str) -> tuple[int, str]:
-    """在临时库上执行 alembic upgrade head，返回 (退出码, 合并输出)。"""
-    proc = subprocess.run(
-        [str(BACKEND_DIR / ".venv/Scripts/python.exe"), "-m", "alembic", "upgrade", "head"],
+def recreate_database(admin_engine: sa.Engine, name: str) -> None:
+    """重建白名单内的迁移验证库。"""
+    if name not in DATABASES.values():
+        raise ValueError(f"拒绝操作非验证数据库: {name}")
+    with admin_engine.connect() as connection:
+        connection.execute(sa.text(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)'))
+        connection.execute(sa.text(f'CREATE DATABASE "{name}"'))
+
+
+def drop_database(admin_engine: sa.Engine, name: str) -> None:
+    """清理白名单内的迁移验证库。"""
+    if name not in DATABASES.values():
+        raise ValueError(f"拒绝操作非验证数据库: {name}")
+    with admin_engine.connect() as connection:
+        connection.execute(sa.text(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)'))
+
+
+def run_upgrade(database_url: str) -> str:
+    """在指定临时库执行 upgrade head，失败时携带 Alembic 输出。"""
+    venv_python = BACKEND_DIR / ".venv" / "Scripts" / "python.exe"
+    command = [str(venv_python if venv_python.exists() else sys.executable), "-m", "alembic", "upgrade", "head"]
+    process = subprocess.run(
+        command,
         cwd=BACKEND_DIR,
-        env={**__import__("os").environ, "DATABASE_URL": temp_url},
+        env={**os.environ, "DATABASE_URL": database_url},
         capture_output=True,
         text=True,
         timeout=600,
+        check=False,
     )
-    return proc.returncode, (proc.stdout + "\n" + proc.stderr)
+    output = f"{process.stdout}\n{process.stderr}".strip()
+    if process.returncode:
+        raise RuntimeError(f"upgrade head 失败（{process.returncode}）\n{output}")
+    return output
+
+
+def apply_legacy_fixture(database_url: str) -> None:
+    """将当前 schema 还原为受支持的历史结构。"""
+    engine = sa.create_engine(database_url)
+    try:
+        with engine.begin() as connection:
+            connection.exec_driver_sql(LEGACY_FIXTURE.read_text(encoding="utf-8"))
+    finally:
+        engine.dispose()
+
+
+def compare_schema(database_url: str) -> list[str]:
+    """逐表比较 ORM 与数据库的列、索引和外键。"""
+    os.chdir(BACKEND_DIR)
+    sys.path.insert(0, str(BACKEND_DIR))
+    from app.db import models  # noqa: F401
+    from app.db.database import Base
+
+    engine = sa.create_engine(database_url)
+    inspector = sa.inspect(engine)
+    problems: list[str] = []
+    database_tables = set(inspector.get_table_names()) - {"alembic_version"}
+    model_tables = set(Base.metadata.tables)
+    for table_name in sorted(model_tables - database_tables):
+        problems.append(f"缺表: {table_name}")
+
+    for table_name in sorted(model_tables & database_tables):
+        table = Base.metadata.tables[table_name]
+        database_columns = {column["name"] for column in inspector.get_columns(table_name)}
+        for column in table.columns:
+            if column.name not in database_columns:
+                problems.append(f"缺列: {table_name}.{column.name}")
+
+        database_indexes = {
+            (item["name"], tuple(item["column_names"]), bool(item.get("unique")))
+            for item in inspector.get_indexes(table_name)
+        }
+        for index in table.indexes:
+            signature = (index.name, tuple(column.name for column in index.columns), bool(index.unique))
+            if signature not in database_indexes:
+                problems.append(f"缺索引: {table_name}.{index.name}")
+
+        database_foreign_keys = {
+            (tuple(item["constrained_columns"]), item["referred_table"], tuple(item["referred_columns"]))
+            for item in inspector.get_foreign_keys(table_name)
+        }
+        for constraint in table.foreign_key_constraints:
+            elements = list(constraint.elements)
+            signature = (
+                tuple(element.parent.name for element in elements),
+                elements[0].column.table.name,
+                tuple(element.column.name for element in elements),
+            )
+            if signature not in database_foreign_keys:
+                problems.append(f"缺外键: {table_name}.{constraint.name or signature}")
+    engine.dispose()
+    return problems
+
+
+def verify_path(admin_url: str, admin_engine: sa.Engine, name: str, legacy: bool) -> None:
+    """验证单条升级路径，并确认第二次 upgrade 幂等。"""
+    database_name = DATABASES[name]
+    database_url = _database_url(admin_url, database_name)
+    recreate_database(admin_engine, database_name)
+    run_upgrade(database_url)
+    if legacy:
+        apply_legacy_fixture(database_url)
+        run_upgrade(database_url)
+    run_upgrade(database_url)
+    problems = compare_schema(database_url)
+    if problems:
+        raise RuntimeError(f"{name} schema 与 ORM 不一致：\n" + "\n".join(problems[:50]))
+    print(f"[OK] {name}: upgrade、重复 upgrade、ORM schema 对比通过")
 
 
 def main() -> int:
-    keep = "--keep-db" in sys.argv
-    admin_url, admin_eng = _admin_engine()
-    temp_url = admin_url.replace("/postgres", f"/{TEMP_DB}")
-    recreate_temp_db(admin_eng)
-    code, output = run_upgrade(temp_url)
-    tail = "\n".join(output.strip().splitlines()[-6:])
-    print(tail)
-    if code != 0:
-        print(f"\n[FAIL] upgrade head 退出码 {code}")
-        return 1
-    print("\n[OK] 空库全量 upgrade head 通过")
-
-    # 二次校验：upgrade 出来的 schema 必须与当前 ORM 模型一致（表/列级别）
-    sys.path.insert(0, str(BACKEND_DIR))
-    os.chdir(BACKEND_DIR)  # 确保 app 配置可导入（Settings 读 backend/.env）
-    from app.db.database import Base
-    from app.db import models  # noqa: F401  灌满 metadata
-
-    insp = sa.inspect(sa.create_engine(temp_url))
-    db_tables = set(insp.get_table_names()) - {"alembic_version"}
-    model_tables = set(Base.metadata.tables.keys())
-    problems: list[str] = []
-    for missing in sorted(model_tables - db_tables):
-        problems.append(f"缺表: {missing}")
-    for table in sorted(model_tables & db_tables):
-        db_cols = {c["name"] for c in insp.get_columns(table)}
-        for col in Base.metadata.tables[table].columns:
-            if col.name not in db_cols:
-                problems.append(f"缺列: {table}.{col.name}")
-    if problems:
-        print(f"\n[FAIL] upgrade 后 schema 与模型不一致（{len(problems)} 处）:")
-        for p in problems[:30]:
-            print("  -", p)
-        return 1
-    print(f"[OK] schema 与模型一致（{len(model_tables)} 张表逐列比对通过）")
-
-    if not keep:
-        insp.engine.dispose()  # 释放比对连接，否则临时库删不掉
-        with admin_eng.connect() as conn:
-            conn.execute(sa.text(f"DROP DATABASE IF EXISTS {TEMP_DB}"))
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--keep-db", action="store_true", help="保留两个临时验证库")
+    arguments = parser.parse_args()
+    admin_url, admin_engine = _admin_engine()
+    try:
+        verify_path(admin_url, admin_engine, "empty", legacy=False)
+        verify_path(admin_url, admin_engine, "legacy", legacy=True)
+    finally:
+        if not arguments.keep_db:
+            for database_name in DATABASES.values():
+                drop_database(admin_engine, database_name)
+        admin_engine.dispose()
     return 0
 
 
