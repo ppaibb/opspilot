@@ -1,6 +1,7 @@
 """Cluster CRUD, scan, refresh, health, and audit routes."""
 
 import datetime
+import logging
 import os
 import tempfile
 import time
@@ -11,11 +12,13 @@ from typing import Any, List, Optional
 from fastapi import Depends, HTTPException, Query
 from kubernetes import client, config
 from kubernetes.client.rest import ApiException
+import yaml
 from pydantic import BaseModel, Field
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.core.filesystem import write_sensitive_text_file
+from app.core.outbound_policy import OutboundPolicy, OutboundPolicyError
 from app.core.security import require_permissions, require_risk_ack
 from app.db.database import get_db
 from app.models.cluster import Cluster
@@ -37,6 +40,30 @@ from ._shared import (
     _diagnose_workload,
 )
 from . import _shared
+
+logger = logging.getLogger(__name__)
+
+
+def validate_kubeconfig_endpoints(
+    kubeconfig_yaml: str,
+    *,
+    policy: OutboundPolicy | None = None,
+) -> None:
+    """用统一出站策略校验 kubeconfig 中每个集群 API 地址。"""
+    try:
+        payload = yaml.safe_load(kubeconfig_yaml) or {}
+    except yaml.YAMLError as exc:
+        raise ValueError("kubeconfig YAML 格式非法") from exc
+    clusters = payload.get("clusters") if isinstance(payload, dict) else None
+    if not isinstance(clusters, list) or not clusters:
+        raise ValueError("kubeconfig 缺少 clusters 配置")
+    outbound = policy or OutboundPolicy.from_settings()
+    for item in clusters:
+        cluster = item.get("cluster") if isinstance(item, dict) else None
+        server = cluster.get("server") if isinstance(cluster, dict) else None
+        if not isinstance(server, str) or not server.strip():
+            raise ValueError("kubeconfig 集群缺少 server 地址")
+        outbound.validate_url(server)
 
 @router.get("", response_model=List[ClusterResponse])
 def get_clusters(db: Session = Depends(get_db)):
@@ -64,6 +91,10 @@ def scan_kubernetes_cluster(payload: KubeScanRequest):
     """基于真实的 Kubeconfig 探测集群核心水位配置"""
     if not payload.kubeconfig_yaml or len(payload.kubeconfig_yaml) < 10:
         raise HTTPException(status_code=400, detail="非法的 Kubeconfig 文本结构")
+    try:
+        validate_kubeconfig_endpoints(payload.kubeconfig_yaml)
+    except (OutboundPolicyError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=f"集群地址校验失败：{exc}") from exc
 
     fd, path = tempfile.mkstemp(suffix=".yaml")
     try:
@@ -115,8 +146,9 @@ def scan_kubernetes_cluster(payload: KubeScanRequest):
             "cpu_cores": int(round(total_cpu)),
             "mem_gb": int(round(total_mem))
         }
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"TLS/API 拒接连接: 可能是秘钥作废或网络阻断。原因: {str(e)}")
+    except Exception as exc:
+        logger.warning("K8s 扫描连接失败: %s", exc)
+        raise HTTPException(status_code=400, detail="集群连接失败，请检查地址、TLS 证书与访问凭证") from exc
     finally:
         if os.path.exists(path):
             os.remove(path)
@@ -132,6 +164,10 @@ def create_cluster(cluster: ClusterCreate, db: Session = Depends(get_db)):
 
     # Kubeconfig 安全落盘
     if cluster.kubeconfig_yaml:
+        try:
+            validate_kubeconfig_endpoints(cluster.kubeconfig_yaml)
+        except (OutboundPolicyError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=f"集群地址校验失败：{exc}") from exc
         kc_path = os.path.join(_shared.KUBECONFIG_DIR, f"{cid}.yaml")
         write_sensitive_text_file(kc_path, cluster.kubeconfig_yaml)
 
@@ -194,6 +230,8 @@ def refresh_cluster(cluster_id: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="kubeconfig 文件缺失，无法刷新（请解除后重新纳管）")
 
     try:
+        with open(kc_path, "r", encoding="utf-8") as kubeconfig_file:
+            validate_kubeconfig_endpoints(kubeconfig_file.read())
         api_client = config.new_client_from_config(kc_path)
         v1 = client.CoreV1Api(api_client=api_client)
         version_api = client.VersionApi(api_client=api_client)
@@ -226,11 +264,16 @@ def refresh_cluster(cluster_id: str, db: Session = Depends(get_db)):
         return cluster
     except HTTPException:
         raise
-    except Exception as e:  # noqa: BLE001
+    except (OutboundPolicyError, ValueError) as exc:
+        cluster.status = "disconnected"
+        db.commit()
+        raise HTTPException(status_code=400, detail=f"集群地址校验失败：{exc}") from exc
+    except Exception as exc:  # noqa: BLE001
         # 探测失败时把状态标记为 disconnected，保留旧快照供参考。
         cluster.status = "disconnected"
         db.commit()
-        raise HTTPException(status_code=400, detail=f"刷新失败（集群不可达或凭据失效）: {str(e)[:200]}")
+        logger.warning("K8s 刷新连接失败 cluster_id=%s: %s", cluster_id, exc)
+        raise HTTPException(status_code=400, detail="刷新失败（集群不可达或凭据失效）") from exc
 
 @router.delete(
     "/{cluster_id}",

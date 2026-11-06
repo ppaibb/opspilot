@@ -17,6 +17,7 @@ import asyncio
 import os
 import platform
 import json
+import logging
 import re
 import time
 import uuid
@@ -33,6 +34,7 @@ from app.api.monitoring import get_monitoring_dashboard
 from app.api.monitoring.constants import DEFAULT_STEP_SECONDS
 from app.core.config import settings
 from app.core.crypto import decrypt_secret, encrypt_secret
+from app.core.outbound_policy import OutboundPolicyError, outbound_request
 from app.core.security import get_current_user, require_permissions
 from app.db.database import get_db
 from app.timefmt import to_local_str
@@ -46,6 +48,7 @@ from app.models.user import User
 from app.models.vm import VirtualMachine
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 AI_LLM_CONFIG_KEY = "ai_llm_config"
 AI_SKILL_CONFIG_KEY = "ai_skill_registry"
@@ -1356,8 +1359,8 @@ def _generate_openai_compatible_content(
     3. 若返回结构中没有标准 choices/message，会返回空字符串并触发上层回退逻辑。
     """
     endpoint = f"{_normalize_openai_base_url(base_url)}/chat/completions"
-    response = requests.post(
-        endpoint,
+    response = _llm_outbound_request(
+        "POST", endpoint,
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
@@ -1402,17 +1405,32 @@ def _raise_llm_http_error(response: "requests.Response") -> None:
         return
     status = response.status_code
     detail = (response.text or "")[:200]
+    logger.warning("LLM 服务返回异常 HTTP %s: %s", status, detail)
     if status in (401, 403):
         raise RuntimeError(
             f"模型服务拒绝访问（HTTP {status}）：请检查 API Key 是否有效、模型名是否在权限内、"
-            f"以及服务商协议（Anthropic /v1/messages 或 OpenAI 兼容 /v1/chat/completions）是否选对。"
-            f" 响应片段：{detail}"
+            "以及服务商协议（Anthropic /v1/messages 或 OpenAI 兼容 /v1/chat/completions）是否选对。"
         )
     if status == 404:
         raise RuntimeError(
-            f"模型服务地址或模型不存在（HTTP 404）：检查 base_url 与 model 名称。响应片段：{detail}"
+            "模型服务地址或模型不存在（HTTP 404）：检查 base_url 与 model 名称。"
         )
     response.raise_for_status()
+
+
+def _llm_outbound_request(method: str, endpoint: str, **kwargs):
+    """统一应用 SSRF 策略，并只向前端暴露稳定错误分类。"""
+    try:
+        return outbound_request(method, endpoint, **kwargs)
+    except OutboundPolicyError as exc:
+        logger.warning("模型服务出站策略拒绝 %s: %s", endpoint, exc)
+        raise RuntimeError(f"模型服务地址被出站安全策略拒绝：{exc}") from exc
+    except requests.Timeout as exc:
+        logger.warning("模型服务请求超时 %s: %s", endpoint, exc)
+        raise RuntimeError("模型服务请求超时") from exc
+    except requests.RequestException as exc:
+        logger.warning("模型服务连接失败 %s: %s", endpoint, exc)
+        raise RuntimeError("模型服务连接失败") from exc
 
 
 def _generate_anthropic_content(
@@ -1433,8 +1451,8 @@ def _generate_anthropic_content(
     3. 兼容返回内容片段数组，提取其中 `type=text` 的文本段。
     """
     endpoint = f"{_normalize_anthropic_base_url(base_url)}/messages"
-    response = requests.post(
-        endpoint,
+    response = _llm_outbound_request(
+        "POST", endpoint,
         headers={
             # 兼容官方与中转站：两种鉴权头都带上
             "x-api-key": api_key,
@@ -1487,8 +1505,8 @@ def _stream_openai_compatible_content(
     3. 读到 `data: [DONE]` 结束。
     """
     endpoint = f"{_normalize_openai_base_url(base_url)}/chat/completions"
-    with requests.post(
-        endpoint,
+    with _llm_outbound_request(
+        "POST", endpoint,
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
@@ -1550,8 +1568,8 @@ def _stream_anthropic_content(
     3. `message_stop` 事件结束。
     """
     endpoint = f"{_normalize_anthropic_base_url(base_url)}/messages"
-    with requests.post(
-        endpoint,
+    with _llm_outbound_request(
+        "POST", endpoint,
         headers={
             "x-api-key": api_key,
             "anthropic-version": "2023-06-01",
