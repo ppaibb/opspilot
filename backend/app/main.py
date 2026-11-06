@@ -79,7 +79,7 @@ from app.models.collector import (
     CollectorRegistrationToken,
     CollectorRelease,
 )
-from app.core.crypto import encrypt_secret
+from app.core.crypto import encrypt_secret, validate_credential_encryption_settings
 
 
 def migrate_asset_passwords():
@@ -145,6 +145,8 @@ def ensure_model_columns():
 async def lifespan(app: FastAPI):
     import logging
     logging.getLogger(__name__).info("OpsPilot backend starting (log file: logs/app.log)")
+    # 凭证密钥错误会让全部云账号/SSH 密码不可恢复，必须在服务接流量前失败。
+    validate_credential_encryption_settings()
     if settings.DB_AUTO_CREATE_TABLES:
         # 本地开发/演示保留自动建表体验；生产环境建议关闭并使用 Alembic。
         Base.metadata.create_all(bind=engine)

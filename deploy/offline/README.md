@@ -48,7 +48,7 @@ sudo ./install.sh --config my.conf
 | `PUBLIC_URL` | 浏览器访问前端地址 | `http://192.168.1.10:8080` |
 | `FRONTEND_PORT` / `BACKEND_PORT` | 宿主机端口 | `8080` / `8001` |
 | `POSTGRES_PASSWORD` | 数据库密码（必填） | 强随机 |
-| `SECRET_KEY` / `CREDENTIAL_ENCRYPTION_KEY` | 应用密钥（**更换加密钥会导致已存凭证无法解密**） | 强随机 |
+| `SECRET_KEY` / `CREDENTIAL_ENCRYPTION_KEY` | JWT 与凭证密钥（必须分别生成且不得相同；轮换凭证密钥前先迁移密文） | 独立强随机 |
 | `INIT_ADMIN_PASSWORD` | 初始管理员密码 | 强随机 |
 | `INSTALL_MONITORING` | 是否装监控栈 | `true`/`false` |
 | `MONITORING_HOST` | 后端查询与 Agent 写入用的监控机 IP | `192.168.1.10` |
