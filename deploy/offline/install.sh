@@ -95,7 +95,7 @@ gen_env_interactive() {
   db_pass="$(rand)"
   secret="$(rand)"
   enc="$(rand)"
-  admin_pass="$(rand | cut -c1-16)"
+  admin_pass="Aa1!$(rand | cut -c1-16)"
   grafana_pass="$(rand | cut -c1-16)"
 
   ask_secret db_pass "PostgreSQL 密码" "$db_pass"

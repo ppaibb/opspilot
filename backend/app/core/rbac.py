@@ -690,6 +690,9 @@ ROLE_TEMPLATE_CONFIG_KEY = "rbac_role_templates"
 
 ACTION_RISK_LEVELS: dict[tuple[str, str], str] = {
     ("action.assets.credentials.export", "export"): "high",
+    ("module.wireguard.manage", "download_config"): "high",
+    ("action.db.execute", "download_rollback"): "high",
+    ("action.assets.hosts.connect", "download_file"): "medium",
     ("action.assets.certificates.manage", "revoke"): "high",
     ("action.assets.certificates.download", "download"): "high",
     ("action.assets.certificates.manage", "deploy"): "low",

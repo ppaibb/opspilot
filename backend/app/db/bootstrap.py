@@ -9,6 +9,7 @@
 """
 
 import os
+import re
 import socket
 
 from app.core.config import settings
@@ -20,6 +21,23 @@ from app.models.user import User
 
 # 本机主机固定 instance_id，确保幂等
 LOCAL_HOST_INSTANCE_ID = "ins-localhost"
+
+
+def _validate_initial_admin_password(username: str, password: str) -> None:
+    """拒绝短口令、常见口令以及字符类别过少的初始化密码。"""
+    classes = sum(
+        bool(pattern.search(password))
+        for pattern in (
+            re.compile(r"[a-z]"),
+            re.compile(r"[A-Z]"),
+            re.compile(r"\d"),
+            re.compile(r"[^A-Za-z0-9]"),
+        )
+    )
+    common = {"password", "password123", "admin123", "admin123456", "1234567890"}
+    lowered = password.lower()
+    if len(password) < 10 or classes < 3 or lowered in common or lowered == username.lower():
+        raise ValueError("初始化管理员密码过弱：至少 10 位且包含三类字符，且不能使用常见口令")
 
 
 def ensure_bootstrap_admin() -> None:
@@ -56,21 +74,12 @@ def ensure_bootstrap_admin() -> None:
         role = normalize_role_name(settings.INIT_ADMIN_ROLE or "管理员") or "管理员"
         existing_user = db.query(User).filter(User.username == username).first()
         if existing_user:
-            changed = False
-            if normalize_role_name(existing_user.role) != role:
-                # 只补齐引导账号角色，不重置密码，避免部署重启破坏用户密码。
-                existing_user.role = role
-                existing_user.permission_overrides = ""
-                changed = True
-            if getattr(existing_user, "status", "active") != "active":
-                existing_user.status = "active"
-                changed = True
-            if changed:
-                db.commit()
-                print(f"[OpsPilot] 已补齐管理员账号 {username} 的权限配置。")
-            else:
-                print(f"[OpsPilot] 管理员账号 {username} 已存在，跳过初始化。")
+            # Bootstrap 只负责首次创建。已有同名账号的角色、状态、权限覆盖和
+            # 密码均属于管理员维护数据，重启绝不能把禁用账号重新激活。
+            print(f"[OpsPilot] 管理员账号 {username} 已存在，跳过初始化。")
             return
+
+        _validate_initial_admin_password(username, password)
 
         email = (settings.INIT_ADMIN_EMAIL or f"{username}@opspilot.local").strip()
         display_name = (settings.INIT_ADMIN_NAME or "系统管理员").strip() or "系统管理员"
