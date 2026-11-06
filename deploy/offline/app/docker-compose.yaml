@@ -35,30 +35,12 @@ services:
       SECRET_KEY: ${SECRET_KEY:-}
       CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY:-}
     working_dir: /app
-    # 0001 已按当前 ORM create_all；扩 alembic_version 后 stamp head，避免重复 ALTER
     entrypoint:
       - /bin/sh
       - -c
       - |
-        set -e
-        python - <<'PY'
-        from app.db.database import engine, Base
-        from app.db import models  # noqa: F401
-        from sqlalchemy import text
-        Base.metadata.create_all(bind=engine)
-        with engine.begin() as conn:
-            conn.execute(text(
-                "CREATE TABLE IF NOT EXISTS alembic_version ("
-                "version_num VARCHAR(64) NOT NULL, "
-                "PRIMARY KEY (version_num))"
-            ))
-            try:
-                conn.execute(text("ALTER TABLE alembic_version ALTER COLUMN version_num TYPE VARCHAR(64)"))
-            except Exception:
-                pass
-        print("CREATE_ALL_OK")
-        PY
-        alembic stamp head
+        set -eu
+        alembic upgrade head
         echo INIT_DB_OK
     restart: 'no'
 

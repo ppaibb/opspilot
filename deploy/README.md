@@ -29,6 +29,10 @@ bash deploy/update/deploy_update.sh --host root@10.10.0.9 --backend-tag 1.0.7 --
 bash deploy/update/deploy_update.sh --host root@10.10.0.9 --check-only
 ```
 
+后端更新会先用新镜像运行 `alembic upgrade head`，迁移成功后才切换业务容器；
+迁移或健康检查失败时脚本恢复更新前的 `.env` 与旧镜像。数据库降级不自动执行，
+涉及不可逆迁移时必须先完成备份并单独评审回退方案。
+
 ### 脚本会自动完成
 
 1. SSH 探测目标机 `STAGE_DIR`（默认 `/opt/opspilot-src/opspilot-offline-stage`）

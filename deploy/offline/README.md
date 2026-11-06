@@ -86,7 +86,8 @@ cd deploy/offline
 浏览器 → :8080 frontend → :8001 backend
                          → db:5432
                          → 专用 Docker 网络 → Grafana:3000
-init 容器: alembic upgrade head（在 backend 之前成功退出）
+init 容器只执行 `alembic upgrade head`，成功退出后 backend 才会启动；禁止使用
+`create_all` 或 `stamp head` 跳过迁移历史。
 监控: :8428 VM  :9428 VLogs；Grafana 裸端口默认只绑定 127.0.0.1
 ```
 
