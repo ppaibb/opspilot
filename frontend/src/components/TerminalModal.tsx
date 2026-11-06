@@ -17,6 +17,8 @@ import {
 } from '@ant-design/icons'
 import { Terminal, useTerminal } from '@wterm/react'
 import { terminalApi, aiApi } from '@/api'
+import { riskTicketConfig } from '@/api/client'
+import { useRiskConfirm } from '@/hooks/usePermission'
 
 const NORMAL_COLS = 120
 const NORMAL_ROWS = 28
@@ -104,6 +106,9 @@ function splitJsonFrames(raw: string): Array<Record<string, unknown>> {
 }
 
 export default function TerminalModal({ open, assetId, assetName = '', assetIp = '', onClose }: Props) {
+  const riskConfirm = useRiskConfirm()
+  const riskConfirmRef = useRef(riskConfirm)
+  useEffect(() => { riskConfirmRef.current = riskConfirm }, [riskConfirm])
   const { ref: termRef, write, resize, focus } = useTerminal()
   const wsRef = useRef<WebSocket | null>(null)
   const mountRef = useRef(true)
@@ -215,7 +220,17 @@ export default function TerminalModal({ open, assetId, assetName = '', assetIp =
 
     let sessionToken: string, wsPath: string
     try {
-      const res = await terminalApi.createSession(assetId, currentCols, currentRows)
+      let res: Awaited<ReturnType<typeof terminalApi.createSession>> | undefined
+      await riskConfirmRef.current.confirm({
+        actionKey: 'hosts:exec_session',
+        permissionKey: 'action.assets.hosts.connect',
+        actionId: 'exec_session',
+        httpMethod: 'POST',
+        routeTemplate: '/api/assets/terminal/session',
+      }, async (ticket) => {
+        res = await terminalApi.createSession(assetId, currentCols, currentRows, riskTicketConfig(ticket))
+      }, `即将连接主机 ${assetName || assetId} 的 SSH 终端，确认继续？`)
+      if (!res) return
       const r = res as Record<string, unknown>
       sessionToken = String(r.session_token ?? '')
       wsPath = String(r.ws_path ?? '')

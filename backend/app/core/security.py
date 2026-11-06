@@ -237,7 +237,26 @@ def consume_risk_ticket(
         )
 
 
-def require_risk_ack(permission_key: str, action_id: str):
+def _risk_route_template(request: Request) -> str | None:
+    """返回 FastAPI 已匹配的完整路由模板，无法反射时保持兼容。"""
+    route = request.scope.get("route") if hasattr(request, "scope") else None
+    return str(getattr(route, "path", "") or "").strip() or None
+
+
+def _risk_path_resource(request: Request, names: tuple[str, ...]) -> str | None:
+    """按固定参数顺序生成路径资源标识，供前后端逐字符绑定。"""
+    if not names:
+        return None
+    path_params = getattr(request, "path_params", {}) or {}
+    return "&".join(f"{name}={path_params.get(name, '')}" for name in names)
+
+
+def require_risk_ack(
+    permission_key: str,
+    action_id: str,
+    *,
+    resource_params: tuple[str, ...] = (),
+):
     """
     校验高危操作二次确认票据（强制执行，不再直通放行）。
 
@@ -262,6 +281,9 @@ def require_risk_ack(permission_key: str, action_id: str):
             permission_key=permission_key,
             action_id=action_id,
             user=current_user,
+            resource_id=_risk_path_resource(request, resource_params),
+            http_method=getattr(request, "method", None),
+            route_template=_risk_route_template(request),
         )
         return current_user
 
@@ -269,6 +291,7 @@ def require_risk_ack(permission_key: str, action_id: str):
     # 契约测试与审计反射核对路由实际绑定的 action 字符串（闭包参数本身不可见）。
     _guard.risk_permission_key = permission_key
     _guard.risk_action_id = action_id
+    _guard.risk_resource_params = resource_params
     return _guard
 
 

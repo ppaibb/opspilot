@@ -12,8 +12,8 @@ import {
   PlusOutlined, DeleteOutlined, MoreOutlined, QuestionCircleOutlined, SafetyCertificateOutlined,
 } from '@ant-design/icons'
 import { applicationsApi } from '@/api'
-import client from '@/api/client'
-import { extractAxiosDetail } from '@/hooks/usePermission'
+import client, { riskPathResource, riskTicketConfig } from '@/api/client'
+import { extractAxiosDetail, useRiskConfirm } from '@/hooks/usePermission'
 import type {
   ApplicationResourceItem, ApplicationComponentResponse,
   ApplicationRuntimeDiscoveryCandidate, ApplicationComponentPayload,
@@ -51,6 +51,7 @@ export default function ComponentsPanel({
   invalidate: () => void
 }) {
   const { message, modal } = App.useApp()
+  const riskConfirm = useRiskConfirm()
 
   const [addMode, setAddMode]                       = useState<'scan' | 'manual' | null>(null)
   const [scanCandidates, setScanCandidates]         = useState<ApplicationRuntimeDiscoveryCandidate[]>([])
@@ -75,7 +76,8 @@ export default function ComponentsPanel({
   const [composePreflight, setComposePreflight]     = useState<ApplicationComposePreflightResponse | null>(null)
 
   const batchDeleteMut = useMutation({
-    mutationFn: (componentIds: string[]) => applicationsApi.batchDeleteComponents(appId, componentIds),
+    mutationFn: ({ componentIds, ticket }: { componentIds: string[]; ticket: string }) =>
+      applicationsApi.batchDeleteComponents(appId, componentIds, riskTicketConfig(ticket)),
     onSuccess: (result) => {
       invalidate()
       setSelectedComponentIds([])
@@ -539,7 +541,14 @@ export default function ComponentsPanel({
       okText: '确认移除',
       okButtonProps: { danger: true },
       cancelText: '取消',
-      onOk: () => batchDeleteMut.mutateAsync(componentIds),
+      onOk: () => riskConfirm.confirm({
+        actionKey: 'apps:batch_delete_components',
+        permissionKey: 'action.apps.manage',
+        actionId: 'batch_delete_components',
+        resourceId: riskPathResource([['app_id', appId]]),
+        httpMethod: 'POST',
+        routeTemplate: '/api/applications/{app_id}/components/batch-delete',
+      }, async (ticket) => { await batchDeleteMut.mutateAsync({ componentIds, ticket }) }),
     })
   }
 

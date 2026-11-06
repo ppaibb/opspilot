@@ -1355,6 +1355,7 @@ def exec_terminal_command(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
     _=Depends(require_permissions("action.assets.hosts.connect")),
+    _risk=Depends(require_risk_ack("action.assets.hosts.connect", "exec")),
 ):
     """按资产执行 SSH 命令（无状态执行）。"""
     asset_id = (req.asset_id or "").strip()
@@ -1413,6 +1414,7 @@ def create_terminal_ws_session(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
     _=Depends(require_permissions("module.tools.terminal", "action.assets.hosts.connect")),
+    _risk=Depends(require_risk_ack("action.assets.hosts.connect", "exec_session")),
 ):
     """
     创建 Web 终端一次性会话。

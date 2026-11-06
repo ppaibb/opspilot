@@ -25,7 +25,7 @@ from pydantic import BaseModel, Field
 import requests
 from sqlalchemy.orm import Session
 
-from app.core.security import get_current_user, require_permissions
+from app.core.security import get_current_user, require_permissions, require_risk_ack
 from app.core.crypto import encrypt_secret
 from app.db.database import get_db
 from app.models.asset import Asset
@@ -1535,6 +1535,11 @@ def uninstall_alloy_agent(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
     _=Depends(require_permissions("module.assets.hosts", "action.assets.hosts.monitoring")),
+    _risk=Depends(require_risk_ack(
+        "action.assets.hosts.monitoring",
+        "uninstall_collector",
+        resource_params=("asset_id",),
+    )),
 ):
     """彻底卸载主机上的 Alloy Agent —— 「装了什么就删什么」。
 

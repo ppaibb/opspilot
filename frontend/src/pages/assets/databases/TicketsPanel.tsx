@@ -14,8 +14,9 @@ import {
 import dayjs from 'dayjs'
 import axios from 'axios'
 import { dbApi } from '@/api'
+import { riskPathResource, riskTicketConfig } from '@/api/client'
 import { useAuthStore } from '@/store/auth'
-import { usePermission, extractAxiosDetail } from '@/hooks/usePermission'
+import { usePermission, useRiskConfirm, extractAxiosDetail } from '@/hooks/usePermission'
 import DbObjectBrowser from '@/components/db/DbObjectBrowser'
 import type { DbApprovalLogItem, DbAuditFinding, DbExecResultItem, DbInstance, DbTicket } from '@/types/api'
 import { TICKET_STATUS, sqlBrief, type TicketFormValues } from './types'
@@ -37,6 +38,7 @@ export function TicketsTab({
   /** 空态引导跳自助查询（父组件切 Tab 用） */
   onGoSelfQuery?: () => void
 }) {
+  const riskConfirm = useRiskConfirm()
   const { message, modal } = App.useApp()
   const queryClient = useQueryClient()
   const { has } = usePermission()
@@ -129,7 +131,8 @@ export function TicketsTab({
   })
 
   const executeMutation = useMutation({
-    mutationFn: (id: number) => dbApi.executeTicket(id),
+    mutationFn: ({ id, ticket }: { id: number; ticket: string }) =>
+      dbApi.executeTicket(id, riskTicketConfig(ticket)),
     onSuccess: (ticket) => {
       if (ticket.status === 'success') message.success('执行成功')
       else message.warning('执行失败，详见工单详情')
@@ -188,7 +191,14 @@ export function TicketsTab({
         </Space>
       ),
       okText: '确认执行', okButtonProps: { danger: true }, cancelText: '取消',
-      onOk: () => executeMutation.mutate(id),
+      onOk: () => riskConfirm.confirm({
+        actionKey: 'db:execute',
+        permissionKey: 'action.db.execute',
+        actionId: 'execute',
+        resourceId: riskPathResource([['ticket_id', id]]),
+        httpMethod: 'POST',
+        routeTemplate: '/api/db/tickets/{ticket_id}/execute',
+      }, (riskTicket) => executeMutation.mutate({ id, ticket: riskTicket }), '确认在目标数据库执行该 SQL 工单？'),
     })
   }
 
@@ -245,7 +255,7 @@ export function TicketsTab({
           )}
           {record.status === 'approved' && canExecute && (
             <Button size="small" type="primary" danger icon={<PlayCircleOutlined />}
-              loading={executeMutation.isPending && executeMutation.variables === record.id}
+              loading={executeMutation.isPending && executeMutation.variables?.id === record.id}
               onClick={() => confirmExecute(record.id)}>
               执行
             </Button>

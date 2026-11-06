@@ -24,6 +24,7 @@ from app.core.security import (
     _check_token_version,
     get_current_user,
     normalize_user_status,
+    require_risk_ack,
 )
 from app.db.database import get_db
 from app.models.notification import UserNotification
@@ -294,7 +295,10 @@ def delete_notification(
     return {"ok": True}
 
 
-@router.post("/clear")
+@router.post(
+    "/clear",
+    dependencies=[Depends(require_risk_ack("module.dashboard", "clear_notifications"))],
+)
 def clear_notifications(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),

@@ -15,7 +15,8 @@ import { useEffect, useRef, useState } from 'react'
 import { Drawer, Select, Space, Typography, App, Badge, Tooltip, Button } from 'antd'
 import { ClearOutlined } from '@ant-design/icons'
 import { clusterOpsApi } from '@/api'
-import { extractAxiosDetail } from '@/hooks/usePermission'
+import { extractAxiosDetail, useRiskConfirm } from '@/hooks/usePermission'
+import { riskPathResource, riskTicketConfig } from '@/api/client'
 
 const { Text } = Typography
 
@@ -33,6 +34,7 @@ const MAX_OUTPUT_CHARS = 200_000
 
 export default function PodExecTerminal({ open, clusterId, namespace, podName, containers, onClose }: PodExecTerminalProps) {
   const { message } = App.useApp()
+  const riskConfirm = useRiskConfirm()
   const [container, setContainer] = useState<string>(containers[0] || '')
   const [input, setInput] = useState('')
   const [output, setOutput] = useState<string[]>([])
@@ -67,9 +69,28 @@ export default function PodExecTerminal({ open, clusterId, namespace, podName, c
         const params = new URLSearchParams()
         if (container) params.set('container', container)
         params.set('command', '/bin/sh')
-        const session = await clusterOpsApi.createExecSession(clusterId, namespace, podName, {
-          container: container || undefined,
-        })
+        let session: Awaited<ReturnType<typeof clusterOpsApi.createExecSession>> | undefined
+        await riskConfirm.confirm({
+          actionKey: 'clusters:exec_session',
+          permissionKey: 'action.assets.clusters.manage',
+          actionId: 'exec_session',
+          resourceId: riskPathResource([
+            ['cluster_id', clusterId],
+            ['namespace', namespace],
+            ['name', podName],
+          ]),
+          httpMethod: 'POST',
+          routeTemplate: '/api/clusters/{cluster_id}/pods/{namespace}/{name}/exec/session',
+        }, async (ticket) => {
+          session = await clusterOpsApi.createExecSession(
+            clusterId,
+            namespace,
+            podName,
+            { container: container || undefined },
+            riskTicketConfig(ticket),
+          )
+        }, `即将进入 Pod ${namespace}/${podName} 执行终端，确认继续？`)
+        if (!session) return
         if (cancelled || seq !== restartSeq.current) return
 
         const { session_id, session_token, ws_path } = session
@@ -115,6 +136,7 @@ export default function PodExecTerminal({ open, clusterId, namespace, podName, c
       wsRef.current?.close()
       wsRef.current = null
     }
+    // riskConfirm 依赖 antd 实例，每次渲染都会生成新对象，不能加入依赖导致重连循环。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, clusterId, namespace, podName, container])
 

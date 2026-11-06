@@ -11,6 +11,7 @@ import {
 } from '@ant-design/icons'
 import axios from 'axios'
 import { clusterDetailApi, clusterOpsApi } from '@/api'
+import { riskTicketConfig } from '@/api/client'
 import { usePermission, useRiskConfirm, extractAxiosDetail } from '@/hooks/usePermission'
 import ResourceEditDrawer, { type EditTarget } from '@/components/k8s/ResourceEditDrawer'
 import YamlPre from '@/components/k8s/YamlPre'
@@ -75,15 +76,15 @@ export default function ResourcesTab({ clusterId, namespaces }: { clusterId: str
   })
 
   const deleteMutation = useMutation({
-    mutationFn: (item: K8sResourceItem) =>
-      clusterDetailApi.deleteResource(clusterId, item.namespace || 'default', kind, item.name),
+    mutationFn: ({ item, ticket }: { item: K8sResourceItem; ticket: string }) =>
+      clusterDetailApi.deleteResource(clusterId, item.namespace || 'default', kind, item.name, riskTicketConfig(ticket)),
     onSuccess: () => { message.success('资源已删除'); queryClient.invalidateQueries({ queryKey: ['cluster-resources', clusterId] }) },
     onError: (error: unknown) => message.error(extractAxiosDetail(error) ?? '删除失败'),
   })
 
   /** YAML 编辑保存：对现有资源 server-side apply（create-or-update）。 */
   const applyYamlMutation = useMutation({
-    mutationFn: () => clusterOpsApi.apply(clusterId, yamlDraft),
+    mutationFn: (ticket: string) => clusterOpsApi.apply(clusterId, yamlDraft, riskTicketConfig(ticket)),
     onSuccess: () => {
       message.success('YAML 已应用（server-side apply）')
       setYamlEditing(false)
@@ -101,7 +102,7 @@ export default function ResourcesTab({ clusterId, namespaces }: { clusterId: str
   })
 
   const resizeMutation = useMutation({
-    mutationFn: () => clusterOpsApi.resizePvc(clusterId, resizeTarget!.namespace || 'default', resizeTarget!.name, newSize),
+    mutationFn: (ticket: string) => clusterOpsApi.resizePvc(clusterId, resizeTarget!.namespace || 'default', resizeTarget!.name, newSize, riskTicketConfig(ticket)),
     onSuccess: () => { message.success('扩容请求已提交（需 StorageClass 支持 Expand）'); setResizeTarget(null); refetch() },
     onError: (error: unknown) => message.error(extractAxiosDetail(error) ?? '扩容失败'),
   })
@@ -165,7 +166,7 @@ export default function ResourcesTab({ clusterId, namespaces }: { clusterId: str
           <Popconfirm
             title={`删除 ${record.name}？`} description="删除后不可恢复。"
             okText="删除" okButtonProps={{ danger: true }} cancelText="取消"
-            onConfirm={() => riskConfirm.confirm('clusters:delete', () => deleteMutation.mutate(record),
+            onConfirm={() => riskConfirm.confirm('clusters:delete', (ticket) => deleteMutation.mutate({ item: record, ticket }),
               `将删除 ${kind} ${namespace === '_all' ? '' : `${namespace}/`}${record.name}，删除后不可恢复`)}
             disabled={!canManage}
           >
@@ -231,7 +232,7 @@ export default function ResourcesTab({ clusterId, namespaces }: { clusterId: str
             <Space>
               <Button size="small" onClick={() => setYamlEditing(false)}>放弃</Button>
               <Button size="small" type="primary" danger loading={applyYamlMutation.isPending}
-                onClick={() => riskConfirm.confirm('clusters:apply', () => applyYamlMutation.mutate())}>
+                onClick={() => riskConfirm.confirm('clusters:apply', (ticket) => applyYamlMutation.mutate(ticket))}>
                 保存并应用
               </Button>
             </Space>
@@ -266,7 +267,7 @@ export default function ResourcesTab({ clusterId, namespaces }: { clusterId: str
         open={!!resizeTarget}
         onCancel={() => setResizeTarget(null)}
         // 后端 resize_pvc 守卫动作，需确认 + 一次性票据
-        onOk={() => riskConfirm.confirm('clusters:resize_pvc', () => resizeMutation.mutate())}
+        onOk={() => riskConfirm.confirm('clusters:resize_pvc', (ticket) => resizeMutation.mutate(ticket))}
         okText="提交扩容" okButtonProps={{ danger: true }} cancelText="取消"
         confirmLoading={resizeMutation.isPending}
       >

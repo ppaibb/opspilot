@@ -9,6 +9,7 @@ import {
   ReloadOutlined, PlusOutlined, TagsOutlined, DeleteOutlined,
 } from '@ant-design/icons'
 import { clusterDetailApi, clusterOpsApi } from '@/api'
+import { riskTicketConfig } from '@/api/client'
 import { usePermission, useRiskConfirm, extractAxiosDetail } from '@/hooks/usePermission'
 import type { NamespaceRow } from './types'
 import { statusTag, PROTECTED_NAMESPACES } from './shared'
@@ -44,9 +45,9 @@ export default function NamespacesTab({ clusterId }: { clusterId: string }) {
     queryClient.invalidateQueries({ queryKey: ['cluster-namespaces', clusterId] })
 
   const deleteNsMutation = useMutation({
-    mutationFn: (ns: string) => clusterOpsApi.deleteNamespace(clusterId, ns),
-    onSuccess: (_d, ns) => {
-      message.success(`命名空间 ${ns} 已进入 Terminating`)
+    mutationFn: ({ ns, ticket }: { ns: string; ticket: string }) => clusterOpsApi.deleteNamespace(clusterId, ns, riskTicketConfig(ticket)),
+    onSuccess: (_d, vars) => {
+      message.success(`命名空间 ${vars.ns} 已进入 Terminating`)
       invalidateNamespaces()
     },
     onError: (error: unknown) => message.error(extractAxiosDetail(error) ?? '删除失败'),
@@ -62,7 +63,7 @@ export default function NamespacesTab({ clusterId }: { clusterId: string }) {
   const usageView = usage as NamespaceUsage | undefined
 
   const createMutation = useMutation({
-    mutationFn: (values: { name: string; labels?: string; quota_preset?: string | null }) => {
+    mutationFn: ({ values, ticket }: { values: { name: string; labels?: string; quota_preset?: string | null }; ticket: string }) => {
       const labels: Record<string, string> = {}
       if (values.labels) {
         for (const pair of values.labels.split(',')) {
@@ -74,7 +75,7 @@ export default function NamespacesTab({ clusterId }: { clusterId: string }) {
         name: values.name,
         labels,
         quota_preset: values.quota_preset && values.quota_preset !== 'none' ? values.quota_preset : null,
-      })
+      }, riskTicketConfig(ticket))
     },
     onSuccess: () => {
       message.success('命名空间已创建')
@@ -108,7 +109,7 @@ export default function NamespacesTab({ clusterId }: { clusterId: string }) {
               title={`删除命名空间 ${r.name}？`}
               description="其下全部资源（Pod/Service/配置等）将被级联删除，不可恢复！"
               okText="删除" okButtonProps={{ danger: true }} cancelText="取消"
-              onConfirm={() => riskConfirm.confirm('clusters:delete', () => deleteNsMutation.mutate(r.name),
+              onConfirm={() => riskConfirm.confirm('clusters:delete', (ticket) => deleteNsMutation.mutate({ ns: r.name, ticket }),
                 `将删除命名空间 ${r.name} 及其下全部资源（级联删除，不可恢复）`)}
               disabled={!canManage || protectedNs}
             >
@@ -180,11 +181,13 @@ export default function NamespacesTab({ clusterId }: { clusterId: string }) {
         open={createOpen}
         onCancel={() => setCreateOpen(false)}
         // 后端 create_namespace 守卫动作，需确认 + 一次性票据
-        onOk={() => riskConfirm.confirm('clusters:create_namespace', () => form.submit())}
+        onOk={() => riskConfirm.confirm('clusters:create_namespace', (ticket) => {
+          void form.validateFields().then((values) => createMutation.mutate({ values, ticket }))
+        })}
         okText="创建" cancelText="取消"
         confirmLoading={createMutation.isPending}
       >
-        <Form form={form} layout="vertical" onFinish={(values) => createMutation.mutate(values)}>
+        <Form form={form} layout="vertical">
           <Form.Item
             name="name" label="名称"
             rules={[
@@ -242,7 +245,7 @@ function NamespaceLabelsEditor({ clusterId, namespace, onClose }: { clusterId: s
   }, [namespace, nsMeta])
 
   const saveMutation = useMutation({
-    mutationFn: () => {
+    mutationFn: (ticket: string) => {
       const labels: Record<string, string | null> = {}
       for (const line of labelsText.split('\n')) {
         const row = line.trim()
@@ -255,7 +258,7 @@ function NamespaceLabelsEditor({ clusterId, namespace, onClose }: { clusterId: s
         const [k, v] = row.split('=')
         if (k?.trim()) labels[k.trim()] = (v ?? '').trim()
       }
-      return clusterOpsApi.patchNamespaceLabels(clusterId, namespace!, labels)
+      return clusterOpsApi.patchNamespaceLabels(clusterId, namespace!, labels, riskTicketConfig(ticket))
     },
     onSuccess: (result) => {
       const applied = Object.keys(result?.applied || {}).length
@@ -273,7 +276,7 @@ function NamespaceLabelsEditor({ clusterId, namespace, onClose }: { clusterId: s
       width={520}
       extra={
         <Button type="primary" loading={saveMutation.isPending}
-          onClick={() => riskConfirm.confirm('clusters:patch_labels', () => saveMutation.mutate())}>
+          onClick={() => riskConfirm.confirm('clusters:patch_labels', (ticket) => saveMutation.mutate(ticket))}>
           保存
         </Button>
       }

@@ -10,7 +10,8 @@ import {
   EditOutlined, LockOutlined, UserOutlined, DeleteOutlined,
 } from '@ant-design/icons'
 import { usersApi, rbacApi } from '@/api'
-import { useRiskConfirm, extractAxiosDetail, fetchRiskTicket } from '@/hooks/usePermission'
+import { riskTicketConfig } from '@/api/client'
+import { useRiskConfirm, extractAxiosDetail } from '@/hooks/usePermission'
 import type { UserResponse, UserCreateRequest, UserAccessUpdate } from '@/types/api'
 
 const { Text } = Typography
@@ -75,7 +76,8 @@ export default function UsersPage() {
   })
 
   const statusMut = useMutation({
-    mutationFn: ({ id, status }: { id: number; status: string }) => usersApi.updateStatus(id, status),
+    mutationFn: ({ id, status, ticket }: { id: number; status: string; ticket?: string }) =>
+      usersApi.updateStatus(id, status, ticket ? riskTicketConfig(ticket) : undefined),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['users'] })
       message.success('状态已更新')
@@ -84,7 +86,8 @@ export default function UsersPage() {
   })
 
   const resetPwdMut = useMutation({
-    mutationFn: ({ id, pwd }: { id: number; pwd: string }) => usersApi.resetPassword(id, pwd),
+    mutationFn: ({ id, pwd, ticket }: { id: number; pwd: string; ticket: string }) =>
+      usersApi.resetPassword(id, pwd, riskTicketConfig(ticket)),
     onSuccess: () => {
       setDrawerMode(null)
       message.success('密码已重置')
@@ -105,7 +108,7 @@ export default function UsersPage() {
     // 删除用户是高危动作（users:delete，high）：riskConfirm 先弹二次确认再取一次性票据
     confirm(
       'users:delete',
-      () => { fetchRiskTicket('users:delete').then((ticket) => deleteMut.mutate({ id: u.id, ticket })) },
+      (ticket) => deleteMut.mutate({ id: u.id, ticket }),
       `确定要删除用户「${u.username}」吗？删除后该账号无法登录，历史审计记录以用户名保留。`,
     )
   }
@@ -140,7 +143,7 @@ export default function UsersPage() {
     const next = u.status === 'active' ? 'inactive' : 'active'
     if (next === 'inactive') {
       // 禁用是后端守卫动作（users:disable）：riskConfirm 取一次性票据
-      confirm('users:disable', () => statusMut.mutate({ id: u.id, status: next }), `确定要禁用用户「${u.username}」吗？`)
+      confirm('users:disable', (ticket) => statusMut.mutate({ id: u.id, status: next, ticket }), `确定要禁用用户「${u.username}」吗？`)
     } else {
       // 启用无守卫：普通二次确认即可，不取风险票据
       modal.confirm({
@@ -321,7 +324,7 @@ export default function UsersPage() {
           <Button type="primary" danger loading={resetPwdMut.isPending} onClick={() => {
             pwdForm.validateFields().then(({ new_password }) => {
               if (!editingUser) return
-              confirm('users:reset-password', () => resetPwdMut.mutate({ id: editingUser.id, pwd: new_password }), `确定重置「${editingUser.username}」的密码？`)
+              confirm('users:reset-password', (ticket) => resetPwdMut.mutate({ id: editingUser.id, pwd: new_password, ticket }), `确定重置「${editingUser.username}」的密码？`)
             })
           }}>重置</Button>
         }

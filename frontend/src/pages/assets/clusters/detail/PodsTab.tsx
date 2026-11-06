@@ -10,6 +10,7 @@ import {
   DeleteOutlined,
 } from '@ant-design/icons'
 import { clusterDetailApi } from '@/api'
+import { riskTicketConfig } from '@/api/client'
 import { usePermission, useRiskConfirm, extractAxiosDetail } from '@/hooks/usePermission'
 import PodLogViewer from '@/components/PodLogViewer'
 import PodExecTerminal from '@/components/PodExecTerminal'
@@ -65,7 +66,8 @@ export default function PodsTab({ clusterId, namespaces }: { clusterId: string; 
   })
 
   const deleteMutation = useMutation({
-    mutationFn: (pod: K8sPod) => clusterDetailApi.deletePod(clusterId, pod.namespace, pod.name),
+    mutationFn: ({ pod, ticket }: { pod: K8sPod; ticket: string }) =>
+      clusterDetailApi.deletePod(clusterId, pod.namespace, pod.name, riskTicketConfig(ticket)),
     onSuccess: () => { message.success('Pod 已删除'); queryClient.invalidateQueries({ queryKey: ['cluster-pods', clusterId] }) },
     onError: (error: unknown) => message.error(extractAxiosDetail(error) ?? '删除失败'),
   })
@@ -122,7 +124,7 @@ export default function PodsTab({ clusterId, namespaces }: { clusterId: string; 
           <Popconfirm
             title={`删除 Pod ${record.name}？`} description="删除后由控制器重建（如 Deployment）。"
             okText="删除" okButtonProps={{ danger: true }} cancelText="取消"
-            onConfirm={() => riskConfirm.confirm('clusters:delete', () => deleteMutation.mutate(record),
+            onConfirm={() => riskConfirm.confirm('clusters:delete', (ticket) => deleteMutation.mutate({ pod: record, ticket }),
               `将删除 Pod ${record.namespace}/${record.name}，删除后由所属控制器重建`)}
             disabled={!canManage}
           >

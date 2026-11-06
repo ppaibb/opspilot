@@ -166,7 +166,7 @@ export default function FinanceAccountsPage() {
             description="将同时删除该账号已同步的全部账单数据，不可恢复。"
             okText="删除" okButtonProps={{ danger: true }} cancelText="取消"
             // 后端云账号删除挂 finance 守卫动作，需确认 + 一次性票据
-            onConfirm={() => confirm('finance:delete', () => deleteMutation.mutate(record.id))}
+            onConfirm={() => confirm('finance:delete', (ticket) => deleteMutation.mutate({ id: record.id, riskTicket: ticket }))}
             disabled={!canManage}
           >
             <Button size="small" danger disabled={!canManage}>删除</Button>
@@ -253,7 +253,7 @@ export default function FinanceAccountsPage() {
             // 创建云账号是守卫动作（finance:create）：确认取票后再提交；编辑不取票
             editing
               ? saveMutation.mutate({ id: editing.id, data: values })
-              : confirm('finance:create', () => saveMutation.mutate({ data: values }))
+              : confirm('finance:create', (ticket) => saveMutation.mutate({ data: values, riskTicket: ticket }))
           }
           initialValues={{ enabled: true }}
         >

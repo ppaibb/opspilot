@@ -15,6 +15,7 @@ import {
   ExperimentOutlined, MoreOutlined,
 } from '@ant-design/icons'
 import { clusterDetailApi, clusterOpsApi } from '@/api'
+import { riskTicketConfig } from '@/api/client'
 import { usePermission, useRiskConfirm, extractAxiosDetail } from '@/hooks/usePermission'
 import ResourceEditDrawer, { type EditTarget } from '@/components/k8s/ResourceEditDrawer'
 import YamlPre from '@/components/k8s/YamlPre'
@@ -73,10 +74,10 @@ export default function WorkloadsTab({ clusterId, namespaces }: { clusterId: str
 
   /** 指定修订回滚（后端支持 {revision}；不传则回滚上一版）。 */
   const undoRevisionMutation = useMutation({
-    mutationFn: (revision: number) =>
-      clusterDetailApi.rolloutUndo(clusterId, historyTarget!.kind, historyTarget!.namespace, historyTarget!.name, { revision }),
-    onSuccess: (_d, revision) => {
-      message.success(`已提交回滚到修订 #${revision}`)
+    mutationFn: ({ revision, ticket }: { revision: number; ticket: string }) =>
+      clusterDetailApi.rolloutUndo(clusterId, historyTarget!.kind, historyTarget!.namespace, historyTarget!.name, { revision }, riskTicketConfig(ticket)),
+    onSuccess: (_d, vars) => {
+      message.success(`已提交回滚到修订 #${vars.revision}`)
       setHistoryTarget(null)
       invalidate()
     },
@@ -105,22 +106,22 @@ export default function WorkloadsTab({ clusterId, namespaces }: { clusterId: str
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ['cluster-workloads', clusterId] })
 
   const scaleMutation = useMutation({
-    mutationFn: () => clusterDetailApi.scaleWorkload(clusterId, scaleTarget!.kind, scaleTarget!.namespace, scaleTarget!.name, scaleReplicas),
+    mutationFn: (ticket: string) => clusterDetailApi.scaleWorkload(clusterId, scaleTarget!.kind, scaleTarget!.namespace, scaleTarget!.name, scaleReplicas, riskTicketConfig(ticket)),
     onSuccess: () => { message.success('扩缩容已提交'); setScaleTarget(null); invalidate() },
     onError: (error: unknown) => message.error(extractAxiosDetail(error) ?? '扩缩容失败'),
   })
   const restartMutation = useMutation({
-    mutationFn: (w: K8sWorkload) => clusterDetailApi.restartWorkload(clusterId, w.kind, w.namespace, w.name),
+    mutationFn: ({ w, ticket }: { w: K8sWorkload; ticket: string }) => clusterDetailApi.restartWorkload(clusterId, w.kind, w.namespace, w.name, riskTicketConfig(ticket)),
     onSuccess: () => { message.success('滚动重启已提交'); invalidate() },
     onError: (error: unknown) => message.error(extractAxiosDetail(error) ?? '重启失败'),
   })
   const undoMutation = useMutation({
-    mutationFn: (w: K8sWorkload) => clusterDetailApi.rolloutUndo(clusterId, w.kind, w.namespace, w.name),
+    mutationFn: ({ w, ticket }: { w: K8sWorkload; ticket: string }) => clusterDetailApi.rolloutUndo(clusterId, w.kind, w.namespace, w.name, undefined, riskTicketConfig(ticket)),
     onSuccess: () => { message.success('回滚已提交'); invalidate() },
     onError: (error: unknown) => message.error(extractAxiosDetail(error) ?? '回滚失败'),
   })
   const deleteMutation = useMutation({
-    mutationFn: (w: K8sWorkload) => clusterDetailApi.deleteWorkload(clusterId, w.kind, w.namespace, w.name),
+    mutationFn: ({ w, ticket }: { w: K8sWorkload; ticket: string }) => clusterDetailApi.deleteWorkload(clusterId, w.kind, w.namespace, w.name, riskTicketConfig(ticket)),
     onSuccess: () => { message.success('工作负载已删除'); invalidate() },
     onError: (error: unknown) => message.error(extractAxiosDetail(error) ?? '删除失败'),
   })
@@ -128,31 +129,32 @@ export default function WorkloadsTab({ clusterId, namespaces }: { clusterId: str
   const isPaused = (w: K8sWorkload) => w.status === 'Suspended' || w.status === 'Paused'
 
   const setImageMutation = useMutation({
-    mutationFn: () => clusterOpsApi.setWorkloadImage(
+    mutationFn: (ticket: string) => clusterOpsApi.setWorkloadImage(
       clusterId, imageTarget!.kind, imageTarget!.namespace, imageTarget!.name,
       Object.entries(imageValues).filter(([, img]) => img && img !== imageTarget?.image)
         .map(([name, image]) => ({ name, image })),
+      riskTicketConfig(ticket),
     ),
     onSuccess: () => { message.success('镜像更新已提交（滚动发布）'); setImageTarget(null); invalidate() },
     onError: (error: unknown) => message.error(extractAxiosDetail(error) ?? '镜像更新失败'),
   })
 
   const pauseMutation = useMutation({
-    mutationFn: ({ w, paused }: { w: K8sWorkload; paused: boolean }) =>
-      clusterOpsApi.toggleWorkloadPause(clusterId, w.kind, w.namespace, w.name, paused),
+    mutationFn: ({ w, paused, ticket }: { w: K8sWorkload; paused: boolean; ticket: string }) =>
+      clusterOpsApi.toggleWorkloadPause(clusterId, w.kind, w.namespace, w.name, paused, riskTicketConfig(ticket)),
     onSuccess: (_d, vars) => { message.success(vars.paused ? '已暂停（副本缩到 0 并记忆）' : '已恢复'); invalidate() },
     onError: (error: unknown) => message.error(extractAxiosDetail(error) ?? '操作失败'),
   })
 
   const triggerCronMutation = useMutation({
-    mutationFn: (w: K8sWorkload) => clusterOpsApi.triggerCronjob(clusterId, w.namespace, w.name),
+    mutationFn: ({ w, ticket }: { w: K8sWorkload; ticket: string }) => clusterOpsApi.triggerCronjob(clusterId, w.namespace, w.name, riskTicketConfig(ticket)),
     onSuccess: () => { message.success('CronJob 已手动触发一次') },
     onError: (error: unknown) => message.error(extractAxiosDetail(error) ?? '触发失败'),
   })
 
   const suspendCronMutation = useMutation({
-    mutationFn: ({ w, suspend }: { w: K8sWorkload; suspend: boolean }) =>
-      clusterOpsApi.suspendCronjob(clusterId, w.namespace, w.name, suspend),
+    mutationFn: ({ w, suspend, ticket }: { w: K8sWorkload; suspend: boolean; ticket: string }) =>
+      clusterOpsApi.suspendCronjob(clusterId, w.namespace, w.name, suspend, riskTicketConfig(ticket)),
     onSuccess: (_d, vars) => { message.success(vars.suspend ? 'CronJob 已挂起' : 'CronJob 已恢复调度'); invalidate() },
     onError: (error: unknown) => message.error(extractAxiosDetail(error) ?? '操作失败'),
   })
@@ -215,14 +217,14 @@ export default function WorkloadsTab({ clusterId, namespaces }: { clusterId: str
           )
         }
         const onMore: MenuProps['onClick'] = ({ key }) => {
-          if (key === 'rollback') riskConfirm.confirm('clusters:rollout-undo', () => undoMutation.mutate(record),
+          if (key === 'rollback') riskConfirm.confirm('clusters:rollout-undo', (ticket) => undoMutation.mutate({ w: record, ticket }),
             `将把 ${record.namespace}/${record.name} 回滚到上一个版本，当前版本的配置与镜像将不再生效`)
           if (key === 'history') setHistoryTarget(record)
           if (key === 'image') { setImageTarget(record); setImageValues({ main: record.image || '' }) }
-          if (key === 'pause') riskConfirm.confirm('clusters:pause', () => pauseMutation.mutate({ w: record, paused: !paused }))
+          if (key === 'pause') riskConfirm.confirm('clusters:pause', (ticket) => pauseMutation.mutate({ w: record, paused: !paused, ticket }))
           if (key === 'status') setRolloutTarget(record)
-          if (key === 'suspend') riskConfirm.confirm('clusters:suspend_cronjob', () =>
-            suspendCronMutation.mutate({ w: record, suspend: record.status !== 'Suspended' }))
+          if (key === 'suspend') riskConfirm.confirm('clusters:suspend_cronjob', (ticket) =>
+            suspendCronMutation.mutate({ w: record, suspend: record.status !== 'Suspended', ticket }))
           if (key === 'jobs') setCronJobsTarget(record)
         }
         return (
@@ -235,7 +237,7 @@ export default function WorkloadsTab({ clusterId, namespaces }: { clusterId: str
             <Tooltip title={ROLLOUT_KINDS.includes(record.kind) ? '滚动重启' : `${record.kind} 不支持滚动重启`}>
               <Button size="small" type="text" icon={<SyncOutlined />}
                 disabled={!canManage || !ROLLOUT_KINDS.includes(record.kind)}
-                onClick={() => riskConfirm.confirm('clusters:restart', () => restartMutation.mutate(record))} />
+                onClick={() => riskConfirm.confirm('clusters:restart', (ticket) => restartMutation.mutate({ w: record, ticket }))} />
             </Tooltip>
             <Tooltip title="查看 YAML">
               <Button size="small" type="text" icon={<FileTextOutlined />} onClick={() => setYamlTarget(record)} />
@@ -244,7 +246,7 @@ export default function WorkloadsTab({ clusterId, namespaces }: { clusterId: str
               <Tooltip title="手动触发一次">
                 <Button size="small" type="text" icon={<SendOutlined />}
                   disabled={!canManage}
-                  onClick={() => riskConfirm.confirm('clusters:trigger_cronjob', () => triggerCronMutation.mutate(record))} />
+                  onClick={() => riskConfirm.confirm('clusters:trigger_cronjob', (ticket) => triggerCronMutation.mutate({ w: record, ticket }))} />
               </Tooltip>
             )}
             <Tooltip title={DELETE_KINDS.includes(record.kind) ? undefined : `暂不支持删除 ${record.kind}（请用 YAML 工作台）`}>
@@ -253,7 +255,7 @@ export default function WorkloadsTab({ clusterId, namespaces }: { clusterId: str
                   title={`删除 ${record.namespace}/${record.name}？`}
                   description="该工作负载及其 Pod 将被删除，不可恢复。"
                   okText="删除" okButtonProps={{ danger: true }} cancelText="取消"
-                  onConfirm={() => riskConfirm.confirm('clusters:delete', () => deleteMutation.mutate(record),
+                  onConfirm={() => riskConfirm.confirm('clusters:delete', (ticket) => deleteMutation.mutate({ w: record, ticket }),
                     `将删除 ${record.kind} ${record.namespace}/${record.name} 及其全部 Pod，不可恢复`)}
                 >
                   <Button size="small" type="text" danger icon={<DeleteOutlined />}
@@ -312,7 +314,7 @@ export default function WorkloadsTab({ clusterId, namespaces }: { clusterId: str
         open={!!imageTarget}
         onCancel={() => setImageTarget(null)}
         // 后端 set-image 守卫动作，需确认 + 一次性票据
-        onOk={() => riskConfirm.confirm('clusters:set-image', () => setImageMutation.mutate(),
+        onOk={() => riskConfirm.confirm('clusters:set-image', (ticket) => setImageMutation.mutate(ticket),
           `将对 ${imageTarget?.namespace}/${imageTarget?.name} 执行滚动发布，镜像替换为 ${imageValues.main || '空'}，旧版本 Pod 将被逐步替换`)}
         okText="提交滚动发布" cancelText="取消"
         confirmLoading={setImageMutation.isPending}
@@ -407,7 +409,7 @@ export default function WorkloadsTab({ clusterId, namespaces }: { clusterId: str
         open={!!scaleTarget}
         onCancel={() => setScaleTarget(null)}
         // 后端 scale 守卫动作是 edit（非 delete），确认键与之对齐
-        onOk={() => riskConfirm.confirm('clusters:edit', () => scaleMutation.mutate())}
+        onOk={() => riskConfirm.confirm('clusters:edit', (ticket) => scaleMutation.mutate(ticket))}
         okText="提交" cancelText="取消"
         confirmLoading={scaleMutation.isPending}
       >
@@ -443,7 +445,7 @@ export default function WorkloadsTab({ clusterId, namespaces }: { clusterId: str
                       title={`回滚到修订 #${rev.revision}？`}
                       description="将触发一次新的滚动发布到该版本的模板。"
                       okText="回滚" okButtonProps={{ danger: true }} cancelText="取消"
-                      onConfirm={() => riskConfirm.confirm('clusters:rollout-undo', () => undoRevisionMutation.mutate(rev.revision as number),
+                      onConfirm={() => riskConfirm.confirm('clusters:rollout-undo', (ticket) => undoRevisionMutation.mutate({ revision: rev.revision as number, ticket }),
                         `将把 ${historyTarget?.namespace}/${historyTarget?.name} 回滚到修订 #${rev.revision}，并触发一次新的滚动发布`)}
                     >
                       <Button size="small" type="link" icon={<RollbackOutlined />}>回滚到此版本</Button>

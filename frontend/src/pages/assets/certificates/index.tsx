@@ -15,6 +15,7 @@ import {
 } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import { certificatesApi, assetsApi, credentialsApi, clustersApi } from '@/api'
+import { riskTicketConfig } from '@/api/client'
 import { useRiskConfirm, extractAxiosDetail } from '@/hooks/usePermission'
 import { useCrudResource } from '@/hooks/useCrudResource'
 import { downloadBlob } from '@/utils/download'
@@ -92,7 +93,7 @@ export default function CertificatesPage() {
   })
 
   const batchDeleteMut = useMutation({
-    mutationFn: () => certificatesApi.batchDelete(selectedKeys),
+    mutationFn: (ticket: string) => certificatesApi.batchDelete(selectedKeys, riskTicketConfig(ticket)),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['certificates'] })
       setSelectedKeys([])
@@ -111,7 +112,8 @@ export default function CertificatesPage() {
   })
 
   const revokeMut = useMutation({
-    mutationFn: (id: string) => certificatesApi.revoke(id),
+    mutationFn: ({ id, ticket }: { id: string; ticket: string }) =>
+      certificatesApi.revoke(id, undefined, riskTicketConfig(ticket)),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['certificates'] })
       message.success('已吊销证书')
@@ -127,9 +129,9 @@ export default function CertificatesPage() {
   /** 下载证书文件包（cert/key/fullchain/ca 打包 zip）：certificates:download 票据 + blob 附件 */
   const handleDownload = (cert: CertificateResponse) => {
     const targetId = cert.cert_id || cert.id || ''
-    confirm('certificates:download', async () => {
+    confirm('certificates:download', async (ticket) => {
       try {
-        const res = await certificatesApi.downloadFile(targetId)
+        const res = await certificatesApi.downloadFile(targetId, riskTicketConfig(ticket))
         downloadBlob(
           res.data,
           `${(cert.primary_domain || targetId).replace(/\*/g, 'wildcard').replace(/\//g, '-')}.zip`,
@@ -339,13 +341,13 @@ export default function CertificatesPage() {
         ]
         const onMore: MenuProps['onClick'] = ({ key }) => {
           if (key === 'revoke') {
-            confirm('certificates:revoke', () => revokeMut.mutate(targetId))
+            confirm('certificates:revoke', (ticket) => revokeMut.mutate({ id: targetId, ticket }))
           } else if (key === 'delete') {
             modal.confirm({
               title: `删除证书 ${r.name || r.primary_domain}`,
               content: '此操作不可恢复，确定继续？',
               okText: '删除', okButtonProps: { danger: true }, cancelText: '取消',
-              onOk: () => confirm('certificates:delete', () => deleteMut.mutate(targetId)),
+              onOk: () => confirm('certificates:delete', (ticket) => deleteMut.mutate({ id: targetId, riskTicket: ticket })),
             })
           }
         }
@@ -437,7 +439,7 @@ export default function CertificatesPage() {
               style={{ width: 240 }}
             />
             {selectedKeys.length > 0 && (
-              <Button danger icon={<DeleteOutlined />} onClick={() => confirm('certificates:delete', () => batchDeleteMut.mutate())}>
+              <Button danger icon={<DeleteOutlined />} onClick={() => confirm('certificates:delete', (ticket) => batchDeleteMut.mutate(ticket))}>
                 批量删除 ({selectedKeys.length})
               </Button>
             )}

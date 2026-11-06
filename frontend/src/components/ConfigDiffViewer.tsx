@@ -4,6 +4,7 @@ import { CloseOutlined, RollbackOutlined } from '@ant-design/icons'
 import ReactDiffViewer, { DiffMethod } from 'react-diff-viewer-continued'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { applicationsApi } from '@/api'
+import { riskTicketConfig } from '@/api/client'
 import { useRiskConfirm, extractAxiosDetail } from '@/hooks/usePermission'
 
 interface ConfigDiffViewerProps {
@@ -38,7 +39,7 @@ export default function ConfigDiffViewer({
   })
 
   const rollbackMut = useMutation({
-    mutationFn: () => applicationsApi.rollbackConfig(appId, configId, targetRevisionId),
+    mutationFn: (ticket: string) => applicationsApi.rollbackConfig(appId, configId, targetRevisionId, riskTicketConfig(ticket)),
     onSuccess: () => {
       message.success('配置已回滚')
       queryClient.invalidateQueries({ queryKey: ['config-revisions', appId, configId] })
@@ -49,8 +50,8 @@ export default function ConfigDiffViewer({
   })
 
   const handleRollback = () => {
-    confirm('config:rollback', () => {
-      rollbackMut.mutate()
+    confirm('config:rollback', (ticket) => {
+      rollbackMut.mutate(ticket)
     })
   }
 

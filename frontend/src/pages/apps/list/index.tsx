@@ -14,6 +14,7 @@ import {
   LinkOutlined, ArrowLeftOutlined, ArrowRightOutlined,
 } from '@ant-design/icons'
 import { applicationsApi, assetsApi, vmsApi } from '@/api'
+import { riskTicketConfig } from '@/api/client'
 import { useRiskConfirm } from '@/hooks/usePermission'
 import GroupSidebar from '@/components/GroupSidebar'
 import type { ApplicationResponse, ApplicationPayload } from '@/types/api'
@@ -119,7 +120,7 @@ export default function AppListPage() {
   })
 
   const deleteMut = useMutation({
-    mutationFn: (id: string) => applicationsApi.delete(id),
+    mutationFn: ({ id, ticket }: { id: string; ticket: string }) => applicationsApi.delete(id, riskTicketConfig(ticket)),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['applications'] })
       message.success('应用已删除')
@@ -265,7 +266,7 @@ export default function AppListPage() {
             description="此操作不可恢复"
             okText="删除" okButtonProps={{ danger: true }}
             cancelText="取消"
-            onConfirm={() => confirm('apps:delete', () => deleteMut.mutate(r.app_id))}
+            onConfirm={() => confirm('apps:delete', (ticket) => deleteMut.mutate({ id: r.app_id, ticket }))}
           >
             <Tooltip title="删除">
               <Button size="small" type="text" danger icon={<DeleteOutlined />} />

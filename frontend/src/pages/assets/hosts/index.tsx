@@ -31,6 +31,7 @@ import {
   PayCircleOutlined, LinkOutlined,
 } from '@ant-design/icons'
 import { assetsApi, groupsApi, credentialsApi, monitoringApi } from '@/api'
+import { riskTicketConfig } from '@/api/client'
 import dayjs from 'dayjs'
 import { useNotificationStore } from '@/store/notifications'
 import { useRiskConfirm, usePermission, extractAxiosDetail } from '@/hooks/usePermission'
@@ -305,7 +306,7 @@ export default function HostsPage() {
   }
 
   const batchDeleteMut = useMutation({
-    mutationFn: () => assetsApi.batchDelete(selectedKeys),
+    mutationFn: (ticket: string) => assetsApi.batchDelete(selectedKeys, riskTicketConfig(ticket)),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['assets'] })
       const count = selectedKeys.length
@@ -666,7 +667,7 @@ export default function HostsPage() {
       content: '此操作不可恢复，确定继续？',
       okText: '删除', okButtonProps: { danger: true },
       cancelText: '取消',
-      onOk: () => confirm('hosts:batch_delete', () => batchDeleteMut.mutate()),
+      onOk: () => confirm('hosts:batch_delete', (ticket) => batchDeleteMut.mutate(ticket)),
     })
   }
 
@@ -828,7 +829,7 @@ export default function HostsPage() {
               title: `删除主机 ${r.name}`,
               content: '此操作不可恢复，确定继续？',
               okText: '删除', okButtonProps: { danger: true }, cancelText: '取消',
-              onOk: () => confirm('hosts:delete', () => deleteMut.mutate(r.id)),
+              onOk: () => confirm('hosts:delete', (ticket) => deleteMut.mutate({ id: r.id, riskTicket: ticket })),
             })
           }
         }

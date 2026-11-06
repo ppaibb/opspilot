@@ -23,6 +23,7 @@ import {
   CheckCircleOutlined, CloseCircleOutlined, CodeOutlined, FileTextOutlined,
 } from '@ant-design/icons'
 import { toolsApi } from '@/api'
+import { riskTicketConfig } from '@/api/client'
 import { usePermission, useRiskConfirm, extractAxiosDetail } from '@/hooks/usePermission'
 import type {
   AnsibleHistoryEntry, AnsibleRunResult, AnsibleTarget, AnsibleTemplateItem, AnsibleTemplatePayload,
@@ -127,10 +128,10 @@ export default function ScriptExecutePage() {
   }
 
   /** 执行统一入口：高危确认 → 提交 → 展示结果 → 刷新历史。 */
-  const execute = (payloadBuilder: () => Promise<AnsibleRunResult>) => {
-    riskConfirm.confirm('scripts:execute', async () => {
+  const execute = (payloadBuilder: (ticket: string) => Promise<AnsibleRunResult>) => {
+    riskConfirm.confirm('scripts:execute', async (ticket) => {
       try {
-        const result = await payloadBuilder()
+        const result = await payloadBuilder(ticket)
         setRunResult(result)
         if (result.ok) message.success(`执行成功（${result.target_count} 台目标）`)
         else message.warning(`执行失败，exit ${result.code}，详见输出`)
@@ -142,10 +143,17 @@ export default function ScriptExecutePage() {
   }
 
   const runMutation = useMutation({
-    mutationFn: toolsApi.runTask,
+    mutationFn: ({ data, ticket }: { data: Parameters<typeof toolsApi.runTask>[0]; ticket: string }) =>
+      toolsApi.runTask(data, riskTicketConfig(ticket)),
   })
-  const playbookMutation = useMutation({ mutationFn: toolsApi.runPlaybook })
-  const templateRunMutation = useMutation({ mutationFn: toolsApi.runTemplate })
+  const playbookMutation = useMutation({
+    mutationFn: ({ data, ticket }: { data: Parameters<typeof toolsApi.runPlaybook>[0]; ticket: string }) =>
+      toolsApi.runPlaybook(data, riskTicketConfig(ticket)),
+  })
+  const templateRunMutation = useMutation({
+    mutationFn: ({ data, ticket }: { data: Parameters<typeof toolsApi.runTemplate>[0]; ticket: string }) =>
+      toolsApi.runTemplate(data, riskTicketConfig(ticket)),
+  })
 
   const submitRun = () => {
     if (runMode !== 'template' && selectedIds.length === 0) {
@@ -154,21 +162,17 @@ export default function ScriptExecutePage() {
     }
     setRunResult(null)
     if (runMode === 'module') {
-      execute(() => runMutation.mutateAsync({
-        asset_ids: selectedIds,
-        module: moduleName,
-        module_args: moduleArgs,
-        become,
-        become_user: 'root',
-      }))
+      execute((ticket) => runMutation.mutateAsync({ data: {
+        asset_ids: selectedIds, module: moduleName, module_args: moduleArgs, become, become_user: 'root',
+      }, ticket }))
     } else if (runMode === 'playbook') {
-      execute(() => playbookMutation.mutateAsync({ asset_ids: selectedIds, playbook }))
+      execute((ticket) => playbookMutation.mutateAsync({ data: { asset_ids: selectedIds, playbook }, ticket }))
     } else {
       if (!templateId) {
         message.warning('请选择要执行的模板')
         return
       }
-      execute(() => templateRunMutation.mutateAsync({ template_id: templateId }))
+      execute((ticket) => templateRunMutation.mutateAsync({ data: { template_id: templateId }, ticket }))
     }
   }
 
@@ -265,7 +269,7 @@ export default function ScriptExecutePage() {
           <Button
             size="small" type="primary" ghost icon={<PlayCircleOutlined />}
             disabled={!canExecute || !enabled}
-            onClick={() => execute(() => templateRunMutation.mutateAsync({ template_id: record.template_id }))}
+            onClick={() => execute((ticket) => templateRunMutation.mutateAsync({ data: { template_id: record.template_id }, ticket }))}
           >
             执行
           </Button>

@@ -14,6 +14,7 @@ import {
 } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import { domainsApi, credentialsApi } from '@/api'
+import { riskTicketConfig } from '@/api/client'
 import { usePermission, useRiskConfirm } from '@/hooks/usePermission'
 import { useCrudResource } from '@/hooks/useCrudResource'
 import GroupSidebar from '@/components/GroupSidebar'
@@ -87,7 +88,7 @@ export default function DomainsPage() {
   })
 
   const batchDeleteMut = useMutation({
-    mutationFn: () => domainsApi.batchDelete(selectedKeys.map(Number)),
+    mutationFn: (ticket: string) => domainsApi.batchDelete(selectedKeys.map(Number), riskTicketConfig(ticket)),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['domains'] })
       setSelectedKeys([])
@@ -217,7 +218,7 @@ export default function DomainsPage() {
               title: `删除域名 ${r.domain}`,
               content: 'DNS 记录列表将一并移除（不改动外部 DNS 服务商配置）。确定继续？',
               okText: '删除', okButtonProps: { danger: true }, cancelText: '取消',
-              onOk: () => confirm('domains:delete', () => deleteMut.mutate(r.id)),
+              onOk: () => confirm('domains:delete', (ticket) => deleteMut.mutate({ id: r.id, riskTicket: ticket })),
             })
           }
         }
@@ -301,7 +302,7 @@ export default function DomainsPage() {
               style={{ width: 240 }}
             />
             {selectedKeys.length > 0 && (
-              <Button danger icon={<DeleteOutlined />} onClick={() => confirm('domains:delete', () => batchDeleteMut.mutate())}>
+              <Button danger icon={<DeleteOutlined />} onClick={() => confirm('domains:delete', (ticket) => batchDeleteMut.mutate(ticket))}>
                 批量删除 ({selectedKeys.length})
               </Button>
             )}

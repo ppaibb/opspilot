@@ -13,6 +13,7 @@ import {
 } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import { credentialsApi } from '@/api'
+import { riskTicketConfig } from '@/api/client'
 import { useRiskConfirm, extractAxiosDetail } from '@/hooks/usePermission'
 import { useCrudResource } from '@/hooks/useCrudResource'
 import { downloadBlob } from '@/utils/download'
@@ -104,7 +105,7 @@ export default function CredentialsPage() {
   })
 
   const batchDeleteMut = useMutation({
-    mutationFn: () => credentialsApi.batchDelete(selectedKeys),
+    mutationFn: (ticket: string) => credentialsApi.batchDelete(selectedKeys, riskTicketConfig(ticket)),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['credentials'] })
       setSelectedKeys([])
@@ -232,10 +233,10 @@ export default function CredentialsPage() {
       message.warning('没有可导出的凭证')
       return
     }
-    confirm('credentials:export', async () => {
+    confirm('credentials:export', async (ticket) => {
       setExporting(true)
       try {
-        const res = await credentialsApi.batchExportFile(ids)
+        const res = await credentialsApi.batchExportFile(ids, riskTicketConfig(ticket))
         downloadBlob(
           res.data,
           `OpsPilot_Credentials_Export_${dayjs().format('YYYYMMDD')}.zip`,
@@ -253,9 +254,9 @@ export default function CredentialsPage() {
 
   // ── 单条下载密钥文件：后端真实明文导出（credentials:export 票据 + blob 附件） ──
   const handleDownloadSingleKey = (cred: CredentialResponse) => {
-    confirm('credentials:export', async () => {
+    confirm('credentials:export', async (ticket) => {
       try {
-        const res = await credentialsApi.exportFile(cred.cred_id)
+        const res = await credentialsApi.exportFile(cred.cred_id, riskTicketConfig(ticket))
         downloadBlob(
           res.data,
           `${cred.name.replace(/\s+/g, '_')}_key.pem`,
@@ -316,7 +317,7 @@ export default function CredentialsPage() {
                 ? `该凭证仍被 ${r.used_by} 个资产引用，删除将被拒绝。确定继续？`
                 : '此操作不可恢复，确定继续？',
               okText: '删除', okButtonProps: { danger: true }, cancelText: '取消',
-              onOk: () => confirm('credentials:delete', () => deleteMut.mutate(r.cred_id)),
+              onOk: () => confirm('credentials:delete', (ticket) => deleteMut.mutate({ id: r.cred_id, riskTicket: ticket })),
             })
           }
         }
@@ -356,7 +357,7 @@ export default function CredentialsPage() {
           />
           {selectedKeys.length > 0 && (
             <Button danger icon={<DeleteOutlined />}
-              onClick={() => confirm('credentials:delete', () => batchDeleteMut.mutate())}
+              onClick={() => confirm('credentials:delete', (ticket) => batchDeleteMut.mutate(ticket))}
             >
               批量删除 ({selectedKeys.length})
             </Button>

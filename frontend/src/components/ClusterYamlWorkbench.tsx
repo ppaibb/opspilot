@@ -15,6 +15,7 @@ import {
 } from 'antd'
 import { SafetyCertificateOutlined, RocketOutlined, ClearOutlined } from '@ant-design/icons'
 import { clusterOpsApi } from '@/api'
+import { riskTicketConfig } from '@/api/client'
 import { usePermission, useRiskConfirm } from '@/hooks/usePermission'
 
 const { Text } = Typography
@@ -137,7 +138,7 @@ export default function ClusterYamlWorkbench({ open, clusterId, clusterName, onC
   })
 
   const applyMutation = useMutation({
-    mutationFn: () => clusterOpsApi.apply(clusterId, yamlText),
+    mutationFn: (ticket: string) => clusterOpsApi.apply(clusterId, yamlText, riskTicketConfig(ticket)),
     onSuccess: () => {
       dirtyRef.current = false
       setYamlText('')
@@ -172,7 +173,7 @@ export default function ClusterYamlWorkbench({ open, clusterId, clusterName, onC
               icon={<RocketOutlined />}
               loading={applyMutation.isPending}
               disabled={!canApply || !canManage}
-              onClick={() => riskConfirm.confirm('clusters:apply', () => applyMutation.mutate(),
+              onClick={() => riskConfirm.confirm('clusters:apply', (ticket) => applyMutation.mutate(ticket),
                 `将把当前 YAML 通过 server-side apply 写入集群${clusterName ? ` ${clusterName}` : ''}，同名资源将被覆盖`)}
             >
               应用到集群

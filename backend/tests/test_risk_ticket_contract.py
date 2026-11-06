@@ -51,8 +51,8 @@ def challenge(body: dict, db, user=ADMIN):
     return asyncio.run(auth.risk_challenge(auth.RiskChallengeRequest(**body), current_user=user, db=db))
 
 
-def guard_for(permission_key: str, action_id: str):
-    return security.require_risk_ack(permission_key, action_id)
+def guard_for(permission_key: str, action_id: str, resource_params: tuple[str, ...] = ()):
+    return security.require_risk_ack(permission_key, action_id, resource_params=resource_params)
 
 
 def call_guard(guard, ticket: str | None, user=ADMIN):
@@ -356,6 +356,29 @@ class RiskAckGuardContract(unittest.TestCase):
                 route_template="/api/clusters/{cluster_id}",
                 request_digest="sha256:expected",
             )
+
+    def test_route_guard_derives_method_template_and_path_resource(self):
+        """路由依赖必须使用真实请求元数据，不能信任取票请求自行声明的目标。"""
+        route_path = "/api/db/tickets/{ticket_id}/execute"
+        ticket = challenge({
+            "permission_key": FULL_PERM,
+            "action_id": FULL_ACTION,
+            "resource_id": "ticket_id=42",
+            "http_method": "POST",
+            "route_template": route_path,
+        }, self.db)["ticket"]
+        request = SimpleNamespace(
+            headers={"x-risk-ticket": ticket},
+            method="POST",
+            path_params={"ticket_id": "42"},
+            scope={"route": SimpleNamespace(path=route_path)},
+        )
+        user = guard_for(FULL_PERM, FULL_ACTION, ("ticket_id",))(
+            request=request,
+            current_user=ADMIN,
+            db=TestingSession(),
+        )
+        self.assertEqual(user.id, ADMIN.id)
 
 
 if __name__ == "__main__":

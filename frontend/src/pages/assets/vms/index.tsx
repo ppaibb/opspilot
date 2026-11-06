@@ -15,6 +15,7 @@ import {
   MoreOutlined,
 } from '@ant-design/icons'
 import { vmsApi } from '@/api'
+import { riskTicketConfig } from '@/api/client'
 import { extractAxiosDetail } from '@/hooks/usePermission'
 import { useNotificationStore } from '@/store/notifications'
 import { useRiskConfirm } from '@/hooks/usePermission'
@@ -71,7 +72,8 @@ export default function VmsPage() {
   })
 
   const powerMut = useMutation({
-    mutationFn: ({ id, action }: { id: string; action: string }) => vmsApi.power(id, action),
+    mutationFn: ({ id, action, ticket }: { id: string; action: string; ticket: string }) =>
+      vmsApi.power(id, action, riskTicketConfig(ticket)),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['vms'] }),
   })
 
@@ -165,7 +167,7 @@ export default function VmsPage() {
         ]
         const onMore: MenuProps['onClick'] = ({ key }) => {
           if (key === 'stop') {
-            confirm('vms:poweroff', () => powerMut.mutate({ id: r.id, action: 'stop' }), '确认要执行电源操作（关机）？')
+            confirm('vms:poweroff', (ticket) => powerMut.mutate({ id: r.id, action: 'stop', ticket }), '确认要执行电源操作（关机）？')
           } else if (key === 'clone') {
             openCloneModal(r)
           } else if (key === 'delete') {
@@ -173,7 +175,7 @@ export default function VmsPage() {
               title: `删除虚拟机 ${r.name}`,
               content: '此操作不可恢复，确定继续？',
               okText: '删除', okButtonProps: { danger: true }, cancelText: '取消',
-              onOk: () => confirm('vms:delete', () => deleteMut.mutate(r.id)),
+              onOk: () => confirm('vms:delete', (ticket) => deleteMut.mutate({ id: r.id, riskTicket: ticket })),
             })
           }
         }
@@ -183,7 +185,7 @@ export default function VmsPage() {
               <Button
                 size="small" type="text" icon={<PoweroffOutlined />}
                 disabled={r.status === 'running'}
-                onClick={() => confirm('vms:poweroff', () => powerMut.mutate({ id: r.id, action: 'start' }), '确认要执行电源操作（开机）？')}
+                onClick={() => confirm('vms:poweroff', (ticket) => powerMut.mutate({ id: r.id, action: 'start', ticket }), '确认要执行电源操作（开机）？')}
               />
             </Tooltip>
             <Tooltip title="编辑">
@@ -264,10 +266,10 @@ export default function VmsPage() {
             />
             {selectedKeys.length > 0 && (
               <Button danger icon={<DeleteOutlined />}
-                onClick={() => confirm('vms:delete', async () => {
+                onClick={() => confirm('vms:delete', async (ticket) => {
                   try {
                     // 后端逐条返回失败原因（如 PVE 配置未完成），必须如实上报而不是谎报全部成功
-                    const res = await vmsApi.batchDelete(selectedKeys) as VMBatchDeleteResult
+                    const res = await vmsApi.batchDelete(selectedKeys, riskTicketConfig(ticket)) as VMBatchDeleteResult
                     queryClient.invalidateQueries({ queryKey: ['vms'] })
                     setSelectedKeys([])
                     const okCount = res?.success_count ?? 0

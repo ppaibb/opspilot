@@ -17,8 +17,9 @@ import dayjs from 'dayjs'
 import relativeTime from 'dayjs/plugin/relativeTime'
 import 'dayjs/locale/zh-cn'
 import { assetsApi, monitoringApi } from '@/api'
+import { riskPathResource, riskTicketConfig } from '@/api/client'
 import type { LogTargetItem } from '@/types/api'
-import { extractAxiosDetail, usePermission } from '@/hooks/usePermission'
+import { extractAxiosDetail, usePermission, useRiskConfirm } from '@/hooks/usePermission'
 import EmptyState from '@/components/monitoring/EmptyState'
 import { PageHeader, FilterBar, MainSplit, SideCard } from '@/components/monitoring/PageShell'
 import {
@@ -138,6 +139,7 @@ function isLocalTarget(row: MergedRow) {
 export default function CollectorsPage() {
   const queryClient = useQueryClient()
   const { message, modal } = App.useApp()
+  const riskConfirm = useRiskConfirm()
   const { has } = usePermission()
   const canInstall = has('action.assets.hosts.monitoring') || has('module.assets.hosts')
   const [installOpen, setInstallOpen] = useState(false)
@@ -249,7 +251,8 @@ export default function CollectorsPage() {
   })
 
   const uninstallMut = useMutation({
-    mutationFn: (assetId: string) => monitoringApi.uninstallAlloy(assetId),
+    mutationFn: ({ assetId, ticket }: { assetId: string; ticket: string }) =>
+      monitoringApi.uninstallAlloy(assetId, riskTicketConfig(ticket)),
     onSuccess: (resp: { message?: string }) => {
       message.success(resp?.message || '已卸载')
       queryClient.invalidateQueries({ queryKey: ['monitoring-targets'] })
@@ -387,7 +390,14 @@ export default function CollectorsPage() {
                   modal.confirm({
                     title: '卸载 Alloy Agent？',
                     content: '将在目标机执行卸载脚本并清理本地记录。',
-                    onOk: () => uninstallMut.mutate(row.asset_id),
+                    onOk: () => riskConfirm.confirm({
+                      actionKey: 'hosts:uninstall_collector',
+                      permissionKey: 'action.assets.hosts.monitoring',
+                      actionId: 'uninstall_collector',
+                      resourceId: riskPathResource([['asset_id', row.asset_id]]),
+                      httpMethod: 'POST',
+                      routeTemplate: '/api/monitoring/targets/{asset_id}/uninstall-alloy',
+                    }, (ticket) => uninstallMut.mutate({ assetId: row.asset_id, ticket }), '确认远程卸载 Alloy 并清理采集记录？'),
                   })
                 }}
               />

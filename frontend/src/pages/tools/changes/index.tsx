@@ -7,6 +7,7 @@ import {
 import type { ColumnsType } from 'antd/es/table'
 import { PlusOutlined, ReloadOutlined, PlayCircleOutlined, CheckOutlined, CloseOutlined } from '@ant-design/icons'
 import { changesApi } from '@/api'
+import { riskTicketConfig } from '@/api/client'
 import { usePermission, useRiskConfirm, extractAxiosDetail } from '@/hooks/usePermission'
 
 const STATUS_COLOR: Record<string, string> = {
@@ -122,7 +123,7 @@ export default function ChangeTicketsPage() {
   })
 
   const executeMut = useMutation({
-    mutationFn: (id: number) => changesApi.execute(id),
+    mutationFn: ({ id, ticket }: { id: number; ticket: string }) => changesApi.execute(id, undefined, riskTicketConfig(ticket)),
     onSuccess: (row: ChangeTicketItem) => {
       message.success(row.exec_result?.message || '执行完成')
       invalidate()
@@ -151,7 +152,7 @@ export default function ChangeTicketsPage() {
         <Space>
           <Button size="small" onClick={() => setDetail(r)}>详情</Button>
           {r.status === 'approved' && canExecute && (
-            <Popconfirm title="确认执行该变更？" onConfirm={() => riskConfirm.confirm('change:execute', () => executeMut.mutate(r.id))}>
+            <Popconfirm title="确认执行该变更？" onConfirm={() => riskConfirm.confirm('change:execute', (ticket) => executeMut.mutate({ id: r.id, ticket }))}>
               <Button size="small" type="primary" icon={<PlayCircleOutlined />}>执行</Button>
             </Popconfirm>
           )}
@@ -352,7 +353,7 @@ export default function ChangeTicketsPage() {
                 <Popconfirm
                   title="确认执行变更？"
                   description={detail.auto_executor ? '将自动执行目标操作' : '无自动执行器，请执行后系统仍会记录'}
-                  onConfirm={() => riskConfirm.confirm('change:execute', () => executeMut.mutate(detail.id))}
+                  onConfirm={() => riskConfirm.confirm('change:execute', (ticket) => executeMut.mutate({ id: detail.id, ticket }))}
                 >
                   <Button type="primary" icon={<PlayCircleOutlined />} loading={executeMut.isPending}>
                     执行
