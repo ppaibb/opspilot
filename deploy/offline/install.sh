@@ -193,7 +193,7 @@ gen_env_interactive() {
 
   local install_mon mon_host mon_bind
   ask install_mon "安装监控栈 (true/false)" "true"
-  ask mon_bind "监控端口绑定 (0.0.0.0 跨机 / 127.0.0.1 本机)" "0.0.0.0"
+  ask mon_bind "监控端口绑定 (显式私网 IP 跨机 / 127.0.0.1 本机)" "127.0.0.1"
   mon_host="$host_ip"
   if [[ "$install_mon" == "true" ]]; then
     ask mon_host "监控机地址（MONITORING_HOST，同机填本机 IP）" "$host_ip"
@@ -224,6 +224,8 @@ INIT_ADMIN_DEPARTMENT=基础平台部
 INSTALL_MONITORING=$install_mon
 MONITORING_HOST=$mon_host
 MONITOR_BIND=$mon_bind
+VM_MAX_DISK_BYTES=53687091200
+VLOGS_MAX_DISK_BYTES=21474836480
 VM_PORT=8428
 VLOGS_PORT=9428
 GRAFANA_PORT=3000

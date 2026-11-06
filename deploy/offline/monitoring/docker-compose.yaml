@@ -13,10 +13,15 @@ services:
       - --retentionPeriod=${VM_RETENTION:-30d}
       - --httpListenAddr=:8428
       - --selfScrapeInterval=30s
+      - --storage.maxDiskSpaceUsageBytes=${VM_MAX_DISK_BYTES:-53687091200}
     volumes:
       - vmdata:/storage
     ports:
-      - "${MONITOR_BIND:-0.0.0.0}:${VM_PORT:-8428}:8428"
+      - "${MONITOR_BIND:-127.0.0.1}:${VM_PORT:-8428}:8428"
+    mem_limit: 2g
+    cpus: 2.0
+    logging:
+      options: {max-size: "10m", max-file: "3"}
     networks:
       - default
       - opspilot-bridge
@@ -34,10 +39,15 @@ services:
       - --storageDataPath=/storage
       - --retentionPeriod=${VLOGS_RETENTION:-7d}
       - --httpListenAddr=:9428
+      - --retention.maxDiskSpaceUsageBytes=${VLOGS_MAX_DISK_BYTES:-21474836480}
     volumes:
       - vlogsdata:/storage
     ports:
-      - "${MONITOR_BIND:-0.0.0.0}:${VLOGS_PORT:-9428}:9428"
+      - "${MONITOR_BIND:-127.0.0.1}:${VLOGS_PORT:-9428}:9428"
+    mem_limit: 2g
+    cpus: 2.0
+    logging:
+      options: {max-size: "10m", max-file: "3"}
     networks:
       - default
       - opspilot-bridge
@@ -83,6 +93,10 @@ services:
       - ./config/grafana/provisioning:/etc/grafana/provisioning:ro
     ports:
       - "${GRAFANA_BIND:-127.0.0.1}:${GRAFANA_PORT:-3000}:3000"
+    mem_limit: 1g
+    cpus: 1.0
+    logging:
+      options: {max-size: "10m", max-file: "3"}
     networks:
       - default
       - opspilot-bridge
@@ -116,10 +130,19 @@ services:
       - /sys:/host/sys:ro
       - /:/rootfs:ro
     ports:
-      - "${MONITOR_BIND:-0.0.0.0}:12346:12346"
+      - "${MONITOR_BIND:-127.0.0.1}:12346:12346"
+    mem_limit: 1g
+    cpus: 1.0
+    logging:
+      options: {max-size: "10m", max-file: "3"}
     depends_on:
       - victoriametrics
       - victorialogs
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -qO- http://127.0.0.1:12346/-/ready || exit 1']
+      interval: 15s
+      timeout: 5s
+      retries: 5
     restart: unless-stopped
 
 networks:

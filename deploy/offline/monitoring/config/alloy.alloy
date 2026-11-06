@@ -57,6 +57,17 @@ prometheus.scrape "node" {
   forward_to      = [prometheus.remote_write.opspilot.receiver]
 }
 
+// 监控栈自监控：采集 VM、VLogs 和 Alloy 自身指标，用于失联与磁盘容量告警。
+prometheus.scrape "monitoring_stack" {
+  targets = [
+    { "__address__" = "opspilot-victoriametrics:8428", "__metrics_path__" = "/metrics", "job" = "victoriametrics" },
+    { "__address__" = "opspilot-victorialogs:9428", "__metrics_path__" = "/metrics", "job" = "victorialogs" },
+    { "__address__" = "127.0.0.1:12346", "__metrics_path__" = "/metrics", "job" = "alloy" },
+  ]
+  scrape_interval = "30s"
+  forward_to      = [prometheus.remote_write.opspilot.receiver]
+}
+
 // ===== OpsPilot managed targets begin =====
 prometheus.scrape "opspilot_node" {
   targets = []

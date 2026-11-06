@@ -57,6 +57,17 @@ prometheus.scrape "node" {
   forward_to      = [prometheus.remote_write.opspilot.receiver]
 }
 
+// 监控栈自监控：采集 VM、VLogs 和 Alloy 自身指标，用于失联与磁盘容量告警。
+prometheus.scrape "monitoring_stack" {
+  targets = [
+    { "__address__" = "opspilot-victoriametrics:8428", "__metrics_path__" = "/metrics", "job" = "victoriametrics" },
+    { "__address__" = "opspilot-victorialogs:9428", "__metrics_path__" = "/metrics", "job" = "victorialogs" },
+    { "__address__" = "127.0.0.1:12346", "__metrics_path__" = "/metrics", "job" = "alloy" },
+  ]
+  scrape_interval = "30s"
+  forward_to      = [prometheus.remote_write.opspilot.receiver]
+}
+
 // ===== OpsPilot managed targets begin =====
 prometheus.scrape "opspilot_node" {
   targets = []
@@ -65,18 +76,20 @@ prometheus.scrape "opspilot_node" {
 // ===== OpsPilot managed targets end =====
 
 // Docker 容器日志（唯一日志源）。需挂载 docker.sock。
+// loki.source.docker 的 targets 是必填属性（alloy v1.x 强校验，缺失直接启动失败），
+// 用 discovery.docker 发现容器后接入。
 //
 // 标签设计（与 OpsPilot 日志页的 host/service/job/level 筛选一一对应）：
 // - service ← 容器名（relabel __meta_docker_container_name），日志页「服务」下拉用；
 // - level   ← 从日志行解析（loki.process，默认 INFO），「级别」下拉用；
 // - job     = "container"（来源类型）；host/instance 由 compose 注入的
 //   HOST_NAME/HOST_INSTANCE 提供——HOST_NAME 缺失会让「主机」筛选空，见 install.sh。
-discovery.docker "docker_containers" {
+discovery.docker "containers" {
   host = "unix:///var/run/docker.sock"
 }
 
-discovery.relabel "docker_containers" {
-  targets = discovery.docker.docker_containers.targets
+discovery.relabel "containers" {
+  targets = discovery.docker.containers.targets
 
   rule {
     source_labels = ["__meta_docker_container_name"]
@@ -85,7 +98,7 @@ discovery.relabel "docker_containers" {
   }
 }
 
-loki.process "docker_containers" {
+loki.process "containers" {
   // 默认级别 INFO；日志行里出现大写级别词则覆盖（小写/无级别的行保持 INFO）
   stage.template {
     source   = "level"
@@ -103,13 +116,13 @@ loki.process "docker_containers" {
 
 loki.source.docker "docker" {
   host       = "unix:///var/run/docker.sock"
-  targets    = discovery.relabel.docker_containers.output
+  targets    = discovery.relabel.containers.output
   labels     = {
     job      = "container",
     host     = sys.env("HOST_NAME"),
     instance = sys.env("HOST_INSTANCE"),
   }
-  forward_to = [loki.process.docker_containers.receiver]
+  forward_to = [loki.process.containers.receiver]
 }
 
 // 系统日志（syslog/messages）已按产品决策停用，只采 Docker。

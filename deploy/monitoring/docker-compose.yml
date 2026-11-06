@@ -6,17 +6,22 @@ name: opspilot-monitoring
 
 services:
   victoriametrics:
-    image: victoriametrics/victoria-metrics:v1.97.1
+    image: ${VM_IMAGE:-victoriametrics/victoria-metrics:v1.140.0}
     container_name: opspilot-victoriametrics
     command:
       - --storageDataPath=/storage
       - --retentionPeriod=30d
       - --httpListenAddr=:8428
       - --selfScrapeInterval=30s
+      - --storage.maxDiskSpaceUsageBytes=${VM_MAX_DISK_BYTES:-53687091200}
     volumes:
       - vmdata:/storage
     ports:
-      - "8428:8428"
+      - "${MONITOR_BIND:-127.0.0.1}:8428:8428"
+    mem_limit: 2g
+    cpus: 2.0
+    logging:
+      options: {max-size: "10m", max-file: "3"}
     networks:
       - monitoring
     healthcheck:
@@ -27,16 +32,21 @@ services:
     restart: unless-stopped
 
   victorialogs:
-    image: victoriametrics/victoria-logs:v0.11.0
+    image: ${VLOGS_IMAGE:-victoriametrics/victoria-logs:v1.50.0}
     container_name: opspilot-victorialogs
     command:
       - --storageDataPath=/storage
       - --retentionPeriod=7d
       - --httpListenAddr=:9428
+      - --retention.maxDiskSpaceUsageBytes=${VLOGS_MAX_DISK_BYTES:-21474836480}
     volumes:
       - vlogsdata:/storage
     ports:
-      - "9428:9428"
+      - "${MONITOR_BIND:-127.0.0.1}:9428:9428"
+    mem_limit: 2g
+    cpus: 2.0
+    logging:
+      options: {max-size: "10m", max-file: "3"}
     networks:
       - monitoring
     healthcheck:
@@ -82,6 +92,10 @@ services:
     ports:
       # 开发环境默认只允许本机访问；跨机部署必须显式指定受控私网地址。
       - "${GRAFANA_BIND:-127.0.0.1}:3000:3000"
+    mem_limit: 1g
+    cpus: 1.0
+    logging:
+      options: {max-size: "10m", max-file: "3"}
     networks:
       - monitoring
     depends_on:
@@ -95,7 +109,7 @@ services:
     restart: unless-stopped
 
   alloy:
-    image: grafana/alloy:v1.0.0
+    image: ${ALLOY_IMAGE:-grafana/alloy:v1.16.3}
     container_name: opspilot-alloy
     command:
       - run
@@ -114,12 +128,21 @@ services:
       - /sys:/host/sys:ro
       - /:/rootfs:ro
     ports:
-      - "12346:12346"
+      - "${MONITOR_BIND:-127.0.0.1}:12346:12346"
+    mem_limit: 1g
+    cpus: 1.0
+    logging:
+      options: {max-size: "10m", max-file: "3"}
     networks:
       - monitoring
     depends_on:
       - victoriametrics
       - victorialogs
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:12346/-/ready || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
     restart: unless-stopped
 
 networks:
