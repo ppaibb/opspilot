@@ -306,8 +306,11 @@ export const terminalApi = {
     form.append('file', file)
     return client.post(`/assets/terminal/files/${encodeURIComponent(asset_id)}/upload`, form).then((r) => r.data)
   },
-  downloadUrl: (asset_id: string, path: string) =>
-    `/api/assets/terminal/files/${encodeURIComponent(asset_id)}/download?path=${encodeURIComponent(path)}`,
+  downloadFile: (asset_id: string, path: string) =>
+    client.get<Blob>(`/assets/terminal/files/${encodeURIComponent(asset_id)}/download`, {
+      params: { path },
+      responseType: 'blob',
+    }),
 }
 
 // ── 集群健康摘要 ──
@@ -432,14 +435,8 @@ export const financeApi = {
   // 总览与账单
   overview: (params?: { month?: string; account_id?: number }) =>
     client.get<import('@/types/api').FinanceOverview>('/finance/overview', { params }).then((r) => r.data),
-  exportBillsUrl: (params?: Record<string, string | number | undefined>) => {
-    const q = new URLSearchParams()
-    Object.entries(params ?? {}).forEach(([k, v]) => {
-      if (v !== undefined && v !== null && v !== '') q.set(k, String(v))
-    })
-    const qs = q.toString()
-    return `/api/finance/bills/export${qs ? `?${qs}` : ''}`
-  },
+  exportBillsFile: (params?: Record<string, string | number | undefined>) =>
+    client.get<Blob>('/finance/bills/export', { params, responseType: 'blob' }),
   listBills: (params?: {
     month?: string
     account_id?: number
@@ -802,6 +799,11 @@ export const wireguardApi = {
     client.get<any>(`/wireguard/networks/${id}/status`).then((r) => r.data),
   serverConfig: (id: number) =>
     client.get<{ network: import('@/types/api').WgNetwork; config: string }>(`/wireguard/networks/${id}/server-config`).then((r) => r.data),
+  downloadServerConfig: (id: number) =>
+    client.get<Blob>(`/wireguard/networks/${id}/server-config`, {
+      params: { download: 1 },
+      responseType: 'blob',
+    }),
   serverInstallScript: (id: number) =>
     client.get<{ script: string }>(`/wireguard/networks/${id}/server-install-script`).then((r) => r.data),
   listPeers: (networkId: number) =>
@@ -831,6 +833,8 @@ export const dbApi = {
   reviewTicket: (id: number, data: { decision: 'approve' | 'reject'; note?: string }) =>
     client.post<import('@/types/api').DbTicket>(`/db/tickets/${id}/review`, data).then((r) => r.data),
   executeTicket: (id: number, config?: AxiosRequestConfig) => client.post<import('@/types/api').DbTicket>(`/db/tickets/${id}/execute`, undefined, config).then((r) => r.data),
+  downloadRollback: (id: number) =>
+    client.get<Blob>(`/db/tickets/${id}/rollback`, { responseType: 'blob' }),
   runQuery: (data: { instance_id: number; sql_text: string; database?: string }) =>
     client.post<import('@/types/api').DbQueryResult>('/db/query', data).then((r) => r.data),
   listQueryLogs: (limit = 50) =>

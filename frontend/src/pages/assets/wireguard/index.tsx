@@ -31,6 +31,7 @@ import { usePermission, useRiskConfirm, extractAxiosDetail } from '@/hooks/usePe
 import { useCrudResource } from '@/hooks/useCrudResource'
 import type { WgNetwork, WgNetworkPayload, WgPeer, WgPeerPayload } from '@/types/api'
 import type { MessageInstance } from 'antd/es/message/interface'
+import { downloadBlob, getDownloadErrorMessage } from '@/utils/download'
 
 const { Text } = Typography
 
@@ -285,6 +286,17 @@ function PeerConfigModal({ peerId, onClose }: { peerId: number | null; onClose: 
 
 function PeersDrawer({ network, onClose }: { network: WgNetwork | null; onClose: () => void }) {
   const { message } = App.useApp()
+
+  /** 服务端配置属于敏感凭据，必须通过认证客户端获取后再保存。 */
+  const downloadServerConfig = async () => {
+    if (!network) return
+    try {
+      const response = await wireguardApi.downloadServerConfig(network.id)
+      downloadBlob(response.data, 'wg0.conf', response.headers['content-disposition'])
+    } catch (error) {
+      message.error(await getDownloadErrorMessage(error, '服务端配置下载失败'))
+    }
+  }
   const queryClient = useQueryClient()
   const { has } = usePermission()
   const riskConfirm = useRiskConfirm()
@@ -450,7 +462,7 @@ function PeersDrawer({ network, onClose }: { network: WgNetwork | null; onClose:
             </Descriptions>
             <Space>
               <Button size="small" icon={<DownloadOutlined />}
-                onClick={() => window.open(`/api/wireguard/networks/${network?.id}/server-config?download=1`)}>
+                onClick={() => void downloadServerConfig()}>
                 下载 wg0.conf
               </Button>
               <ServerScriptButton networkId={network?.id || 0} />

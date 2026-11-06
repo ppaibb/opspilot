@@ -37,3 +37,23 @@ export function downloadBlob(blob: Blob, fallbackName: string, disposition?: str
     URL.revokeObjectURL(url)
   }
 }
+
+/**
+ * 从 Blob 下载失败响应中提取后端 detail，避免二进制响应模式吞掉可读错误。
+ */
+export async function getDownloadErrorMessage(error: unknown, fallback: string): Promise<string> {
+  const responseData = (error as { response?: { data?: unknown } })?.response?.data
+  if (responseData instanceof Blob) {
+    try {
+      const payload = JSON.parse(await responseData.text()) as { detail?: unknown }
+      if (typeof payload.detail === 'string' && payload.detail.trim()) return payload.detail
+    } catch {
+      // 非 JSON 错误响应使用统一兜底文案。
+    }
+  }
+  if (responseData && typeof responseData === 'object') {
+    const detail = (responseData as { detail?: unknown }).detail
+    if (typeof detail === 'string' && detail.trim()) return detail
+  }
+  return fallback
+}
