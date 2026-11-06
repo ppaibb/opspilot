@@ -19,6 +19,7 @@ id_ed25519*
 
 # ── 集群凭据（kubeconfig 含集群证书/密钥，禁止入库）──
 backend/app/kubeconfigs/
+backend/app/storage/kubeconfigs/
 **/kubeconfig*
 **/kubeconfig.yaml
 

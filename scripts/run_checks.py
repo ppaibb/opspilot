@@ -46,7 +46,10 @@ BINARY_SNIFF_BYTES = 8192
 
 # 已知本身就该有秘密的位置：报告但不失败（见模块 docstring 的口径说明）
 KNOWN_SECRET_FILES = [BACKEND / ".env"]
-KNOWN_SECRET_DIRS = [BACKEND / "app" / "kubeconfigs"]
+KNOWN_SECRET_DIRS = [
+    BACKEND / "app" / "kubeconfigs",
+    BACKEND / "app" / "storage" / "kubeconfigs",
+]
 
 SECRET_SCAN_PATHS = [
     FRONTEND / "src",
@@ -309,7 +312,10 @@ def check_secrets() -> tuple[bool, str]:
     print("=" * 72)
     print("  扫描范围：" + ", ".join(str(p.relative_to(ROOT)) for p in SECRET_SCAN_PATHS if p.exists()))
     print("  排除：" + ", ".join(sorted(EXCLUDED_DIR_NAMES | EXCLUDED_FILE_NAMES)))
-    print("  已知秘密位置（命中只报告、不失败）：backend/.env, backend/app/kubeconfigs/")
+    print(
+        "  已知秘密位置（命中只报告、不失败）：backend/.env, "
+        "backend/app/kubeconfigs/, backend/app/storage/kubeconfigs/"
+    )
     print("  规则：" + ", ".join(name for name, _ in SECRET_RULES))
 
     expected_hits: list[tuple[str, int, str]] = []

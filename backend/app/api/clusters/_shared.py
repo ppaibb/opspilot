@@ -2,6 +2,7 @@
 
 import logging
 import os
+from pathlib import Path
 import threading
 import time
 from typing import Any, Callable, List, Optional
@@ -14,15 +15,58 @@ from kubernetes.dynamic import DynamicClient
 from kubernetes.stream import stream as k8s_stream
 from pydantic import BaseModel, Field
 
-from app.core.filesystem import ensure_private_directory
+from app.core.filesystem import ensure_private_directory, write_sensitive_text_file
 
 from ._schemas import ResourceFormPatchRequest
 
-KUBECONFIG_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "kubeconfigs")
+logger = logging.getLogger(__name__)
+
+_APP_DIR = Path(__file__).resolve().parents[2]
+_LEGACY_KUBECONFIG_DIR = _APP_DIR / "kubeconfigs"
+KUBECONFIG_DIR = str(
+    Path(
+        os.environ.get(
+            "OPSPILOT_KUBECONFIG_DIR",
+            str(_APP_DIR / "storage" / "kubeconfigs"),
+        )
+    )
+)
+
+
+def migrate_legacy_kubeconfigs(
+    legacy_dir: str | Path,
+    target_dir: str | Path,
+) -> None:
+    """把旧版 Kubeconfig 安全迁入持久目录，绝不覆盖现有凭据。
+
+    仅迁移本系统生成的 ``c-*.yaml`` 普通文件；符号链接和其他文件名会被
+    忽略，避免借迁移过程读取目录外内容。先安全写入目标并设置 0600，成功后
+    才删除旧文件。目标已存在时保留两份并告警，由管理员人工核对。
+    """
+    source_root = Path(legacy_dir)
+    destination_root = ensure_private_directory(target_dir)
+    if not source_root.exists() or source_root.resolve() == destination_root.resolve():
+        return
+
+    for source in source_root.glob("c-*.yaml"):
+        if source.is_symlink() or not source.is_file():
+            logger.warning("忽略非普通 Kubeconfig 文件: %s", source.name)
+            continue
+        destination = destination_root / source.name
+        if destination.exists():
+            logger.warning("Kubeconfig 迁移目标已存在，保留旧文件: %s", source.name)
+            continue
+        try:
+            content = source.read_text(encoding="utf-8")
+            write_sensitive_text_file(destination, content)
+            source.unlink()
+            logger.info("已迁移 Kubeconfig 到持久目录: %s", source.name)
+        except OSError:
+            logger.exception("Kubeconfig 迁移失败，旧文件已保留: %s", source.name)
+
 
 ensure_private_directory(KUBECONFIG_DIR)
-
-logger = logging.getLogger(__name__)
+migrate_legacy_kubeconfigs(_LEGACY_KUBECONFIG_DIR, KUBECONFIG_DIR)
 
 RESOURCE_MAP = {
     "Deployment":            ("apps", "v1", "deployments"),
