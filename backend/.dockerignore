@@ -7,5 +7,6 @@ logs
 storage
 app/kubeconfigs
 app/storage/kubeconfigs
+storage/kubeconfigs
 **/kubeconfigs
 .git

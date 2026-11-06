@@ -18,6 +18,7 @@ def test_backend_dockerignore_excludes_all_kubeconfig_locations():
     text = (Path(__file__).parents[1] / ".dockerignore").read_text(encoding="utf-8")
     assert "app/kubeconfigs" in text
     assert "app/storage/kubeconfigs" in text
+    assert "storage/kubeconfigs" in text
     assert "**/kubeconfigs" in text
 
 

@@ -49,6 +49,7 @@ KNOWN_SECRET_FILES = [BACKEND / ".env"]
 KNOWN_SECRET_DIRS = [
     BACKEND / "app" / "kubeconfigs",
     BACKEND / "app" / "storage" / "kubeconfigs",
+    BACKEND / "storage" / "kubeconfigs",
 ]
 
 SECRET_SCAN_PATHS = [
@@ -314,7 +315,8 @@ def check_secrets() -> tuple[bool, str]:
     print("  排除：" + ", ".join(sorted(EXCLUDED_DIR_NAMES | EXCLUDED_FILE_NAMES)))
     print(
         "  已知秘密位置（命中只报告、不失败）：backend/.env, "
-        "backend/app/kubeconfigs/, backend/app/storage/kubeconfigs/"
+        "backend/app/kubeconfigs/, backend/app/storage/kubeconfigs/, "
+        "backend/storage/kubeconfigs/"
     )
     print("  规则：" + ", ".join(name for name, _ in SECRET_RULES))
 
