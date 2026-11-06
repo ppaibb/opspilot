@@ -22,7 +22,7 @@ docker pull node:22-alpine
 docker pull python:3.12-slim
 docker pull victoriametrics/victoria-metrics:v1.140.0
 docker pull victoriametrics/victoria-logs:v1.50.0
-docker pull grafana/grafana:11.0.0
+docker pull grafana/grafana:11.6.14-security-04
 docker pull grafana/alloy:v1.16.3
 
 mkdir -p "$IMAGES_DIR"
@@ -35,7 +35,7 @@ IMAGES=(
   "python:3.12-slim"
   "victoriametrics/victoria-metrics:v1.140.0"
   "victoriametrics/victoria-logs:v1.50.0"
-  "grafana/grafana:11.0.0"
+  "grafana/grafana:11.6.14-security-04"
   "grafana/alloy:v1.16.3"
 )
 

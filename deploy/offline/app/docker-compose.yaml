@@ -77,15 +77,14 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-opspilot}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-opspilot}
       DB_AUTO_CREATE_TABLES: '0'
-      MONITORING_HOST: ${MONITORING_HOST:-}
-      VM_URL: ${VM_URL:-}
-      VLOGS_URL: ${VLOGS_URL:-}
-      GRAFANA_URL: ${GRAFANA_URL:-}
     ports:
       - "${BACKEND_PORT:-8001}:8001"
     volumes:
       - backend-storage:/app/storage
       - backend-logs:/app/logs
+    networks:
+      - default
+      - opspilot-bridge
     restart: unless-stopped
 
   frontend:
@@ -96,6 +95,11 @@ services:
     ports:
       - "${FRONTEND_PORT:-8080}:80"
     restart: unless-stopped
+
+networks:
+  opspilot-bridge:
+    name: opspilot-monitoring-bridge
+    external: true
 
 volumes:
   pgdata:

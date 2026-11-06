@@ -35,7 +35,7 @@ sudo ./install.sh --config my.conf
 
 安装完成后终端会打印：
 
-- 前端 URL、管理员账号密码
+- 前端 URL、管理员账号（密码只写入权限为 `600` 的 `.env`）
 - 监控端口（若启用）
 
 登录后到 **系统设置 → 监控连接** 确认 VM/VLogs/Grafana 并点「测试连接」。
@@ -54,6 +54,9 @@ sudo ./install.sh --config my.conf
 | `MONITORING_HOST` | 后端查询与 Agent 写入用的监控机 IP | `192.168.1.10` |
 | `MONITOR_BIND` | 监控端口绑定 | `0.0.0.0`（跨机）/ `127.0.0.1` |
 | `GRAFANA_ADMIN_PASSWORD` | Grafana 管理员密码 | 强随机 |
+| `GRAFANA_BIND` | Grafana 裸端口绑定；同机保持回环地址 | `127.0.0.1` |
+| `OPSPILOT_MONITORING_SUBNET` | 后端与 Grafana 的专用 Docker 网段 | `172.30.250.0/24` |
+| `GRAFANA_AUTH_PROXY_WHITELIST` | 允许注入认证头的反代来源 | 同上专用网段 |
 
 ## 镜像清单（images/*.tar）
 
@@ -64,7 +67,7 @@ sudo ./install.sh --config my.conf
 | `postgres:16-alpine` | 数据库 |
 | `victoriametrics/victoria-metrics:v1.140.0` | 指标 |
 | `victoriametrics/victoria-logs:v1.50.0` | 日志 |
-| `grafana/grafana:11.0.0` | 可视化 |
+| `grafana/grafana:11.6.14-security-04` | 可视化（安全维护版本） |
 | `grafana/alloy:v1.16.3` | 本机内置采集（host 指标 + Docker 日志） |
 | `nginx:1.27-alpine` / `node:22-alpine` / `python:3.12-slim` | 构建中间层（可选保留，减小包体可删） |
 
@@ -82,11 +85,14 @@ cd deploy/offline
 ```text
 浏览器 → :8080 frontend → :8001 backend
                          → db:5432
+                         → 专用 Docker 网络 → Grafana:3000
 init 容器: alembic upgrade head（在 backend 之前成功退出）
-监控: :8428 VM  :9428 VLogs  :3000 Grafana
+监控: :8428 VM  :9428 VLogs；Grafana 裸端口默认只绑定 127.0.0.1
 ```
 
-分体：监控装在另一台，`MONITORING_HOST` 填监控机 IP；`MONITOR_BIND=0.0.0.0`。
+分体部署时，`MONITORING_HOST` 填监控机私网 IP；Grafana 如需跨机监听，必须把
+`GRAFANA_BIND` 设为该私网 IP，并把 `GRAFANA_AUTH_PROXY_WHITELIST` 精确设为
+OpsPilot 后端主机地址（建议 `/32`），禁止绑定公网地址或使用 `0.0.0.0/0` 白名单。
 
 ## 验收
 
