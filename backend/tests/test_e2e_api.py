@@ -1,13 +1,16 @@
-"""端到端 API 测试：走完整 ASGI 栈（中间件→鉴权依赖→路由→Pydantic 校验）。
+"""外部环境端到端 API 测试（仅人工显式启用）。
 
 与既有"直接调用路由函数"的契约测试互补——契约测试绕过了中间件与鉴权，
-历史上凭证契约脱节导致全量 422 正是这类盲区。本文件只做只读断言，
-不往开发库写数据（写流程由 GUI 验收覆盖）。
+该历史套件会创建用户并操作告警，禁止在普通 pytest/CI 中连接开发或生产库。
+只有设置 RUN_EXTERNAL_E2E=1 且显式提供 E2E_ADMIN_* 时才运行。
 """
 from __future__ import annotations
 
 import os
 import unittest
+
+if os.getenv("RUN_EXTERNAL_E2E") != "1":
+    raise unittest.SkipTest("外部 E2E 默认禁用，隔离测试不得写开发库")
 
 # 端到端测试连接真实开发库（只读），必须能读到 backend/.env
 os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -17,7 +20,15 @@ from fastapi import FastAPI  # noqa: E402
 from app.main import app as fastapi_app  # noqa: E402
 from tests.asgi_client import ASGITestClient  # noqa: E402
 
-ADMIN = {"username": "admin", "password": "Admin@12345"}
+ADMIN = {
+    "username": os.environ["E2E_ADMIN_USERNAME"],
+    "password": os.environ["E2E_ADMIN_PASSWORD"],
+}
+ROLE_PASSWORDS = {
+    "viewer01": os.environ["E2E_VIEWER_PASSWORD"],
+    "dba01": os.environ["E2E_DBA_PASSWORD"],
+    "ops01": os.environ["E2E_OPS_PASSWORD"],
+}
 
 
 class TestEndToEndApi(unittest.TestCase):
@@ -85,12 +96,12 @@ class TestEndToEndApi(unittest.TestCase):
         return {"Authorization": f"Bearer {r.json()['access_token']}"}
 
     def test_readonly_user_cannot_manage_users(self):
-        headers = self._login("viewer01", "View@12345")
+        headers = self._login("viewer01", ROLE_PASSWORDS["viewer01"])
         r = self.client.get("/api/settings/users", headers=headers)
         self.assertIn(r.status_code, (401, 403))
 
     def test_readonly_user_cannot_issue_user_delete_ticket(self):
-        headers = self._login("viewer01", "View@12345")
+        headers = self._login("viewer01", ROLE_PASSWORDS["viewer01"])
         r = self.client.post(
             "/api/auth/risk-challenge",
             headers=headers,
@@ -99,7 +110,7 @@ class TestEndToEndApi(unittest.TestCase):
         self.assertEqual(r.status_code, 403)
 
     def test_readonly_user_cannot_delete_user_with_forged_ticket(self):
-        headers = self._login("viewer01", "View@12345")
+        headers = self._login("viewer01", ROLE_PASSWORDS["viewer01"])
         admin_id = self.client.get("/api/auth/me", headers=self.admin_headers).json()["id"]
         r = self.client.delete(
             f"/api/settings/users/{admin_id}",
@@ -108,26 +119,26 @@ class TestEndToEndApi(unittest.TestCase):
         self.assertEqual(r.status_code, 403)
 
     def test_readonly_user_cannot_delete_host(self):
-        headers = self._login("viewer01", "View@12345")
+        headers = self._login("viewer01", ROLE_PASSWORDS["viewer01"])
         r = self.client.delete("/api/assets/definitely-not-exist", headers=headers)
         # 权限拦截优先于 404：只读角色不得触达删除逻辑
         self.assertIn(r.status_code, (401, 403))
 
     def test_readonly_user_scope_matches_preset(self):
         """只读预设 = 仪表盘/监控/日志/AI：读仪表盘 OK，读主机列表 403。"""
-        headers = self._login("viewer01", "View@12345")
+        headers = self._login("viewer01", ROLE_PASSWORDS["viewer01"])
         r_assets = self.client.get("/api/assets", headers=headers)
         self.assertEqual(r_assets.status_code, 403, "只读角色不应有主机模块权限")
         r_dash = self.client.get("/api/dashboard/overview", headers=headers)
         self.assertEqual(r_dash.status_code, 200)
 
     def test_dba_user_lacks_user_management(self):
-        headers = self._login("dba01", "Dba@12345")
+        headers = self._login("dba01", ROLE_PASSWORDS["dba01"])
         r = self.client.get("/api/settings/users", headers=headers)
         self.assertIn(r.status_code, (401, 403))
 
     def test_ops_user_can_read_but_not_manage_users(self):
-        headers = self._login("ops01", "Ops@12345")
+        headers = self._login("ops01", ROLE_PASSWORDS["ops01"])
         r = self.client.get("/api/assets", headers=headers)
         self.assertEqual(r.status_code, 200)
         r2 = self.client.get("/api/settings/users", headers=headers)
@@ -135,7 +146,7 @@ class TestEndToEndApi(unittest.TestCase):
 
     def test_normal_user_bootstrap_chain(self):
         """登录引导链路：metadata + 自己的 access 必须对普通角色放行（曾致普通账号无法登录）。"""
-        headers = self._login("viewer01", "View@12345")
+        headers = self._login("viewer01", ROLE_PASSWORDS["viewer01"])
         r_meta = self.client.get("/api/settings/rbac/metadata", headers=headers)
         self.assertEqual(r_meta.status_code, 200)
         self.assertIn("role_templates", r_meta.json())
