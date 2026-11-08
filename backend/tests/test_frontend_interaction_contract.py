@@ -22,6 +22,10 @@ def test_local_notifications_have_ttl_cap_and_rollback() -> None:
 def test_domain_acme_credential_round_trips() -> None:
     frontend = (ROOT / "frontend/src/pages/assets/domains/index.tsx").read_text(encoding="utf-8")
     backend = (ROOT / "backend/app/api/domains.py").read_text(encoding="utf-8")
-    assert "dns_credential: dom.dns_credential" in frontend
+    # 值域契约：dns_credential 前后端一律用 cred_id；存量旧值（凭证名）回填时
+    # 先解析成 cred_id，后端收到名或 cred_id 都能解析，查到后统一存 cred_id。
+    assert "value: c.cred_id" in frontend
+    assert "resolveDnsCredentialId(dom.dns_credential)" in frontend
     assert "dns_credential: str | None = None" in backend
+    assert "resolve_dns_credential" in backend
     assert "ensure_credential_access" in backend

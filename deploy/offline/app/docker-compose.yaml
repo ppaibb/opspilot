@@ -40,8 +40,17 @@ services:
       - -c
       - |
         set -eu
-        alembic upgrade head
-        echo INIT_DB_OK
+        if alembic upgrade head > /tmp/alembic-upgrade.log 2>&1; then
+          cat /tmp/alembic-upgrade.log
+          echo INIT_DB_OK
+        elif grep -q "Can't locate revision" /tmp/alembic-upgrade.log; then
+          # 数据库的 revision 比本镜像新（回滚到旧镜像时）：旧镜像不认识新
+          # revision，硬跑只会 exit 255 拖垮整组依赖；跳过迁移，应用直接起。
+          echo 'INIT_DB_SKIP: database revision is newer than this image, skipping migration'
+        else
+          cat /tmp/alembic-upgrade.log >&2
+          exit 1
+        fi
     restart: 'no'
 
   backend:

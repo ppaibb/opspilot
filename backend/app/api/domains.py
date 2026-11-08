@@ -1410,6 +1410,30 @@ def create_domain(
     return serialize_domain(row, db, current_user)
 
 
+def resolve_dns_credential(db: Session, value: str, current_user: User | None) -> Credential | None:
+    """解析 ACME DNS 凭证引用：先按 cred_id 查，再按凭证名查。
+
+    历史数据里 dns_credential 存的是凭证名（import/change_account 的旧行为），
+    而新前端一律发 cred_id；双查让两种引用都能更新成功，查到后调用方统一
+    存 cred_id，把存量 name 归一化。按名查找时只考虑当前用户可见的凭证，
+    同名多条时取 id 最小的一条（仅作旧数据兼容，新写入不再产生同名歧义）。
+    """
+    text = (value or "").strip()
+    if not text:
+        return None
+    credential = db.query(Credential).filter(Credential.cred_id == text).first()
+    if credential is not None:
+        return credential
+    same_name = (
+        db.query(Credential)
+        .filter(Credential.name == text)
+        .order_by(Credential.id.asc())
+        .all()
+    )
+    visible = filter_credentials_for_user(same_name, current_user)
+    return visible[0] if visible else None
+
+
 @router.put("/{domain_id}", response_model=DomainResponse)
 def update_domain(
     domain_id: int,
@@ -1440,10 +1464,12 @@ def update_domain(
     if payload.dns_credential is not None:
         credential_id = payload.dns_credential.strip()
         if credential_id:
-            credential = db.query(Credential).filter(Credential.cred_id == credential_id).first()
+            credential = resolve_dns_credential(db, credential_id, current_user)
             if credential is None:
                 raise HTTPException(status_code=404, detail="ACME DNS 凭证不存在")
-            ensure_credential_access(db, credential, current_user)
+            ensure_credential_access(credential, current_user)
+            # 归一化：无论传来的是 cred_id 还是旧的凭证名，库里只存 cred_id。
+            credential_id = credential.cred_id
         row.dns_credential = credential_id
     # 到期时间留空 = 不修改（与凭证编辑「留空不改」口径一致）；
     # 不能走 parse_expire_date("") 的 +365 天默认，否则清空日期保存会把到期时间静默推后一年

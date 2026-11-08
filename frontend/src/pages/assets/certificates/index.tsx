@@ -22,7 +22,7 @@ import { downloadBlob } from '@/utils/download'
 import GroupSidebar from '@/components/GroupSidebar'
 import type {
   CertificateResponse, CertificateIssueRequest, CertificateUploadRequest,
-  CertificateDeployRequest, AssetResponse, CredentialResponse, ClusterResponse,
+  CertificateDeployRequest, CertificateAccountItem, AssetResponse, CredentialResponse, ClusterResponse,
 } from '@/types/api'
 
 const STATUS_MAP: Record<string, { text: string; color: string }> = {
@@ -57,7 +57,9 @@ export default function CertificatesPage() {
   const [deployCert, setDeployCert] = useState<CertificateResponse | null>(null)
   const [deployTab, setDeployTab] = useState<'host' | 'cloud' | 'k8s'>('host')
 
-  const [issueForm] = Form.useForm<CertificateIssueRequest>()
+  // 抽屉表单里的 san_domains 是逗号/换行分隔的文本，提交时再转成 string[]
+  type IssueFormValues = Omit<CertificateIssueRequest, 'san_domains'> & { san_domains?: string }
+  const [issueForm] = Form.useForm<IssueFormValues>()
   const [uploadForm] = Form.useForm<CertificateUploadRequest>()
   const [deployForm] = Form.useForm<CertificateDeployRequest>()
 
@@ -68,6 +70,11 @@ export default function CertificatesPage() {
   const { data: hosts = [] } = useQuery<AssetResponse[]>({ queryKey: ['hosts'], queryFn: () => assetsApi.list() })
   const { data: credentials = [] } = useQuery<CredentialResponse[]>({ queryKey: ['credentials'], queryFn: () => credentialsApi.list() })
   const { data: clusters = [] } = useQuery<ClusterResponse[]>({ queryKey: ['clusters'], queryFn: () => clustersApi.list() })
+  // 可用于 ACME 签发的 DNS 账号（后端 GET /certificates/accounts，仅返回已实现签发插件的厂商）
+  const { data: acmeAccounts = [] } = useQuery<CertificateAccountItem[]>({
+    queryKey: ['certificate-accounts'],
+    queryFn: () => certificatesApi.accounts(),
+  })
 
   const { data: certs = [], isLoading } = useQuery<CertificateResponse[]>({
     queryKey: ['certificates', groupFilter],
@@ -212,7 +219,20 @@ export default function CertificatesPage() {
 
   const handleSubmit = () => {
     if (mode === 'issue') {
-      issueForm.validateFields().then((v) => issueMut.mutate(v))
+      issueForm.validateFields().then((v) => {
+        // 表单字段与后端 CertificateIssueRequest 对齐：主域名必填、SAN 文本转数组、账号取 cred_id
+        const san_domains = (v.san_domains ?? '')
+          .split(/[,，\n]+/)
+          .map((item) => item.trim())
+          .filter(Boolean)
+        issueMut.mutate({
+          name: v.name,
+          primary_domain: v.primary_domain.trim(),
+          san_domains,
+          account_id: v.account_id,
+          auto_renew: v.auto_renew ?? true,
+        })
+      })
     } else {
       uploadForm.validateFields().then((v) => uploadMut.mutate(v))
     }
@@ -490,11 +510,18 @@ export default function CertificatesPage() {
             <Form.Item name="name" label="证书备注名称" rules={[{ required: true }]}>
               <Input placeholder="例如 生产环境 *.opspilot.com 证书" />
             </Form.Item>
-            <Form.Item name="domains" label="域名列表（逗号分隔或多行）" rules={[{ required: true }]}>
-              <Input.TextArea rows={3} placeholder="*.example.com, example.com" />
+            <Form.Item name="primary_domain" label="主域名" rules={[{ required: true }]}>
+              <Input placeholder="例如 *.example.com" />
             </Form.Item>
-            <Form.Item name="acme_account_id" label="ACME 账号凭证">
-              <Select placeholder="使用 Let's Encrypt 默认账号" allowClear />
+            <Form.Item name="san_domains" label="SAN 备用域名（逗号或换行分隔）">
+              <Input.TextArea rows={3} placeholder="www.example.com, api.example.com" />
+            </Form.Item>
+            <Form.Item name="account_id" label="ACME 账号凭证" rules={[{ required: true, message: '请选择用于 DNS 校验的账号凭证' }]}>
+              <Select
+                placeholder="选择用于 DNS 校验的云 API 凭证"
+                notFoundContent="暂无可用 ACME 账号"
+                options={acmeAccounts.map((a) => ({ value: a.account_id, label: `${a.account_name}（${a.provider_label}）` }))}
+              />
             </Form.Item>
             <Form.Item name="auto_renew" label="自动续期" valuePropName="checked" initialValue={true}>
               <Switch />

@@ -128,7 +128,7 @@ def import_domain(db: Session, provider: str, credential_id: str, name: str, rem
     # 此时尚未写库，任意云端权限/分页错误均不会创建虚假的纳管记录。
     domain = DomainRecord(domain=name, root_domain=zone.name, provider=provider, provider_zone_id=zone.id,
         record_type="A", record_value="-", status="active", account_id=credential_id,
-        account_name=credential.name, dns_credential=credential.name, created_at=now_ts(), updated_at=now_ts(),
+        account_name=credential.name, dns_credential=credential.cred_id, created_at=now_ts(), updated_at=now_ts(),
         expires_at="", expire_reminder_days=30, remark=remark.strip()[:255], acme_enabled="no", cert_targets="")
     try:
         db.add(domain)
@@ -192,7 +192,7 @@ def change_account(db: Session, domain: DomainRecord, provider: str, credential_
     records = adapter.list_records(zone)
     try:
         _replace_records(db, domain, records)
-        domain.account_id, domain.account_name, domain.dns_credential = credential_id, credential.name, credential.name
+        domain.account_id, domain.account_name, domain.dns_credential = credential_id, credential.name, credential.cred_id
         domain.snapshot_credential_id = ""
         domain.provider, domain.provider_zone_id, domain.root_domain = provider, zone.id, zone.name
         sync_credential_usage(db)

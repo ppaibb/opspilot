@@ -27,7 +27,9 @@ def test_every_stack_has_limits_healthchecks_and_log_rotation() -> None:
         source = path.read_text(encoding="utf-8")
         assert source.count("max-size: \"10m\"") >= 4
         assert source.count("mem_limit:") >= 4
-        assert source.count("healthcheck:") >= 4
+        # VM/VLogs/Grafana 三者必须有健康检查；alloy 镜像内无 wget，wget 健康检查
+        # 恒 unhealthy，offline 栈已去掉 alloy 的健康检查（dev 栈同款遗留问题未动）。
+        assert source.count("healthcheck:") >= 3
         assert "maxDiskSpaceUsageBytes" in source
 
 

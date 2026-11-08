@@ -68,7 +68,15 @@ jobs:
         run: .venv/bin/python -m alembic upgrade head
 
       - name: Pyflakes undefined names
-        run: .venv/bin/python -m pyflakes backend/app
+        # pyflakes 只要有任何提示退出码就是 1（含无害的未使用导入），
+        # 与 scripts/run_checks.py 保持一致：只按输出里的 "undefined name" 判失败，
+        # "unable to detect undefined names"（star-import 放弃提示）不算失败。
+        run: |
+          .venv/bin/python -m pyflakes backend/app > /tmp/pyflakes.txt || true
+          if grep "undefined name" /tmp/pyflakes.txt | grep -v "unable to detect undefined names"; then
+            echo "pyflakes found undefined names"
+            exit 1
+          fi
 
       - name: Dependency audits
         run: |
