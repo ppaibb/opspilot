@@ -45,7 +45,7 @@ export default function LinkHealthPanel({ compact = false }: { compact?: boolean
     enabled: canSee,
   })
 
-  const checks = data?.checks || []
+  const checks = useMemo(() => data?.checks ?? [], [data?.checks])
   const overall = (data?.overall as Lamp) || 'yellow'
   // 正常时收起，异常/注意时自动展开（渲染期调整，避免 effect 里同步 setState）
   const [open, setOpen] = useState(false)

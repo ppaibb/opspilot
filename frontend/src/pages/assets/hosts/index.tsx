@@ -176,7 +176,7 @@ export default function HostsPage() {
       return collectingIds.length > 0 || list.some((item) => item.config_task_status === 'collecting') ? 2000 : false
     },
   })
-  const assets = paged?.items ?? []
+  const assets = useMemo(() => paged?.items ?? [], [paged?.items])
   const filtered = useMemo(
     () => (paged?.items ?? []).filter((a) => !configFilter
       || (configFilter === 'collecting' && (collectingIds.includes(a.id) || a.config_task_status === 'collecting'))

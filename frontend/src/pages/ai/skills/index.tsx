@@ -49,7 +49,7 @@ export default function AISkillsPage() {
   const [draft, setDraft] = useState<Record<string, boolean> | null>(null)
 
   // 注册表拉到后初始化一次草稿；保存成功后重置草稿回归服务端状态。
-  const skills = registry?.skills || []
+  const skills = useMemo(() => registry?.skills ?? [], [registry?.skills])
   const effective = useMemo(
     () => skills.map((s) => ({ ...s, enabled: draft ? (draft[s.key] ?? s.enabled) : s.enabled })),
     [skills, draft],
