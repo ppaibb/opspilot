@@ -24,6 +24,7 @@ from app.core.security import get_current_user, require_permissions, require_ris
 from app.db.database import get_db
 from app.models.asset import DomainRecord, DomainDNSRecord
 from app.models.credential import Credential
+from app.models.resource_group_member import RESOURCE_TYPE_DOMAIN, ResourceGroupMember
 from app.models.user import User
 from app.services.credential_access import ensure_credential_access, filter_credentials_for_user
 from app.services import domain_resources
@@ -1194,10 +1195,17 @@ def import_domain(
 @router.get("", response_model=List[DomainResponse])
 def get_domains(
     q: str = "",
+    group_id: int | None = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     query = db.query(DomainRecord)
+    if group_id is not None:
+        grouped_domains = db.query(ResourceGroupMember.resource_id).filter(
+            ResourceGroupMember.resource_type == RESOURCE_TYPE_DOMAIN,
+            ResourceGroupMember.group_id == group_id,
+        )
+        query = query.filter(DomainRecord.domain.in_(grouped_domains))
     keyword = (q or "").strip()
     if keyword:
         query = query.filter(

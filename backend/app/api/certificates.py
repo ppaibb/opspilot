@@ -40,6 +40,7 @@ from app.db.database import SessionLocal, get_db
 from app.models.audit import AuditLog
 from app.models.certificate import CertificateRecord
 from app.models.credential import Credential
+from app.models.resource_group_member import RESOURCE_TYPE_CERT, ResourceGroupMember
 from app.models.user import User
 from app.api.notifications import create_notification, NotificationCreate
 from app.services.credential_access import ensure_credential_access, filter_credentials_for_user
@@ -1122,8 +1123,14 @@ def get_acme_accounts(
 
 
 @router.get("", response_model=List[CertificateResponse])
-def get_certificates(q: str = "", db: Session = Depends(get_db)):
+def get_certificates(q: str = "", group_id: int | None = None, db: Session = Depends(get_db)):
     query = db.query(CertificateRecord)
+    if group_id is not None:
+        grouped_certificates = db.query(ResourceGroupMember.resource_id).filter(
+            ResourceGroupMember.resource_type == RESOURCE_TYPE_CERT,
+            ResourceGroupMember.group_id == group_id,
+        )
+        query = query.filter(CertificateRecord.cert_id.in_(grouped_certificates))
     keyword = (q or "").strip()
     if keyword:
         query = query.filter(

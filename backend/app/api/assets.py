@@ -2802,8 +2802,13 @@ def get_summary(
 ):
     """返回大盘概览数字"""
     total = db.query(Asset).count()
-    critical = db.query(Asset).filter(Asset.type == "critical").count()
+    healthy = db.query(Asset).filter(Asset.type == "healthy").count()
+    pending = db.query(Asset).filter(Asset.type == "pending").count()
+    providers = [row[0] for row in db.query(Asset.provider).distinct().all() if row[0]]
     return {
         "total_servers": total,
-        "abnormal_alerts": critical
+        "healthy_servers": healthy,
+        "pending_servers": pending,
+        "offline_servers": max(0, total - healthy - pending),
+        "providers": sorted(providers),
     }

@@ -69,8 +69,8 @@ export default function DomainsPage() {
   })
 
   const { data: domains = [], isLoading } = useQuery<DomainResponse[]>({
-    queryKey: ['domains'],
-    queryFn: () => domainsApi.list(),
+    queryKey: ['domains', groupFilter],
+    queryFn: () => domainsApi.list({ group_id: groupFilter ?? undefined }),
   })
   const editingDomain = domains.find((item) => item.id === editingId)
   const selectedSpec = providers.find((item) => item.key === selectedProvider)
@@ -100,8 +100,14 @@ export default function DomainsPage() {
   // 统计指标
   const totalCount = domains.length
   const activeCount = domains.filter((d) => d.status === 'active').length
-  const expiringCount = domains.filter((d) => d.status === 'expiring' || (d.expires_at && daysToExpiry(d.expires_at)! <= 30)).length
-  const expiredCount = domains.filter((d) => d.status === 'expired' || (d.expires_at && daysToExpiry(d.expires_at)! < 0)).length
+  const expiringCount = domains.filter((d) => {
+    const days = daysToExpiry(d.expires_at)
+    return d.status === 'expiring' || (days !== null && days >= 0 && days <= 30)
+  }).length
+  const expiredCount = domains.filter((d) => {
+    const days = daysToExpiry(d.expires_at)
+    return d.status === 'expired' || (days !== null && days < 0)
+  }).length
 
   // 筛选
   const filtered = domains.filter((d) => {
@@ -242,7 +248,7 @@ export default function DomainsPage() {
         resourceType="domain"
         selectedGroupId={groupFilter}
         onSelect={setGroupFilter}
-        selectedIds={selectedKeys}
+        selectedIds={domains.filter((item) => selectedKeys.includes(String(item.id))).map((item) => item.domain)}
       />
 
       <Flex vertical gap={16} style={{ flex: 1, minWidth: 0 }}>

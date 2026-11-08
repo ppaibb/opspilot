@@ -70,8 +70,8 @@ export default function CertificatesPage() {
   const { data: clusters = [] } = useQuery<ClusterResponse[]>({ queryKey: ['clusters'], queryFn: () => clustersApi.list() })
 
   const { data: certs = [], isLoading } = useQuery<CertificateResponse[]>({
-    queryKey: ['certificates'],
-    queryFn: () => certificatesApi.list(),
+    queryKey: ['certificates', groupFilter],
+    queryFn: () => certificatesApi.list({ group_id: groupFilter ?? undefined }),
   })
 
   const { deleteMut } = useCrudResource<CertificateIssueRequest, string>({
@@ -376,7 +376,7 @@ export default function CertificatesPage() {
   return (
     <Flex gap={16} style={{ height: '100%' }}>
       <GroupSidebar
-        resourceType="certificate"
+        resourceType="cert"
         selectedGroupId={groupFilter}
         onSelect={setGroupFilter}
         selectedIds={selectedKeys}

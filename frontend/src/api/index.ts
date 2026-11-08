@@ -50,6 +50,10 @@ export const assetsApi = {
   resetHostKey: (assetId: string) =>
     client.post(`/assets/${assetId}/reset-host-key`).then((r) => r.data),
   list: () => client.get<AssetResponse[]>('/assets').then((r) => r.data),
+  summary: () => client.get<{
+    total_servers: number; healthy_servers: number; pending_servers: number
+    offline_servers: number; providers: string[]
+  }>('/assets/summary').then((r) => r.data),
   /** 服务端分页/筛选列表（GET /assets 的 limit/offset/q/status/source/group_id 参数）。
    *  返回当前页数据与 X-Total-Count 筛选总数；limit=0 等价全量（向后兼容）。 */
   listPaged: (params: {
@@ -162,7 +166,7 @@ export const credentialsApi = {
 
 // ── 域名 ──
 export const domainsApi = {
-  list: (q?: string) => client.get<DomainResponse[]>('/domains', { params: { q } }).then((r) => r.data),
+  list: (params?: { q?: string; group_id?: number }) => client.get<DomainResponse[]>('/domains', { params }).then((r) => r.data),
   create: (data: DomainCreate) => client.post<DomainResponse>('/domains', data).then((r) => r.data),
   update: (id: number, data: DomainUpdate) => client.put<DomainResponse>(`/domains/${id}`, data).then((r) => r.data),
   delete: (id: number, config?: AxiosRequestConfig) => client.delete(`/domains/${id}`, config).then((r) => r.data),
@@ -196,7 +200,7 @@ export const notificationsApi = {
 
 // ── 证书 ──
 export const certificatesApi = {
-  list: (q?: string) => client.get<CertificateResponse[]>('/certificates', { params: { q } }).then((r) => r.data),
+  list: (params?: { q?: string; group_id?: number }) => client.get<CertificateResponse[]>('/certificates', { params }).then((r) => r.data),
   getById: (id: string) => client.get<CertificateResponse>(`/certificates/${id}`).then((r) => r.data),
   update: (id: string, data: CertificateUpdateRequest) => client.put<CertificateResponse>(`/certificates/${id}`, data).then((r) => r.data),
   delete: (id: string, config?: AxiosRequestConfig) => client.delete(`/certificates/${id}`, config).then((r) => r.data),

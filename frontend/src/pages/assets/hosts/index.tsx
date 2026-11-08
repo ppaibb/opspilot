@@ -143,15 +143,9 @@ export default function HostsPage() {
     onError: () => message.error('清除指纹失败'),
   })
 
-  const { data: assets = [], isLoading } = useQuery({
-    queryKey: ['assets'],
-    queryFn: assetsApi.list,
-    // 本地触发的采集，或后端自动采集（首次添加）导致任一主机处于 collecting，都持续轮询
-    refetchInterval: (q) => {
-      const list = (q.state.data as AssetResponse[] | undefined) ?? []
-      const anyCollecting = collectingIds.length > 0 || list.some((a) => a.config_task_status === 'collecting')
-      return anyCollecting ? 2000 : false
-    },
+  const { data: assetSummary } = useQuery({
+    queryKey: ['assets', 'summary'],
+    queryFn: assetsApi.summary,
   })
 
   // ── 服务端分页/筛选（2026-10-05 迁移）──
@@ -177,7 +171,12 @@ export default function HostsPage() {
       ...serverFilterParams,
     }),
     placeholderData: (prev) => prev, // 翻页时保留旧数据避免闪空
+    refetchInterval: (query) => {
+      const list = query.state.data?.items ?? []
+      return collectingIds.length > 0 || list.some((item) => item.config_task_status === 'collecting') ? 2000 : false
+    },
   })
+  const assets = paged?.items ?? []
   const filtered = useMemo(
     () => (paged?.items ?? []).filter((a) => !configFilter
       || (configFilter === 'collecting' && (collectingIds.includes(a.id) || a.config_task_status === 'collecting'))
@@ -359,10 +358,10 @@ export default function HostsPage() {
   })
 
   // ── 统计指标 ──
-  const totalCount   = assets.length
-  const onlineCount  = assets.filter((a) => a.type === 'healthy').length
-  const pendingCount = assets.filter((a) => a.type === 'pending').length
-  const offlineCount = assets.filter((a) => a.type !== 'healthy' && a.type !== 'pending').length
+  const totalCount   = assetSummary?.total_servers ?? pagedTotal
+  const onlineCount  = assetSummary?.healthy_servers ?? 0
+  const pendingCount = assetSummary?.pending_servers ?? 0
+  const offlineCount = assetSummary?.offline_servers ?? 0
 
   // ── 筛选 ──（search/group/status/source 已下沉服务端分页查询，见 assets-paged；
   //   此处仅保留 configFilter 本地叠加，filtered 已在分页查询处定义）
@@ -370,14 +369,14 @@ export default function HostsPage() {
   // 来源筛选候选（去重）
   const sourceOptions = useMemo(() => {
     const seen = new Set<string>()
-    return assets.reduce<{ value: string; label: string }[]>((acc, a) => {
-      if (!seen.has(a.provider)) {
-        seen.add(a.provider)
-        acc.push({ value: a.provider, label: providerMeta(a.provider).label })
+    return (assetSummary?.providers ?? []).reduce<{ value: string; label: string }[]>((acc, provider) => {
+      if (!seen.has(provider)) {
+        seen.add(provider)
+        acc.push({ value: provider, label: providerMeta(provider).label })
       }
       return acc
     }, [])
-  }, [assets])
+  }, [assetSummary])
 
   // ── 导出 CSV ──（导出当前筛选的全量结果，异步拉取后生成）
   const handleExport = async () => {
@@ -977,7 +976,7 @@ export default function HostsPage() {
           rowSelection={rowSelection}
           columns={columns}
           dataSource={filtered}
-          loading={isLoading || loadingPaged || isFetching}
+          loading={loadingPaged || isFetching}
           size="middle"
           scroll={{ x: 1070 }}
           locale={{
