@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from .shared import *  # noqa: F401,F403
 from app.api.notifications import NotificationCreate, create_notification
+from app.core.security import require_risk_ack
 from app.services.application_runtime import (
     build_compose_project_discovery_command,
     build_compose_preflight_module_args,
@@ -408,7 +409,14 @@ def update_application_component(
 
 @router.post(
     "/{app_id}/components/batch-delete",
-    dependencies=[Depends(require_permissions("action.apps.manage"))],
+    dependencies=[
+        Depends(require_permissions("action.apps.manage")),
+        Depends(require_risk_ack(
+            "action.apps.manage",
+            "batch_delete_components",
+            resource_params=("app_id",),
+        )),
+    ],
 )
 def batch_delete_application_components(
     app_id: str,
@@ -557,7 +565,14 @@ def discover_application_runtime_instances(
 @router.post(
     "/{app_id}/components/{component_id}/actions",
     response_model=ApplicationRuntimeActionResponse,
-    dependencies=[Depends(require_permissions("action.apps.control"))],
+    dependencies=[
+        Depends(require_permissions("action.apps.control")),
+        Depends(require_risk_ack(
+            "action.apps.control",
+            "control_component",
+            resource_params=("app_id", "component_id"),
+        )),
+    ],
 )
 def control_application_component(
     app_id: str,

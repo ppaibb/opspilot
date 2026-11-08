@@ -142,23 +142,57 @@ log "更新 $STAGE_DIR/.env 并重启 ($SERVICES) ..."
 
 remote_script() {
   cat <<REMOTE
-set -e
-$([[ $DO_BACKEND -eq 1 ]] && echo "sed -i 's|^OPSPILOT_BACKEND_IMAGE=.*|OPSPILOT_BACKEND_IMAGE=${BACKEND_IMG}|' '$STAGE_DIR/.env'")
-$([[ $DO_FRONTEND -eq 1 ]] && echo "sed -i 's|^OPSPILOT_FRONTEND_IMAGE=.*|OPSPILOT_FRONTEND_IMAGE=${FRONTEND_IMG}|' '$STAGE_DIR/.env'")
+set -eu
 export PATH="\$PATH:/usr/libexec/docker/cli-plugins:/usr/lib/docker/cli-plugins:/usr/local/lib/docker/cli-plugins"
 cd '$STAGE_DIR'
-set -a; . ./.env; set +a
 if docker compose version >/dev/null 2>&1; then C='docker compose'; else C='docker-compose'; fi
-\$C -f app/docker-compose.yaml --env-file .env up -d ${SERVICES}
-sleep 8
-docker ps --format '{{.Names}} {{.Image}} {{.Status}}' | grep -E 'opspilot-(backend|frontend)' || true
-echo '--- health ---'
-curl -fsS -m 8 -o /dev/null -w 'frontend %{http_code}\n' http://127.0.0.1:8080/ || true
-curl -fsS -m 8 -o /dev/null -w 'login-page %{http_code}\n' http://127.0.0.1:8001/api/settings/login-page || true
+COMPOSE="\$C -f app/docker-compose.yaml --env-file .env"
+BACKUP_ENV='.env.pre-update'
+cp -p .env "\$BACKUP_ENV"
+chmod 600 "\$BACKUP_ENV"
+
+rollback_deploy() {
+  status=\$?
+  trap - ERR
+  echo '[rollback] 迁移或健康检查失败，恢复旧镜像配置' >&2
+  cp -p "\$BACKUP_ENV" .env
+  set -a; . ./.env; set +a
+  \$COMPOSE up -d backend frontend || true
+  exit "\$status"
+}
+trap rollback_deploy ERR
+
+$([[ $DO_BACKEND -eq 1 ]] && echo "sed -i 's|^OPSPILOT_BACKEND_IMAGE=.*|OPSPILOT_BACKEND_IMAGE=${BACKEND_IMG}|' .env")
+$([[ $DO_FRONTEND -eq 1 ]] && echo "sed -i 's|^OPSPILOT_FRONTEND_IMAGE=.*|OPSPILOT_FRONTEND_IMAGE=${FRONTEND_IMG}|' .env")
+set -a; . ./.env; set +a
+
+# 后端镜像切换前先用新镜像执行迁移；失败会触发回滚且不会重启业务容器。
+$([[ $DO_BACKEND -eq 1 ]] && echo "\$COMPOSE run --rm --no-deps init-db")
+\$COMPOSE up -d ${SERVICES}
+
+wait_http() {
+  name="\$1"; url="\$2"; attempt=0
+  while [ "\$attempt" -lt 18 ]; do
+    if curl -fsS -m 8 -o /dev/null "\$url"; then
+      echo "[health] \$name OK"
+      return 0
+    fi
+    attempt=\$((attempt + 1))
+    sleep 5
+  done
+  echo "[health] \$name FAILED" >&2
+  return 1
+}
+$([[ $DO_FRONTEND -eq 1 ]] && echo "wait_http frontend http://127.0.0.1:8080/")
+$([[ $DO_BACKEND -eq 1 ]] && echo "wait_http backend http://127.0.0.1:8001/api/settings/login-page")
+
+trap - ERR
+rm -f "\$BACKUP_ENV"
+docker ps --format '{{.Names}} {{.Image}} {{.Status}}' | grep -E 'opspilot-(backend|frontend)'
 echo '--- backend log (errors) ---'
 docker logs opspilot-backend --since 2m 2>&1 | grep -iE 'error|traceback' | head -10 || true
 echo '--- env ---'
-grep -E '^OPSPILOT_(BACKEND|FRONTEND)_IMAGE=' '$STAGE_DIR/.env' || true
+grep -E '^OPSPILOT_(BACKEND|FRONTEND)_IMAGE=' .env
 REMOTE
 }
 

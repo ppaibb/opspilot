@@ -19,7 +19,7 @@ from unittest.mock import patch
 os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
 
 from fastapi import HTTPException
-from jose import jwt
+import jwt
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 

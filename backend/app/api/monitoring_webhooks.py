@@ -205,7 +205,7 @@ async def receive_alertmanager_webhook(
     3. 返回固定 JSON，便于上游快速判断“是否投递成功”。
     """
     expected_token, _ = _ensure_receiver_token(db)
-    if token != expected_token:
+    if not secrets.compare_digest(token, expected_token):
         raise HTTPException(status_code=404, detail="Webhook 接收地址不存在")
 
     raw_bytes = await request.body()

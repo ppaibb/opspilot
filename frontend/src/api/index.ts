@@ -21,6 +21,12 @@ export const imApi = {
 // ── Auth ──
 export const authApi = {
   login: (data: LoginRequest) => client.post<TokenResponse>('/auth/login', data).then((r) => r.data),
+  refresh: (refreshToken: string) => client.post<TokenResponse>('/auth/refresh', {
+    refresh_token: refreshToken,
+  }).then((r) => r.data),
+  logout: (refreshToken: string) => client.post('/auth/logout', {
+    refresh_token: refreshToken,
+  }).then((r) => r.data),
   getMe: () => client.get('/auth/me').then((r) => r.data),
   /** 风险等级表（后端返回 {"levels": {...}} 信封，调用方取 .levels） */
   getRiskLevels: () => client.get<RiskLevelsResponse>('/auth/risk-levels').then((r) => r.data),
@@ -44,6 +50,10 @@ export const assetsApi = {
   resetHostKey: (assetId: string) =>
     client.post(`/assets/${assetId}/reset-host-key`).then((r) => r.data),
   list: () => client.get<AssetResponse[]>('/assets').then((r) => r.data),
+  summary: () => client.get<{
+    total_servers: number; healthy_servers: number; pending_servers: number
+    offline_servers: number; providers: string[]
+  }>('/assets/summary').then((r) => r.data),
   /** 服务端分页/筛选列表（GET /assets 的 limit/offset/q/status/source/group_id 参数）。
    *  返回当前页数据与 X-Total-Count 筛选总数；limit=0 等价全量（向后兼容）。 */
   listPaged: (params: {
@@ -57,8 +67,8 @@ export const assetsApi = {
   create: (data: AssetCreate) => client.post<AssetResponse>('/assets', data).then((r) => r.data),
   update: (id: string, data: AssetCreate) =>
     client.put<{ message: string; config_collecting: boolean; asset: AssetResponse }>(`/assets/${id}`, data).then((r) => r.data),
-  delete: (id: string) => client.delete(`/assets/${id}`).then((r) => r.data),
-  batchDelete: (ids: string[]) => client.post('/assets/batch-delete', { ids }).then((r) => r.data),
+  delete: (id: string, config?: AxiosRequestConfig) => client.delete(`/assets/${id}`, config).then((r) => r.data),
+  batchDelete: (ids: string[], config?: AxiosRequestConfig) => client.post('/assets/batch-delete', { ids }, config).then((r) => r.data),
   ping: (data: { ip: string; port: number; user: string; password?: string; credential_id?: string; pkey_content?: string; asset_id?: string }) =>
     client.post('/assets/ping', data).then((r) => r.data),
   sync: (data: CloudSyncRequest) =>
@@ -75,8 +85,8 @@ export const assetsApi = {
 export const clustersApi = {
   list: () => client.get<ClusterResponse[]>('/clusters').then((r) => r.data),
   create: (data: ClusterCreate) => client.post<ClusterResponse>('/clusters', data).then((r) => r.data),
-  update: (id: string, data: { name?: string; provider?: string }) => client.put<ClusterResponse>(`/clusters/${id}`, data).then((r) => r.data),
-  delete: (id: string) => client.delete(`/clusters/${id}`).then((r) => r.data),
+  update: (id: string, data: { name?: string; provider?: string }, config?: AxiosRequestConfig) => client.put<ClusterResponse>(`/clusters/${id}`, data, config).then((r) => r.data),
+  delete: (id: string, config?: AxiosRequestConfig) => client.delete(`/clusters/${id}`, config).then((r) => r.data),
   healthSummary: (id: string) => client.get(`/clusters/${id}/health-summary`).then((r) => r.data),
   scan: (kubeconfig_yaml: string) => client.post('/clusters/scan', { kubeconfig_yaml }).then((r) => r.data),
 }
@@ -87,10 +97,10 @@ export const usersApi = {
   create: (data: UserCreateRequest) => client.post<UserResponse>('/settings/users', data).then((r) => r.data),
   getAccess: (id: number) => client.get<UserAccessResponse>(`/settings/users/${id}/access`).then((r) => r.data),
   updateAccess: (id: number, data: UserAccessUpdate) => client.put<UserAccessResponse>(`/settings/users/${id}/access`, data).then((r) => r.data),
-  updateStatus: (id: number, status: string) => client.put(`/settings/users/${id}/status`, { status }).then((r) => r.data),
+  updateStatus: (id: number, status: string, config?: AxiosRequestConfig) => client.put(`/settings/users/${id}/status`, { status }, config).then((r) => r.data),
   delete: (id: number, ticket: string) =>
     client.delete(`/settings/users/${id}`, { headers: { 'X-Risk-Ticket': ticket } }).then((r) => r.data),
-  resetPassword: (id: number, new_password: string) => client.post(`/settings/users/${id}/reset-password`, { new_password }).then((r) => r.data),
+  resetPassword: (id: number, new_password: string, config?: AxiosRequestConfig) => client.post(`/settings/users/${id}/reset-password`, { new_password }, config).then((r) => r.data),
 }
 
 // ── Groups ──
@@ -127,9 +137,9 @@ export const vmsApi = {
   list: (q?: string) => client.get<VMResponse[]>('/vms', { params: { q } }).then((r) => r.data),
   create: (data: VMCreate) => client.post<VMResponse>('/vms', data).then((r) => r.data),
   update: (id: string, data: VMCreate) => client.put<VMResponse>(`/vms/${id}`, data).then((r) => r.data),
-  delete: (id: string) => client.delete(`/vms/${id}`).then((r) => r.data),
-  batchDelete: (ids: string[]) => client.post('/vms/batch-delete', { ids }).then((r) => r.data),
-  power: (id: string, action: string) => client.post(`/vms/${id}/power`, { action }).then((r) => r.data),
+  delete: (id: string, config?: AxiosRequestConfig) => client.delete(`/vms/${id}`, config).then((r) => r.data),
+  batchDelete: (ids: string[], config?: AxiosRequestConfig) => client.post('/vms/batch-delete', { ids }, config).then((r) => r.data),
+  power: (id: string, action: string, config?: AxiosRequestConfig) => client.post(`/vms/${id}/power`, { action }, config).then((r) => r.data),
   clone: (id: string, name: string) => client.post(`/vms/${id}/clone`, { name }).then((r) => r.data),
   sync: (provider?: string) => client.post('/vms/sync', null, { params: { provider } }).then((r) => r.data),
   getNodes: () => client.get<VMNodeItem[]>('/vms/nodes').then((r) => r.data),
@@ -145,22 +155,22 @@ export const credentialsApi = {
   list: () => client.get<CredentialResponse[]>('/credentials').then((r) => r.data),
   create: (data: CredentialCreate) => client.post<CredentialResponse>('/credentials', data).then((r) => r.data),
   update: (id: string, data: CredentialUpdate) => client.put<CredentialResponse>(`/credentials/${id}`, data).then((r) => r.data),
-  delete: (id: string) => client.delete(`/credentials/${id}`).then((r) => r.data),
-  batchDelete: (ids: string[]) => client.post('/credentials/batch-delete', { ids }).then((r) => r.data),
+  delete: (id: string, config?: AxiosRequestConfig) => client.delete(`/credentials/${id}`, config).then((r) => r.data),
+  batchDelete: (ids: string[], config?: AxiosRequestConfig) => client.post('/credentials/batch-delete', { ids }, config).then((r) => r.data),
   /** 导出单条凭证明文附件（需 X-Risk-Ticket 票据）。返回完整响应，文件名在 Content-Disposition 头 */
-  exportFile: (id: string) => client.get<Blob>(`/credentials/${id}/export`, { responseType: 'blob' }),
+  exportFile: (id: string, config?: AxiosRequestConfig) => client.get<Blob>(`/credentials/${id}/export`, { ...config, responseType: 'blob' }),
   /** 批量导出凭证明文 ZIP 附件（需 X-Risk-Ticket 票据）。返回完整响应，文件名在 Content-Disposition 头 */
-  batchExportFile: (ids: string[]) => client.post<Blob>('/credentials/batch-export', { ids }, { responseType: 'blob' }),
+  batchExportFile: (ids: string[], config?: AxiosRequestConfig) => client.post<Blob>('/credentials/batch-export', { ids }, { ...config, responseType: 'blob' }),
   accessOptions: () => client.get<{ role: string; title: string; description: string }[]>('/credentials/access-options').then((r) => r.data),
 }
 
 // ── 域名 ──
 export const domainsApi = {
-  list: (q?: string) => client.get<DomainResponse[]>('/domains', { params: { q } }).then((r) => r.data),
+  list: (params?: { q?: string; group_id?: number }) => client.get<DomainResponse[]>('/domains', { params }).then((r) => r.data),
   create: (data: DomainCreate) => client.post<DomainResponse>('/domains', data).then((r) => r.data),
   update: (id: number, data: DomainUpdate) => client.put<DomainResponse>(`/domains/${id}`, data).then((r) => r.data),
-  delete: (id: number) => client.delete(`/domains/${id}`).then((r) => r.data),
-  batchDelete: (ids: number[]) => client.post('/domains/batch-delete', { ids }).then((r) => r.data),
+  delete: (id: number, config?: AxiosRequestConfig) => client.delete(`/domains/${id}`, config).then((r) => r.data),
+  batchDelete: (ids: number[], config?: AxiosRequestConfig) => client.post('/domains/batch-delete', { ids }, config).then((r) => r.data),
   providers: () => client.get<DomainProviderItem[]>('/domains/providers').then((r) => r.data),
   accounts: () => client.get<DomainAccountItem[]>('/domains/accounts').then((r) => r.data),
   accountDomains: (data: { provider: string; account_id: string }) =>
@@ -171,7 +181,7 @@ export const domainsApi = {
   listRecords: (domainId: number, q?: string) => client.get<DomainDNSRecordResponse[]>(`/domains/${domainId}/records`, { params: { q } }).then((r) => r.data),
   createRecord: (domainId: number, data: DomainDNSRecordCreate) => client.post<DomainDNSRecordResponse>(`/domains/${domainId}/records`, data).then((r) => r.data),
   updateRecord: (domainId: number, recordId: number, data: DomainDNSRecordCreate) => client.put<DomainDNSRecordResponse>(`/domains/${domainId}/records/${recordId}`, data).then((r) => r.data),
-  deleteRecord: (domainId: number, recordId: number) => client.delete(`/domains/${domainId}/records/${recordId}`).then((r) => r.data),
+  deleteRecord: (domainId: number, recordId: number, config?: AxiosRequestConfig) => client.delete(`/domains/${domainId}/records/${recordId}`, config).then((r) => r.data),
 }
 
 // ── 站内通知 ──
@@ -182,7 +192,7 @@ export const notificationsApi = {
   markRead: (id: string) => client.post(`/notifications/${id}/read`).then((r) => r.data),
   markAllRead: () => client.post('/notifications/read-all').then((r) => r.data),
   remove: (id: string) => client.delete(`/notifications/${id}`).then((r) => r.data),
-  clear: () => client.post('/notifications/clear').then((r) => r.data),
+  clear: (config?: AxiosRequestConfig) => client.post('/notifications/clear', undefined, config).then((r) => r.data),
   /** 取通知 SSE 短时效票据（EventSource 不支持自定义 header，票据走 query param） */
   sseTicket: () =>
     client.post<NotificationSseTicketResponse>('/notifications/stream/ticket').then((r) => r.data),
@@ -190,20 +200,20 @@ export const notificationsApi = {
 
 // ── 证书 ──
 export const certificatesApi = {
-  list: (q?: string) => client.get<CertificateResponse[]>('/certificates', { params: { q } }).then((r) => r.data),
+  list: (params?: { q?: string; group_id?: number }) => client.get<CertificateResponse[]>('/certificates', { params }).then((r) => r.data),
   getById: (id: string) => client.get<CertificateResponse>(`/certificates/${id}`).then((r) => r.data),
   update: (id: string, data: CertificateUpdateRequest) => client.put<CertificateResponse>(`/certificates/${id}`, data).then((r) => r.data),
-  delete: (id: string) => client.delete(`/certificates/${id}`).then((r) => r.data),
-  batchDelete: (ids: string[]) => client.post('/certificates/batch-delete', { ids }).then((r) => r.data),
+  delete: (id: string, config?: AxiosRequestConfig) => client.delete(`/certificates/${id}`, config).then((r) => r.data),
+  batchDelete: (ids: string[], config?: AxiosRequestConfig) => client.post('/certificates/batch-delete', { ids }, config).then((r) => r.data),
   issue: (data: CertificateIssueRequest) => client.post<CertificateResponse>('/certificates/issue', data).then((r) => r.data),
   upload: (data: CertificateUploadRequest) => client.post<CertificateResponse>('/certificates/upload', data).then((r) => r.data),
   renew: (id: string) => client.post(`/certificates/${id}/renew`).then((r) => r.data),
-  revoke: (id: string, reason?: string) => client.post(`/certificates/${id}/revoke`, { reason }).then((r) => r.data),
+  revoke: (id: string, reason?: string, config?: AxiosRequestConfig) => client.post(`/certificates/${id}/revoke`, { reason }, config).then((r) => r.data),
   autoRenew: (id: string, enabled: boolean) => client.post(`/certificates/${id}/auto-renew`, { enabled }).then((r) => r.data),
   refresh: (id: string) => client.post(`/certificates/${id}/refresh`).then((r) => r.data),
   deploy: (id: string, data: CertificateDeployRequest) => client.post(`/certificates/${id}/deploy`, data).then((r) => r.data),
   /** 下载证书文件包（cert/key/fullchain/ca + metadata 打包 zip，需 X-Risk-Ticket 票据）。返回完整响应，文件名在 Content-Disposition 头 */
-  downloadFile: (id: string) => client.get<Blob>(`/certificates/${id}/download`, { responseType: 'blob' }),
+  downloadFile: (id: string, config?: AxiosRequestConfig) => client.get<Blob>(`/certificates/${id}/download`, { ...config, responseType: 'blob' }),
   accounts: () => client.get<CertificateAccountItem[]>('/certificates/accounts').then((r) => r.data),
 }
 
@@ -271,19 +281,19 @@ export const monitoringApi = {
   installNodeExporter: (assetId: string, payload?: { port?: number; job?: string }) =>
     client.post(`/monitoring/targets/${encodeURIComponent(assetId)}/install-node-exporter`, payload ?? {}).then((r) => r.data),
   /** 彻底卸载 Alloy Agent */
-  uninstallAlloy: (assetId: string) =>
-    client.post(`/monitoring/targets/${encodeURIComponent(assetId)}/uninstall-alloy`).then((r) => r.data),
+  uninstallAlloy: (assetId: string, config?: AxiosRequestConfig) =>
+    client.post(`/monitoring/targets/${encodeURIComponent(assetId)}/uninstall-alloy`, undefined, config).then((r) => r.data),
 }
 
 // ── WebSSH 终端 ──
 export const terminalApi = {
-  createSession: (asset_id: string, cols?: number, rows?: number) =>
+  createSession: (asset_id: string, cols?: number, rows?: number, config?: AxiosRequestConfig) =>
     client.post<{
       session_id: string
       session_token: string
       expires_at: number
       ws_path: string
-    }>('/assets/terminal/session', { asset_id, cols: cols ?? 120, rows: rows ?? 36 }).then((r) => r.data),
+    }>('/assets/terminal/session', { asset_id, cols: cols ?? 120, rows: rows ?? 36 }, config).then((r) => r.data),
   listFiles: (asset_id: string, path: string) =>
     client.get<{
       path: string
@@ -300,8 +310,11 @@ export const terminalApi = {
     form.append('file', file)
     return client.post(`/assets/terminal/files/${encodeURIComponent(asset_id)}/upload`, form).then((r) => r.data)
   },
-  downloadUrl: (asset_id: string, path: string) =>
-    `/api/assets/terminal/files/${encodeURIComponent(asset_id)}/download?path=${encodeURIComponent(path)}`,
+  downloadFile: (asset_id: string, path: string) =>
+    client.get<Blob>(`/assets/terminal/files/${encodeURIComponent(asset_id)}/download`, {
+      params: { path },
+      responseType: 'blob',
+    }),
 }
 
 // ── 集群健康摘要 ──
@@ -345,8 +358,8 @@ export const applicationsApi = {
     client.post<import('@/types/api').ApplicationResponse>('/applications', data).then((r) => r.data),
   update: (appId: string, data: import('@/types/api').ApplicationPayload) =>
     client.put<import('@/types/api').ApplicationResponse>(`/applications/${appId}`, data).then((r) => r.data),
-  delete: (appId: string) =>
-    client.delete(`/applications/${appId}`).then((r) => r.data),
+  delete: (appId: string, config?: AxiosRequestConfig) =>
+    client.delete(`/applications/${appId}`, config).then((r) => r.data),
   bindResources: (appId: string, resources: Array<{ resource_type: string; resource_id: string }>) =>
     client.put(`/applications/${appId}/resources`, resources).then((r) => r.data),
   getDetail: (appId: string) =>
@@ -359,10 +372,10 @@ export const applicationsApi = {
     client.post<import('@/types/api').ApplicationComposePreflightResponse>(`/applications/${appId}/compose/preflight`, data).then((r) => r.data),
   deleteComponent: (appId: string, componentId: string) =>
     client.delete(`/applications/${appId}/components/${componentId}`).then((r) => r.data),
-  batchDeleteComponents: (appId: string, componentIds: string[]) =>
-    client.post<{ success: boolean; deleted_count: number }>(`/applications/${appId}/components/batch-delete`, { component_ids: componentIds }).then((r) => r.data),
-  controlComponent: (appId: string, componentId: string, action: string) =>
-    client.post<import('@/types/api').ApplicationRuntimeActionResponse>(`/applications/${appId}/components/${componentId}/actions`, { action }).then((r) => r.data),
+  batchDeleteComponents: (appId: string, componentIds: string[], config?: AxiosRequestConfig) =>
+    client.post<{ success: boolean; deleted_count: number }>(`/applications/${appId}/components/batch-delete`, { component_ids: componentIds }, config).then((r) => r.data),
+  controlComponent: (appId: string, componentId: string, action: string, config?: AxiosRequestConfig) =>
+    client.post<import('@/types/api').ApplicationRuntimeActionResponse>(`/applications/${appId}/components/${componentId}/actions`, { action }, config).then((r) => r.data),
   discoverComponents: (appId: string, assetIds: string[], types: string[], includeSystemServices = false) =>
     client.post<import('@/types/api').ApplicationRuntimeDiscoveryResponse>(`/applications/${appId}/runtime-discovery`, {
       asset_ids: assetIds,
@@ -388,8 +401,8 @@ export const applicationsApi = {
   compareConfig: (appId: string, configId: string, targetRevisionId: number) =>
     client.get(`/applications/${appId}/configs/${configId}/compare`, { params: { target_revision_id: targetRevisionId } }).then((r) => r.data),
   /** 配置回滚到指定修订（config:rollback 高危确认后调用） */
-  rollbackConfig: (appId: string, configId: string, targetRevisionId: number) =>
-    client.post(`/applications/${appId}/configs/${configId}/rollback`, { target_revision_id: targetRevisionId }).then((r) => r.data),
+  rollbackConfig: (appId: string, configId: string, targetRevisionId: number, config?: AxiosRequestConfig) =>
+    client.post(`/applications/${appId}/configs/${configId}/rollback`, { target_revision_id: targetRevisionId }, config).then((r) => r.data),
   getCredentialRefs: () =>
     client.get<import('@/types/api').CredentialRefOption[]>('/applications/config-credential-options').then((r) => r.data),
   // 发布管理
@@ -411,11 +424,11 @@ export const applicationsApi = {
 export const financeApi = {
   // 云账号
   listAccounts: () => client.get<import('@/types/api').CloudAccountItem[]>('/finance/accounts').then((r) => r.data),
-  createAccount: (data: import('@/types/api').CloudAccountPayload) =>
-    client.post<import('@/types/api').CloudAccountItem>('/finance/accounts', data).then((r) => r.data),
+  createAccount: (data: import('@/types/api').CloudAccountPayload, config?: AxiosRequestConfig) =>
+    client.post<import('@/types/api').CloudAccountItem>('/finance/accounts', data, config).then((r) => r.data),
   updateAccount: (id: number, data: import('@/types/api').CloudAccountPayload) =>
     client.put<import('@/types/api').CloudAccountItem>(`/finance/accounts/${id}`, data).then((r) => r.data),
-  deleteAccount: (id: number) => client.delete(`/finance/accounts/${id}`).then((r) => r.data),
+  deleteAccount: (id: number, config?: AxiosRequestConfig) => client.delete(`/finance/accounts/${id}`, config).then((r) => r.data),
   verifyAccount: (id: number) => client.post<import('@/types/api').CloudAccountItem>(`/finance/accounts/${id}/verify`).then((r) => r.data),
   syncAccount: (id: number, data?: { billing_cycle?: string; include_previous?: boolean }) =>
     client.post(`/finance/accounts/${id}/sync`, data ?? {}).then((r) => r.data),
@@ -426,14 +439,8 @@ export const financeApi = {
   // 总览与账单
   overview: (params?: { month?: string; account_id?: number }) =>
     client.get<import('@/types/api').FinanceOverview>('/finance/overview', { params }).then((r) => r.data),
-  exportBillsUrl: (params?: Record<string, string | number | undefined>) => {
-    const q = new URLSearchParams()
-    Object.entries(params ?? {}).forEach(([k, v]) => {
-      if (v !== undefined && v !== null && v !== '') q.set(k, String(v))
-    })
-    const qs = q.toString()
-    return `/api/finance/bills/export${qs ? `?${qs}` : ''}`
-  },
+  exportBillsFile: (params?: Record<string, string | number | undefined>) =>
+    client.get<Blob>('/finance/bills/export', { params, responseType: 'blob' }),
   listBills: (params?: {
     month?: string
     account_id?: number
@@ -573,8 +580,8 @@ export const changesApi = {
     client.post(`/changes/${id}/reject`, { note: note || '' }).then((r) => r.data),
   cancel: (id: number, note?: string) =>
     client.post(`/changes/${id}/cancel`, { note: note || '' }).then((r) => r.data),
-  execute: (id: number, manualResult?: boolean) =>
-    client.post(`/changes/${id}/execute`, { manual_result: manualResult ?? null }).then((r) => r.data),
+  execute: (id: number, manualResult?: boolean, config?: AxiosRequestConfig) =>
+    client.post(`/changes/${id}/execute`, { manual_result: manualResult ?? null }, config).then((r) => r.data),
 }
 
 export const toolsApi = {
@@ -601,11 +608,11 @@ export const toolsApi = {
     module_args?: string
     become?: boolean
     become_user?: string
-  }) => client.post<import('@/types/api').AnsibleRunResult>('/tools/ansible/run', data).then((r) => r.data),
-  runPlaybook: (data: { run_all?: boolean; asset_ids?: string[]; playbook: string }) =>
-    client.post<import('@/types/api').AnsibleRunResult>('/tools/ansible/run-playbook', data).then((r) => r.data),
-  runTemplate: (data: { template_id: string; run_all_override?: boolean; asset_ids_override?: string[] }) =>
-    client.post<import('@/types/api').AnsibleRunResult>('/tools/ansible/run-template', data).then((r) => r.data),
+  }, config?: AxiosRequestConfig) => client.post<import('@/types/api').AnsibleRunResult>('/tools/ansible/run', data, config).then((r) => r.data),
+  runPlaybook: (data: { run_all?: boolean; asset_ids?: string[]; playbook: string }, config?: AxiosRequestConfig) =>
+    client.post<import('@/types/api').AnsibleRunResult>('/tools/ansible/run-playbook', data, config).then((r) => r.data),
+  runTemplate: (data: { template_id: string; run_all_override?: boolean; asset_ids_override?: string[] }, config?: AxiosRequestConfig) =>
+    client.post<import('@/types/api').AnsibleRunResult>('/tools/ansible/run-template', data, config).then((r) => r.data),
 }
 
 // ── 首页驾驶舱聚合 ──
@@ -646,26 +653,26 @@ export const clusterDetailApi = {
   nodes: (cid: string) => client.get<K8sNode[]>(`/clusters/${cid}/nodes`).then((r) => r.data),
   nodeDrainPreview: (cid: string, name: string) =>
     client.get<K8sNodeDrainPreview>(`/clusters/${cid}/nodes/${name}/drain-preview`).then((r) => r.data),
-  nodeDrain: (cid: string, name: string, data?: { force?: boolean; delete_emptydir_data?: boolean; grace_period?: number }) =>
-    client.post(`/clusters/${cid}/nodes/${name}/drain`, data ?? {}).then((r) => r.data),
-  nodeCordon: (cid: string, name: string) => client.post(`/clusters/${cid}/nodes/${name}/cordon`).then((r) => r.data),
-  nodeUncordon: (cid: string, name: string) => client.post(`/clusters/${cid}/nodes/${name}/uncordon`).then((r) => r.data),
+  nodeDrain: (cid: string, name: string, data?: { force?: boolean; delete_emptydir_data?: boolean; grace_period?: number }, config?: AxiosRequestConfig) =>
+    client.post(`/clusters/${cid}/nodes/${name}/drain`, data ?? {}, config).then((r) => r.data),
+  nodeCordon: (cid: string, name: string, config?: AxiosRequestConfig) => client.post(`/clusters/${cid}/nodes/${name}/cordon`, undefined, config).then((r) => r.data),
+  nodeUncordon: (cid: string, name: string, config?: AxiosRequestConfig) => client.post(`/clusters/${cid}/nodes/${name}/uncordon`, undefined, config).then((r) => r.data),
   nodeMetrics: (cid: string) =>
     client.get<{ available: boolean; message?: string; items: Array<{ name: string; cpu_millicores: number; memory_bytes: number }> }>(`/clusters/${cid}/nodes/metrics`).then((r) => r.data),
   nodeDetail: (cid: string, name: string) => client.get<K8sNodeDetail>(`/clusters/${cid}/nodes/${name}`).then((r) => r.data),
   // 工作负载
   workloads: (cid: string, namespace = '_all') =>
     client.get<K8sWorkload[]>(`/clusters/${cid}/workloads`, { params: { namespace } }).then((r) => r.data),
-  scaleWorkload: (cid: string, kind: string, ns: string, name: string, replicas: number) =>
-    client.patch(`/clusters/${cid}/workloads/${kind}/${ns}/${name}/scale`, { replicas }).then((r) => r.data),
-  restartWorkload: (cid: string, kind: string, ns: string, name: string) =>
-    client.patch(`/clusters/${cid}/workloads/${kind}/${ns}/${name}/restart`).then((r) => r.data),
+  scaleWorkload: (cid: string, kind: string, ns: string, name: string, replicas: number, config?: AxiosRequestConfig) =>
+    client.patch(`/clusters/${cid}/workloads/${kind}/${ns}/${name}/scale`, { replicas }, config).then((r) => r.data),
+  restartWorkload: (cid: string, kind: string, ns: string, name: string, config?: AxiosRequestConfig) =>
+    client.patch(`/clusters/${cid}/workloads/${kind}/${ns}/${name}/restart`, undefined, config).then((r) => r.data),
   rolloutHistory: (cid: string, kind: string, ns: string, name: string) =>
     client.get<K8sRolloutRevision[]>(`/clusters/${cid}/workloads/${kind}/${ns}/${name}/rollout-history`).then((r) => r.data),
-  rolloutUndo: (cid: string, kind: string, ns: string, name: string, data?: { revision?: number }) =>
-    client.post(`/clusters/${cid}/workloads/${kind}/${ns}/${name}/rollout-undo`, data ?? {}).then((r) => r.data),
-  deleteWorkload: (cid: string, kind: string, ns: string, name: string) =>
-    client.delete(`/clusters/${cid}/workloads/${kind}/${ns}/${name}`).then((r) => r.data),
+  rolloutUndo: (cid: string, kind: string, ns: string, name: string, data?: { revision?: number }, config?: AxiosRequestConfig) =>
+    client.post(`/clusters/${cid}/workloads/${kind}/${ns}/${name}/rollout-undo`, data ?? {}, config).then((r) => r.data),
+  deleteWorkload: (cid: string, kind: string, ns: string, name: string, config?: AxiosRequestConfig) =>
+    client.delete(`/clusters/${cid}/workloads/${kind}/${ns}/${name}`, config).then((r) => r.data),
   // Pod
   pods: (cid: string, namespace = '_all') =>
     client.get<K8sPod[]>(`/clusters/${cid}/pods`, { params: { namespace } }).then((r) => r.data),
@@ -677,8 +684,8 @@ export const clusterDetailApi = {
       `/clusters/${cid}/pods/${ns}/${name}/logs/session`, null, { params }).then((r) => r.data),
   podDiagnostics: (cid: string, ns: string, name: string) =>
     client.get(`/clusters/${cid}/pods/${ns}/${name}/diagnostics`).then((r) => r.data),
-  deletePod: (cid: string, ns: string, name: string) =>
-    client.delete(`/clusters/${cid}/pods/${ns}/${name}`).then((r) => r.data),
+  deletePod: (cid: string, ns: string, name: string, config?: AxiosRequestConfig) =>
+    client.delete(`/clusters/${cid}/pods/${ns}/${name}`, config).then((r) => r.data),
   // 通用资源
   resources: (cid: string, kind: string, namespace = '_all', limit = 200) =>
     client.get<K8sResourceItem[]>(`/clusters/${cid}/resources`, { params: { kind, namespace, limit } })
@@ -697,30 +704,30 @@ export const clusterDetailApi = {
     client.get<{ yaml?: string; content?: string } | string>(`/clusters/${cid}/resources/${ns}/${kind}/${name}/yaml`).then((r) => r.data),
   resourceEvents: (cid: string, ns: string, kind: string, name: string) =>
     client.get<K8sResourceEvent[]>(`/clusters/${cid}/resources/${ns}/${kind}/${name}/events`).then((r) => (Array.isArray(r.data) ? r.data : (r.data as { events?: K8sResourceEvent[] }).events || [])),
-  deleteResource: (cid: string, ns: string, kind: string, name: string) =>
-    client.delete(`/clusters/${cid}/resources/${ns}/${kind}/${name}`).then((r) => r.data),
+  deleteResource: (cid: string, ns: string, kind: string, name: string, config?: AxiosRequestConfig) =>
+    client.delete(`/clusters/${cid}/resources/${ns}/${kind}/${name}`, config).then((r) => r.data),
 }
 
 // ── K8s 集群管理补全（exec/YAML/命名空间/审计/搜索/镜像/污点等） ──
 export const clusterOpsApi = {
   // Pod 终端
-  createExecSession: (cid: string, ns: string, name: string, params: { container?: string; command?: string }) =>
+  createExecSession: (cid: string, ns: string, name: string, params: { container?: string; command?: string }, config?: AxiosRequestConfig) =>
     client.post<{ session_id: string; session_token: string; ws_path: string }>(
-      `/clusters/${cid}/pods/${ns}/${name}/exec/session`, null, { params }).then((r) => r.data),
+      `/clusters/${cid}/pods/${ns}/${name}/exec/session`, null, { ...config, params }).then((r) => r.data),
   // YAML 工作台
   dryRun: (cid: string, yamlContent: string) =>
     client.post(`/clusters/${cid}/dry-run`, { yaml_content: yamlContent }).then((r) => r.data),
-  apply: (cid: string, yamlContent: string) =>
-    client.post(`/clusters/${cid}/apply`, { yaml_content: yamlContent }).then((r) => r.data),
+  apply: (cid: string, yamlContent: string, config?: AxiosRequestConfig) =>
+    client.post(`/clusters/${cid}/apply`, { yaml_content: yamlContent }, config).then((r) => r.data),
   // 命名空间
-  createNamespace: (cid: string, data: { name: string; labels?: Record<string, string>; quota_preset?: string | null }) =>
-    client.post(`/clusters/${cid}/namespaces`, data).then((r) => r.data),
+  createNamespace: (cid: string, data: { name: string; labels?: Record<string, string>; quota_preset?: string | null }, config?: AxiosRequestConfig) =>
+    client.post(`/clusters/${cid}/namespaces`, data, config).then((r) => r.data),
   namespaceUsage: (cid: string, ns: string) =>
     client.get<unknown>(`/clusters/${cid}/namespaces/${ns}/usage`).then((r) => r.data),
-  deleteNamespace: (cid: string, ns: string) =>
-    client.delete<{ message: string }>(`/clusters/${cid}/namespaces/${ns}`).then((r) => r.data),
-  patchNamespaceLabels: (cid: string, ns: string, labels: Record<string, string | null>) =>
-    client.patch<{ message: string; applied: Record<string, string> }>(`/clusters/${cid}/namespaces/${ns}/labels`, { labels }).then((r) => r.data),
+  deleteNamespace: (cid: string, ns: string, config?: AxiosRequestConfig) =>
+    client.delete<{ message: string }>(`/clusters/${cid}/namespaces/${ns}`, config).then((r) => r.data),
+  patchNamespaceLabels: (cid: string, ns: string, labels: Record<string, string | null>, config?: AxiosRequestConfig) =>
+    client.patch<{ message: string; applied: Record<string, string> }>(`/clusters/${cid}/namespaces/${ns}/labels`, { labels }, config).then((r) => r.data),
   // 审计与搜索
   auditLogs: (cid: string, params: {
     limit?: number
@@ -751,28 +758,28 @@ export const clusterOpsApi = {
   patchNodeTaints: (cid: string, name: string, taints: Array<{ key: string; value?: string; effect: string }>, config?: AxiosRequestConfig) =>
     client.patch(`/clusters/${cid}/nodes/${name}/taints`, { taints }, config).then((r) => r.data),
   // 工作负载增强
-  setWorkloadImage: (cid: string, kind: string, ns: string, name: string, images: Array<{ name: string; image: string }>) =>
-    client.patch(`/clusters/${cid}/workloads/${kind}/${ns}/${name}/set-image`, { images }).then((r) => r.data),
-  toggleWorkloadPause: (cid: string, kind: string, ns: string, name: string, paused: boolean) =>
-    client.patch(`/clusters/${cid}/workloads/${kind}/${ns}/${name}/pause`, { paused }).then((r) => r.data),
+  setWorkloadImage: (cid: string, kind: string, ns: string, name: string, images: Array<{ name: string; image: string }>, config?: AxiosRequestConfig) =>
+    client.patch(`/clusters/${cid}/workloads/${kind}/${ns}/${name}/set-image`, { images }, config).then((r) => r.data),
+  toggleWorkloadPause: (cid: string, kind: string, ns: string, name: string, paused: boolean, config?: AxiosRequestConfig) =>
+    client.patch(`/clusters/${cid}/workloads/${kind}/${ns}/${name}/pause`, { paused }, config).then((r) => r.data),
   rolloutStatus: (cid: string, kind: string, ns: string, name: string) =>
     client.get<K8sRolloutStatus>(`/clusters/${cid}/workloads/${kind}/${ns}/${name}/rollout-status`).then((r) => r.data),
   // CronJob
-  triggerCronjob: (cid: string, ns: string, name: string) =>
-    client.post(`/clusters/${cid}/cronjobs/${ns}/${name}/trigger`).then((r) => r.data),
-  suspendCronjob: (cid: string, ns: string, name: string, suspend: boolean) =>
-    client.patch(`/clusters/${cid}/cronjobs/${ns}/${name}/suspend`, null, { params: { suspend } }).then((r) => r.data),
+  triggerCronjob: (cid: string, ns: string, name: string, config?: AxiosRequestConfig) =>
+    client.post(`/clusters/${cid}/cronjobs/${ns}/${name}/trigger`, undefined, config).then((r) => r.data),
+  suspendCronjob: (cid: string, ns: string, name: string, suspend: boolean, config?: AxiosRequestConfig) =>
+    client.patch(`/clusters/${cid}/cronjobs/${ns}/${name}/suspend`, null, { ...config, params: { suspend } }).then((r) => r.data),
   cronjobJobs: (cid: string, ns: string, name: string) =>
     client.get<K8sCronJobRun[]>(`/clusters/${cid}/cronjobs/${ns}/${name}/jobs`).then((r) => r.data),
   // 资源增强
-  resizePvc: (cid: string, ns: string, name: string, newSize: string) =>
-    client.patch(`/clusters/${cid}/pvc/${ns}/${name}/resize`, null, { params: { new_size: newSize } }).then((r) => r.data),
+  resizePvc: (cid: string, ns: string, name: string, newSize: string, config?: AxiosRequestConfig) =>
+    client.patch(`/clusters/${cid}/pvc/${ns}/${name}/resize`, null, { ...config, params: { new_size: newSize } }).then((r) => r.data),
   ingressTlsStatus: (cid: string, ns: string, name: string) =>
     client.get<IngressTlsStatusItem>(`/clusters/${cid}/ingress/${ns}/${name}/tls-status`).then((r) => r.data),
   resourceEditForm: (cid: string, ns: string, kind: string, name: string) =>
     client.get(`/clusters/${cid}/resources/${ns}/${kind}/${name}/edit`).then((r) => r.data),
-  patchResourceEdit: (cid: string, ns: string, kind: string, name: string, body: Record<string, unknown>) =>
-    client.patch(`/clusters/${cid}/resources/${ns}/${kind}/${name}/edit`, body).then((r) => r.data),
+  patchResourceEdit: (cid: string, ns: string, kind: string, name: string, body: Record<string, unknown>, config?: AxiosRequestConfig) =>
+    client.patch(`/clusters/${cid}/resources/${ns}/${kind}/${name}/edit`, body, config).then((r) => r.data),
   resourceRelated: (cid: string, ns: string, kind: string, name: string) =>
     client.get<unknown>(`/clusters/${cid}/resources/${ns}/${kind}/${name}/related`).then((r) => r.data),
   // SSE 实时 Watch（token 走 URL，流由组件自行 fetch）
@@ -787,7 +794,7 @@ export const wireguardApi = {
     client.post<import('@/types/api').WgNetwork>('/wireguard/networks', data).then((r) => r.data),
   updateNetwork: (id: number, data: Partial<import('@/types/api').WgNetworkPayload>) =>
     client.put<import('@/types/api').WgNetwork>(`/wireguard/networks/${id}`, data).then((r) => r.data),
-  deleteNetwork: (id: number) => client.delete(`/wireguard/networks/${id}`).then((r) => r.data),
+  deleteNetwork: (id: number, config?: AxiosRequestConfig) => client.delete(`/wireguard/networks/${id}`, config).then((r) => r.data),
   byAsset: (assetId: string) =>
     client.get<Record<string, unknown>>(`/wireguard/by-asset/${encodeURIComponent(assetId)}`).then((r) => r.data),
   networkStatus: (id: number) =>
@@ -796,6 +803,11 @@ export const wireguardApi = {
     client.get<any>(`/wireguard/networks/${id}/status`).then((r) => r.data),
   serverConfig: (id: number) =>
     client.get<{ network: import('@/types/api').WgNetwork; config: string }>(`/wireguard/networks/${id}/server-config`).then((r) => r.data),
+  downloadServerConfig: (id: number) =>
+    client.get<Blob>(`/wireguard/networks/${id}/server-config`, {
+      params: { download: 1 },
+      responseType: 'blob',
+    }),
   serverInstallScript: (id: number) =>
     client.get<{ script: string }>(`/wireguard/networks/${id}/server-install-script`).then((r) => r.data),
   listPeers: (networkId: number) =>
@@ -804,7 +816,7 @@ export const wireguardApi = {
     client.post<import('@/types/api').WgPeer>(`/wireguard/networks/${networkId}/peers`, data).then((r) => r.data),
   updatePeer: (peerId: number, data: { enabled?: boolean; remark?: string }) =>
     client.patch<import('@/types/api').WgPeer>(`/wireguard/peers/${peerId}`, data).then((r) => r.data),
-  deletePeer: (peerId: number) => client.delete(`/wireguard/peers/${peerId}`).then((r) => r.data),
+  deletePeer: (peerId: number, config?: AxiosRequestConfig) => client.delete(`/wireguard/peers/${peerId}`, config).then((r) => r.data),
   peerBundle: (peerId: number) =>
     client.get<import('@/types/api').WgPeerBundle>(`/wireguard/peers/${peerId}/config`).then((r) => r.data),
 }
@@ -824,7 +836,9 @@ export const dbApi = {
     client.post<import('@/types/api').DbTicket>('/db/tickets', data).then((r) => r.data),
   reviewTicket: (id: number, data: { decision: 'approve' | 'reject'; note?: string }) =>
     client.post<import('@/types/api').DbTicket>(`/db/tickets/${id}/review`, data).then((r) => r.data),
-  executeTicket: (id: number) => client.post<import('@/types/api').DbTicket>(`/db/tickets/${id}/execute`).then((r) => r.data),
+  executeTicket: (id: number, config?: AxiosRequestConfig) => client.post<import('@/types/api').DbTicket>(`/db/tickets/${id}/execute`, undefined, config).then((r) => r.data),
+  downloadRollback: (id: number) =>
+    client.get<Blob>(`/db/tickets/${id}/rollback`, { responseType: 'blob' }),
   runQuery: (data: { instance_id: number; sql_text: string; database?: string }) =>
     client.post<import('@/types/api').DbQueryResult>('/db/query', data).then((r) => r.data),
   listQueryLogs: (limit = 50) =>

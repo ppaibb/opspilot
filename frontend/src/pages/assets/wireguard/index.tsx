@@ -26,10 +26,12 @@ import {
   SyncOutlined, RocketOutlined, MoreOutlined,
 } from '@ant-design/icons'
 import { assetsApi, toolsApi, wireguardApi } from '@/api'
+import { riskTicketConfig } from '@/api/client'
 import { usePermission, useRiskConfirm, extractAxiosDetail } from '@/hooks/usePermission'
 import { useCrudResource } from '@/hooks/useCrudResource'
 import type { WgNetwork, WgNetworkPayload, WgPeer, WgPeerPayload } from '@/types/api'
 import type { MessageInstance } from 'antd/es/message/interface'
+import { downloadBlob, getDownloadErrorMessage } from '@/utils/download'
 
 const { Text } = Typography
 
@@ -174,12 +176,12 @@ function PeerConfigModal({ peerId, onClose }: { peerId: number | null; onClose: 
   const riskConfirm = useRiskConfirm()
   const canExecute = has('action.tools.scripts.execute')
   const installMutation = useMutation({
-    mutationFn: () =>
+    mutationFn: (ticket: string) =>
       toolsApi.runTask({
         asset_ids: [bundle!.peer.asset_id],
         module: 'shell',
         module_args: bundle!.install_script,
-      }),
+      }, riskTicketConfig(ticket)),
     onSuccess: (result) => {
       if (result?.ok) message.success(`远程安装完成（${result.target_count} 台，耗时 ${(result.duration_ms / 1000).toFixed(1)}s），可刷新状态验证握手`)
       else message.warning(`执行退出码 ${result?.code}，详见输出`)
@@ -211,7 +213,7 @@ function PeerConfigModal({ peerId, onClose }: { peerId: number | null; onClose: 
               <Button type="primary" ghost icon={<RocketOutlined />}
                 loading={installMutation.isPending}
                 disabled={!canExecute}
-                onClick={() => riskConfirm.confirm('scripts:execute', () => installMutation.mutate())}>
+                onClick={() => riskConfirm.confirm('scripts:execute', (ticket) => installMutation.mutate(ticket))}>
                 远程安装到主机
               </Button>
             </Tooltip>
@@ -283,7 +285,18 @@ function PeerConfigModal({ peerId, onClose }: { peerId: number | null; onClose: 
 // ───────────────────────── 成员管理抽屉 ─────────────────────────
 
 function PeersDrawer({ network, onClose }: { network: WgNetwork | null; onClose: () => void }) {
-  const { message } = App.useApp()
+  const { message, modal } = App.useApp()
+
+  /** 服务端配置属于敏感凭据，必须通过认证客户端获取后再保存。 */
+  const downloadServerConfig = async () => {
+    if (!network) return
+    try {
+      const response = await wireguardApi.downloadServerConfig(network.id)
+      downloadBlob(response.data, 'wg0.conf', response.headers['content-disposition'])
+    } catch (error) {
+      message.error(await getDownloadErrorMessage(error, '服务端配置下载失败'))
+    }
+  }
   const queryClient = useQueryClient()
   const { has } = usePermission()
   const riskConfirm = useRiskConfirm()
@@ -332,7 +345,8 @@ function PeersDrawer({ network, onClose }: { network: WgNetwork | null; onClose:
   })
 
   const deleteMutation = useMutation({
-    mutationFn: (peer: WgPeer) => wireguardApi.deletePeer(peer.id),
+    mutationFn: ({ peer, ticket }: { peer: WgPeer; ticket: string }) =>
+      wireguardApi.deletePeer(peer.id, riskTicketConfig(ticket)),
     onSuccess: () => { message.success('成员已删除；请重新下载服务端配置并重载生效'); invalidate() },
     onError: (error: unknown) => message.error(extractAxiosDetail(error) ?? '删除失败'),
   })
@@ -380,11 +394,11 @@ function PeersDrawer({ network, onClose }: { network: WgNetwork | null; onClose:
         ]
         const onMore: MenuProps['onClick'] = ({ key }) => {
           if (key !== 'delete') return
-          Modal.confirm({
+          modal.confirm({
             title: `删除成员 ${record.name}`,
             content: '成员配置将随之失效，确定继续？',
             okText: '删除', okButtonProps: { danger: true }, cancelText: '取消',
-            onOk: () => riskConfirm.confirm('wireguard:delete', () => deleteMutation.mutate(record)),
+            onOk: () => riskConfirm.confirm('wireguard:delete', (ticket) => deleteMutation.mutate({ peer: record, ticket })),
           })
         }
         return (
@@ -448,7 +462,7 @@ function PeersDrawer({ network, onClose }: { network: WgNetwork | null; onClose:
             </Descriptions>
             <Space>
               <Button size="small" icon={<DownloadOutlined />}
-                onClick={() => window.open(`/api/wireguard/networks/${network?.id}/server-config?download=1`)}>
+                onClick={() => void downloadServerConfig()}>
                 下载 wg0.conf
               </Button>
               <ServerScriptButton networkId={network?.id || 0} />
@@ -646,7 +660,7 @@ export default function WireGuardPage() {
                     title={`删除组网 ${network.name}？`}
                     description="将连带删除全部成员记录；服务器上的 wg 接口请自行卸载。"
                     okText="删除" okButtonProps={{ danger: true }} cancelText="取消"
-                    onConfirm={() => riskConfirm.confirm('wireguard:delete', () => deleteNetworkMut.mutate(network.id))}
+                    onConfirm={() => riskConfirm.confirm('wireguard:delete', (ticket) => deleteNetworkMut.mutate({ id: network.id, riskTicket: ticket }))}
                     disabled={!canManage}
                   >
                     <Button size="small" type="text" danger icon={<DeleteOutlined />} disabled={!canManage} />

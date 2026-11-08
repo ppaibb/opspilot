@@ -116,7 +116,7 @@ export default function AlertsPage() {
     retry: false,
   })
 
-  const alerts = data?.alerts || []
+  const alerts = useMemo(() => data?.alerts ?? [], [data?.alerts])
 
   // 活动 + 历史归一成公共行，供三个 Tab 过滤
   const allRows = useMemo<AlertListRow[]>(() => {

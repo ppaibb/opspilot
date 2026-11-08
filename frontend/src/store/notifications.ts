@@ -60,6 +60,15 @@ interface NotificationState {
 const MAX_STREAM_FAILURES = 3
 /** SSE 失败后的重连退避间隔（毫秒），重连前需重新取票 */
 const STREAM_RETRY_DELAY_MS = 30_000
+const LOCAL_NOTIFICATION_TTL_MS = 10 * 60_000
+const MAX_LOCAL_NOTIFICATIONS = 20
+
+function activeLocalNotifications(items: AppNotification[]): AppNotification[] {
+  const cutoff = Date.now() - LOCAL_NOTIFICATION_TTL_MS
+  return items
+    .filter((item) => item.id.startsWith('local-') && Date.parse(item.createdAt) >= cutoff)
+    .slice(0, MAX_LOCAL_NOTIFICATIONS)
+}
 
 function countUnread(items: AppNotification[]): number {
   return items.filter((i) => !i.isRead).length
@@ -78,7 +87,7 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
       const serverItems = res.items.map(fromApi)
       // 保留本地即时通知（local- 前缀，后端尚未落库的），与后端结果合并，避免被覆盖
       set((state) => {
-        const localOnly = state.items.filter((i) => i.id.startsWith('local-'))
+        const localOnly = activeLocalNotifications(state.items)
         const merged = [...localOnly, ...serverItems]
         return {
           items: merged,
@@ -101,6 +110,7 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
   },
 
   markRead: async (id) => {
+    const previous = get().items.find((item) => item.id === id)
     set((state) => {
       const items = state.items.map((i) => (i.id === id ? { ...i, isRead: true } : i))
       return { items, unreadCount: countUnread(items) }
@@ -110,7 +120,12 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
     try {
       await notificationsApi.markRead(id)
     } catch {
-      get().refreshUnread()
+      if (previous) {
+        set((state) => {
+          const items = state.items.map((item) => item.id === id ? previous : item)
+          return { items, unreadCount: countUnread(items) }
+        })
+      }
     }
   },
 
@@ -145,7 +160,7 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
         isRead: false,
         createdAt: new Date().toISOString(),
       }
-      const items = [item, ...state.items]
+      const items = [item, ...activeLocalNotifications(state.items), ...state.items.filter((entry) => !entry.id.startsWith('local-'))]
       return { items, unreadCount: countUnread(items) }
     }),
 

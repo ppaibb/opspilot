@@ -81,6 +81,22 @@ GUARD_REGISTRY: list[tuple[str, str, str, str, str, str, str]] = [
      "action.apps.config.manage", "rollback", "新增"),
     ("app.api.settings", "POST", "/users/{user_id}/reset-password", "users:reset-password",
      "action.settings.users.manage", "reset-password", "新增"),
+    ("app.api.assets", "POST", "/terminal/exec", "hosts:exec",
+     "action.assets.hosts.connect", "exec", "新增"),
+    ("app.api.assets", "POST", "/terminal/session", "hosts:exec_session",
+     "action.assets.hosts.connect", "exec_session", "新增"),
+    ("app.api.clusters.pods", "POST", "/{cluster_id}/pods/{namespace}/{name}/exec/session", "clusters:exec_session",
+     "action.assets.clusters.manage", "exec_session", "新增"),
+    ("app.api.database", "POST", "/tickets/{ticket_id}/execute", "db:execute",
+     "action.db.execute", "execute", "新增"),
+    ("app.api.monitoring.routes", "POST", "/targets/{asset_id}/uninstall-alloy", "hosts:uninstall_collector",
+     "action.assets.hosts.monitoring", "uninstall_collector", "新增"),
+    ("app.api.application_routes.runtime", "POST", "/{app_id}/components/batch-delete", "apps:batch_delete_components",
+     "action.apps.manage", "batch_delete_components", "新增"),
+    ("app.api.application_routes.runtime", "POST", "/{app_id}/components/{component_id}/actions", "apps:control_component",
+     "action.apps.control", "control_component", "新增"),
+    ("app.api.notifications", "POST", "/clear", "dashboard:clear_notifications",
+     "module.dashboard", "clear_notifications", "新增"),
 ]
 
 # clusters 既有守卫的合法动作全集（action.assets.clusters.manage）。
@@ -88,6 +104,7 @@ CLUSTERS_EXPECTED_ACTIONS = {
     "delete", "edit", "apply", "drain", "restart", "rollout-undo", "pause",
     "trigger_cronjob", "create_namespace", "patch_labels", "patch_taints",
     "cordon", "uncordon", "set-image", "suspend_cronjob", "resize_pvc",
+    "exec_session",
 }
 
 

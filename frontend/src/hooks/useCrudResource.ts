@@ -1,7 +1,9 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import type { QueryKey } from '@tanstack/react-query'
+import type { AxiosRequestConfig } from 'axios'
 import { App } from 'antd'
 import { extractAxiosDetail } from './usePermission'
+import { riskTicketConfig } from '@/api/client'
 
 /**
  * 通用 CRUD 资源 Hook。
@@ -26,9 +28,9 @@ export interface UseCrudResourceOptions<TCreate, TUpdate, TId> {
   queryKey: QueryKey
   /** 实体中文名，用于 toast 文案，如「虚拟机」 */
   entityName: string
-  createFn: (data: TCreate) => Promise<unknown>
-  updateFn: (id: TId, data: TUpdate) => Promise<unknown>
-  deleteFn: (id: TId) => Promise<unknown>
+  createFn: (data: TCreate, config?: AxiosRequestConfig) => Promise<unknown>
+  updateFn: (id: TId, data: TUpdate, config?: AxiosRequestConfig) => Promise<unknown>
+  deleteFn: (id: TId, config?: AxiosRequestConfig) => Promise<unknown>
   /** 额外需要一并失效的查询 key（可选） */
   extraInvalidateKeys?: QueryKey[]
   /** 保存成功回调（通常用于关闭抽屉） */
@@ -48,8 +50,13 @@ export function useCrudResource<TCreate, TId = string, TUpdate = TCreate>(
   }
 
   const saveMut = useMutation({
-    mutationFn: ({ id, data }: { id?: TId; data: TCreate | TUpdate }) =>
-      id != null ? updateFn(id, data as TUpdate) : createFn(data as TCreate),
+    mutationFn: ({ id, data, riskTicket }: { id?: TId; data: TCreate | TUpdate; riskTicket?: string }) => {
+      const config = riskTicket ? riskTicketConfig(riskTicket) : undefined
+      if (id != null) {
+        return config ? updateFn(id, data as TUpdate, config) : updateFn(id, data as TUpdate)
+      }
+      return config ? createFn(data as TCreate, config) : createFn(data as TCreate)
+    },
     onSuccess: (_res, variables) => {
       invalidate()
       onSaved?.()
@@ -59,7 +66,11 @@ export function useCrudResource<TCreate, TId = string, TUpdate = TCreate>(
   })
 
   const deleteMut = useMutation({
-    mutationFn: (id: TId) => deleteFn(id),
+    mutationFn: (variable: TId | { id: TId; riskTicket: string }) => {
+      const explicit = typeof variable === 'object' && variable !== null && 'riskTicket' in variable
+      const id = explicit ? variable.id : variable as TId
+      return explicit ? deleteFn(id, riskTicketConfig(variable.riskTicket)) : deleteFn(id)
+    },
     onSuccess: () => {
       invalidate()
       message.success(`${entityName}删除成功`)

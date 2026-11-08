@@ -704,7 +704,14 @@ def create_pod_logs_ws_session(
 
 @router.post(
     "/{cluster_id}/pods/{namespace}/{name}/exec/session",
-    dependencies=[Depends(require_permissions("action.assets.clusters.manage"))],
+    dependencies=[
+        Depends(require_permissions("action.assets.clusters.manage")),
+        Depends(require_risk_ack(
+            "action.assets.clusters.manage",
+            "exec_session",
+            resource_params=("cluster_id", "namespace", "name"),
+        )),
+    ],
 )
 def create_pod_exec_ws_session(
     cluster_id: str,

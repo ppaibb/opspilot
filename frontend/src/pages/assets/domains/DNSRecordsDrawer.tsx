@@ -4,6 +4,7 @@ import type { ColumnsType } from 'antd/es/table'
 import { DeleteOutlined, EditOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { domainsApi } from '@/api'
+import { riskTicketConfig } from '@/api/client'
 import { extractAxiosDetail, usePermission, useRiskConfirm } from '@/hooks/usePermission'
 import type { DomainDNSRecordCreate, DomainDNSRecordResponse, DomainProviderItem, DomainResponse } from '@/types/api'
 import { buildRecordPayload } from './providerForm'
@@ -43,7 +44,7 @@ export default function DNSRecordsDrawer({ domain, providers, onClose }: {
     onSuccess: () => { refresh(); setFormOpen(false); message.success('解析记录已保存') },
     onError: (error) => message.error(extractAxiosDetail(error) ?? '保存失败'),
   })
-  const deleteMutation = useMutation({ mutationFn: (id: number) => domainsApi.deleteRecord(domain.id, id),
+  const deleteMutation = useMutation({ mutationFn: ({ id, ticket }: { id: number; ticket: string }) => domainsApi.deleteRecord(domain.id, id, riskTicketConfig(ticket)),
     onSuccess: () => { refresh(); message.success('解析记录已删除') },
     onError: (error) => message.error(extractAxiosDetail(error) ?? '删除失败') })
   const openForm = (record: DomainDNSRecordResponse | null) => {
@@ -68,8 +69,8 @@ export default function DNSRecordsDrawer({ domain, providers, onClose }: {
         <Tooltip title={row.read_only ? '该记录只读' : '编辑'}>
           <Button aria-label="编辑解析记录" size="small" icon={<EditOutlined />} disabled={row.read_only || deleteMutation.isPending} onClick={() => openForm(row)} />
         </Tooltip>
-        <Popconfirm title="删除该云端解析记录？" disabled={row.read_only} onConfirm={() => confirm('domains:delete', () => deleteMutation.mutate(row.id))}>
-          <Button aria-label="删除解析记录" size="small" danger icon={<DeleteOutlined />} disabled={row.read_only} loading={deleteMutation.isPending && deleteMutation.variables === row.id} />
+        <Popconfirm title="删除该云端解析记录？" disabled={row.read_only} onConfirm={() => confirm('domains:delete', (ticket) => deleteMutation.mutate({ id: row.id, ticket }))}>
+          <Button aria-label="删除解析记录" size="small" danger icon={<DeleteOutlined />} disabled={row.read_only} loading={deleteMutation.isPending && deleteMutation.variables?.id === row.id} />
         </Popconfirm>
       </Space>
     ) }] : []),

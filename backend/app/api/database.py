@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 
 from app.core.crypto import decrypt_secret, encrypt_secret
 from app.core.rbac import normalize_role_name
-from app.core.security import get_current_user, require_permissions
+from app.core.security import get_current_user, require_permissions, require_risk_ack
 from app.db.database import get_db
 from app.models.database import DbInstance, DbQueryGrant, DbQueryLog, DbTicket
 from app.models.user import User
@@ -640,7 +640,14 @@ def _claim_ticket_for_execution(db: Session, ticket_id: int) -> DbTicket:
     return ticket
 
 
-@router.post("/tickets/{ticket_id}/execute")
+@router.post(
+    "/tickets/{ticket_id}/execute",
+    dependencies=[Depends(require_risk_ack(
+        "action.db.execute",
+        "execute",
+        resource_params=("ticket_id",),
+    ))],
+)
 def execute_ticket(ticket_id: int, db: Session = Depends(get_db),
                    current_user: User = Depends(require_permissions("action.db.execute"))):
     """执行已批准工单：逐条执行并记录结果；执行人需具备执行权限（与提交/审批分权）。

@@ -161,7 +161,7 @@ export default function ClustersPage() {
               title: `解除纳管 ${r.name}`,
               content: '将从 OpsPilot 移除该集群，不会影响真实集群。确定继续？',
               okText: '解除', okButtonProps: { danger: true }, cancelText: '取消',
-              onOk: () => confirm('clusters:delete', () => deleteMut.mutate(r.cluster_id)),
+              onOk: () => confirm('clusters:delete', (ticket) => deleteMut.mutate({ id: r.cluster_id, riskTicket: ticket })),
             })
           }
         }
@@ -296,7 +296,7 @@ export default function ClustersPage() {
           <Button type="primary" loading={saveMut.isPending} onClick={() =>
             // 后端集群编辑挂 edit 守卫动作，需确认 + 一次性票据
             editForm.validateFields().then((v) =>
-              confirm('clusters:edit', () => saveMut.mutate({ id: editingCluster!.cluster_id, data: v }))
+              confirm('clusters:edit', (ticket) => saveMut.mutate({ id: editingCluster!.cluster_id, data: v, riskTicket: ticket }))
             )
           }>保存</Button>
         }

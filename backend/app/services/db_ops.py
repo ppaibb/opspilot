@@ -662,6 +662,8 @@ def build_rollback_inserts(
         if value is None:
             return "NULL"
         if isinstance(value, bool):
+            if str(db_type or "").lower().startswith("postgres"):
+                return "TRUE" if value else "FALSE"
             return "1" if value else "0"
         if isinstance(value, (int, float)):
             return str(value)

@@ -9,6 +9,7 @@
 """
 
 import os
+import re
 import socket
 
 from app.core.config import settings
@@ -20,6 +21,23 @@ from app.models.user import User
 
 # 本机主机固定 instance_id，确保幂等
 LOCAL_HOST_INSTANCE_ID = "ins-localhost"
+
+
+def _validate_initial_admin_password(username: str, password: str) -> None:
+    """拒绝短口令、常见口令以及字符类别过少的初始化密码。"""
+    classes = sum(
+        bool(pattern.search(password))
+        for pattern in (
+            re.compile(r"[a-z]"),
+            re.compile(r"[A-Z]"),
+            re.compile(r"\d"),
+            re.compile(r"[^A-Za-z0-9]"),
+        )
+    )
+    common = {"password", "password123", "admin123", "admin123456", "1234567890"}
+    lowered = password.lower()
+    if len(password) < 10 or classes < 3 or lowered in common or lowered == username.lower():
+        raise ValueError("初始化管理员密码过弱：至少 10 位且包含三类字符，且不能使用常见口令")
 
 
 def ensure_bootstrap_admin() -> None:
@@ -56,21 +74,12 @@ def ensure_bootstrap_admin() -> None:
         role = normalize_role_name(settings.INIT_ADMIN_ROLE or "管理员") or "管理员"
         existing_user = db.query(User).filter(User.username == username).first()
         if existing_user:
-            changed = False
-            if normalize_role_name(existing_user.role) != role:
-                # 只补齐引导账号角色，不重置密码，避免部署重启破坏用户密码。
-                existing_user.role = role
-                existing_user.permission_overrides = ""
-                changed = True
-            if getattr(existing_user, "status", "active") != "active":
-                existing_user.status = "active"
-                changed = True
-            if changed:
-                db.commit()
-                print(f"[OpsPilot] 已补齐管理员账号 {username} 的权限配置。")
-            else:
-                print(f"[OpsPilot] 管理员账号 {username} 已存在，跳过初始化。")
+            # Bootstrap 只负责首次创建。已有同名账号的角色、状态、权限覆盖和
+            # 密码均属于管理员维护数据，重启绝不能把禁用账号重新激活。
+            print(f"[OpsPilot] 管理员账号 {username} 已存在，跳过初始化。")
             return
+
+        _validate_initial_admin_password(username, password)
 
         email = (settings.INIT_ADMIN_EMAIL or f"{username}@opspilot.local").strip()
         display_name = (settings.INIT_ADMIN_NAME or "系统管理员").strip() or "系统管理员"
@@ -176,7 +185,22 @@ def ensure_monitoring_config() -> None:
     try:
         row = db.query(SystemConfig).filter(SystemConfig.config_key == CONFIG_KEY).first()
         if row and str(row.config_value or "").strip():
-            return  # 已配置，不覆盖人工修改
+            # 安全升级只迁移由旧安装脚本生成的标准裸端口 URL；管理员手工
+            # 配置的域名、TLS 地址或非标准端口绝不覆盖。
+            content = json.loads(row.config_value)
+            changed = migrate_managed_grafana_url(
+                content,
+                monitoring_host=os.environ.get("MONITORING_HOST", ""),
+                target_url=os.environ.get("GRAFANA_URL", ""),
+            )
+            if changed:
+                from datetime import datetime
+
+                row.config_value = json.dumps(content, ensure_ascii=False)
+                row.updated_at = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+                db.commit()
+                print("[OpsPilot] 已将系统生成的 Grafana 地址迁入内部网络。")
+            return
 
         host = os.environ.get("MONITORING_HOST", "").strip().rstrip("/")
         if host and not host.startswith("http"):
@@ -225,3 +249,28 @@ def ensure_monitoring_config() -> None:
         print(f"[OpsPilot] 监控连接初始化失败（可在系统设置里手动配置）: {exc}")
     finally:
         db.close()
+
+
+def migrate_managed_grafana_url(
+    config: dict,
+    *,
+    monitoring_host: str,
+    target_url: str,
+) -> bool:
+    """把旧安装器生成的 Grafana 裸端口地址迁到内部网络。
+
+    仅当当前值逐字符等于 ``MONITORING_HOST:3000`` 时才修改，以此区分系统
+    默认值与管理员手工配置。函数原地更新配置并返回是否发生变化。
+    """
+    host = str(monitoring_host or "").strip().rstrip("/")
+    target = str(target_url or "").strip().rstrip("/")
+    if not host or not target:
+        return False
+    if not host.startswith(("http://", "https://")):
+        host = f"http://{host}"
+    legacy_url = f"{host}:3000"
+    current_url = str(config.get("grafana_url") or "").strip().rstrip("/")
+    if current_url != legacy_url or current_url == target:
+        return False
+    config["grafana_url"] = target
+    return True

@@ -3,7 +3,7 @@
 验证阶段2会话安全：
 1. 正常登录签发的 token 携带 ver claim，且能通过 get_current_user 校验；
 2. token_version 递增后（重置密码 / 禁用账号），旧 token 立即 401；
-3. 没有 ver claim 的历史 token 视为版本 0，对老用户保持兼容；
+3. 没有 exp/type 的历史 token 必须失效，升级后要求重新登录；
 4. ver claim 与当前版本不等的任何伪造 token 一律 401。
 
 不使用 TestClient：直接调用路由函数（与 test_risk_ticket_contract.py 同风格）。
@@ -15,7 +15,7 @@ from types import SimpleNamespace
 os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
 
 from fastapi import HTTPException
-from jose import jwt
+import jwt
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -24,13 +24,22 @@ from app.core.passwords import hash_password
 from app.core.security import _check_token_version, get_current_user
 from app.db.database import Base
 from app.models.risk_ticket import RiskAckTicket
+from app.models.refresh_token import LoginAttempt, RefreshToken
 from app.models.user import User
 
 from app.api import auth
 from app.api import settings as settings_api
 
 engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
-Base.metadata.create_all(bind=engine, tables=[User.__table__, RiskAckTicket.__table__])
+Base.metadata.create_all(
+    bind=engine,
+    tables=[
+        User.__table__,
+        RiskAckTicket.__table__,
+        RefreshToken.__table__,
+        LoginAttempt.__table__,
+    ],
+)
 TestingSession = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
 PASSWORD = "original-pass-123"
@@ -55,6 +64,8 @@ class TokenRevocationContract(unittest.TestCase):
 
     def setUp(self):
         self.db = TestingSession()
+        self.db.query(RefreshToken).delete()
+        self.db.query(LoginAttempt).delete()
         self.db.query(User).delete()
         self.db.commit()
         self.user = User(
@@ -160,15 +171,16 @@ class TokenRevocationContract(unittest.TestCase):
         self.db.refresh(self.user)
         self.assertEqual(self.user.token_version or 0, version_before)
 
-    def test_legacy_token_without_ver_claim_still_works(self):
-        """历史 token 没有 ver claim，按版本 0 处理，对老用户保持兼容。"""
+    def test_legacy_token_without_exp_and_type_is_rejected(self):
+        """历史无限期 token 不再兼容，升级后必须重新登录。"""
         legacy = jwt.encode(
             {"sub": "alice", "role": "运维"},
             settings.SECRET_KEY,
             algorithm=settings.ALGORITHM,
         )
-        current = get_current_user(token=legacy, db=self.db)
-        self.assertEqual(current.id, self.user.id)
+        with self.assertRaises(HTTPException) as ctx:
+            get_current_user(token=legacy, db=self.db)
+        self.assertEqual(ctx.exception.status_code, 401)
 
     def test_forged_ver_claim_is_rejected(self):
         """伪造更高版本的 ver claim 一律 401；脏值同样不放行。"""

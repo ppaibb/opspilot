@@ -12,18 +12,18 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from jose import JWTError, jwt
 from pydantic import BaseModel, Field
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 from starlette.responses import StreamingResponse
 
-from app.core.config import settings
+from app.core.tokens import TokenValidationError, decode_jwt, encode_jwt
 from app.core.security import (
     SSE_TICKET_SCOPE,
     _check_token_version,
     get_current_user,
     normalize_user_status,
+    require_risk_ack,
 )
 from app.db.database import get_db
 from app.models.notification import UserNotification
@@ -294,7 +294,10 @@ def delete_notification(
     return {"ok": True}
 
 
-@router.post("/clear")
+@router.post(
+    "/clear",
+    dependencies=[Depends(require_risk_ack("module.dashboard", "clear_notifications"))],
+)
 def clear_notifications(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -330,16 +333,14 @@ def issue_stream_ticket(
     if normalize_user_status(getattr(current_user, "status", "active")) != "active":
         raise HTTPException(status_code=403, detail="当前账号已被禁用，无法领取 SSE 票据")
     expires = datetime.utcnow() + timedelta(seconds=SSE_TICKET_TTL_SECONDS)
-    ticket = jwt.encode(
+    ticket = encode_jwt(
         {
             "sub": current_user.username,
             "scope": SSE_TICKET_SCOPE,
             # 会话版本号：重置密码/禁用后已领取的票据同样失效。
             "ver": int(getattr(current_user, "token_version", 0) or 0),
             "exp": expires,
-        },
-        settings.SECRET_KEY,
-        algorithm=settings.ALGORITHM,
+        }
     )
     return {"ticket": ticket, "expires_in": SSE_TICKET_TTL_SECONDS}
 
@@ -352,8 +353,8 @@ def _verify_sse_ticket(ticket: str, db: Session) -> User:
     """
     credentials_exception = HTTPException(status_code=401, detail="SSE 票据无效或已过期")
     try:
-        payload = jwt.decode(ticket, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
-    except JWTError:
+        payload = decode_jwt(ticket)
+    except TokenValidationError:
         raise credentials_exception
     if str(payload.get("scope") or "") != SSE_TICKET_SCOPE:
         raise credentials_exception

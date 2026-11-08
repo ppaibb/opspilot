@@ -19,10 +19,12 @@ from sqlalchemy.orm import Session
 import requests
 
 from app.core.crypto import decrypt_secret
+from app.core.outbound_policy import OutboundPolicyError, outbound_request
 from app.core.security import get_current_user, require_permissions, require_risk_ack
 from app.db.database import get_db
 from app.models.asset import DomainRecord, DomainDNSRecord
 from app.models.credential import Credential
+from app.models.resource_group_member import RESOURCE_TYPE_DOMAIN, ResourceGroupMember
 from app.models.user import User
 from app.services.credential_access import ensure_credential_access, filter_credentials_for_user
 from app.services import domain_resources
@@ -121,6 +123,7 @@ class DomainCreate(BaseModel):
 class DomainUpdate(BaseModel):
     account_id: str | None = None
     provider: str | None = None
+    dns_credential: str | None = None
     remark: str = ""
     expires_at: str = ""
     expire_reminder_days: int = 30
@@ -318,7 +321,7 @@ def query_rdap_expiration(domain: str) -> str | None:
     url = f"https://rdap.org/domain/{domain.strip().lower()}"
     headers = {"Accept": "application/json"}
     try:
-        resp = requests.get(url, headers=headers, timeout=6, allow_redirects=True)
+        resp = outbound_request("GET", url, headers=headers, timeout=6)
         if resp.status_code < 400:
             payload = resp.json()
             if isinstance(payload, dict):
@@ -337,8 +340,10 @@ def query_rdap_expiration(domain: str) -> str | None:
                                 return datetime.strptime(t_str, "%Y-%m-%d").strftime("%Y-%m-%d")
                             except Exception:
                                 pass
-    except Exception:
-        pass
+    except OutboundPolicyError as exc:
+        logging.getLogger(__name__).warning("RDAP 出站策略拒绝 %s: %s", domain, exc)
+    except requests.RequestException as exc:
+        logging.getLogger(__name__).warning("RDAP 查询连接失败 %s: %s", domain, exc)
     return None
 
 
@@ -1191,10 +1196,17 @@ def import_domain(
 @router.get("", response_model=List[DomainResponse])
 def get_domains(
     q: str = "",
+    group_id: int | None = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     query = db.query(DomainRecord)
+    if group_id is not None:
+        grouped_domains = db.query(ResourceGroupMember.resource_id).filter(
+            ResourceGroupMember.resource_type == RESOURCE_TYPE_DOMAIN,
+            ResourceGroupMember.group_id == group_id,
+        )
+        query = query.filter(DomainRecord.domain.in_(grouped_domains))
     keyword = (q or "").strip()
     if keyword:
         query = query.filter(
@@ -1425,6 +1437,14 @@ def update_domain(
         raise HTTPException(status_code=400, detail="更换厂商时请选择对应的域名账户")
 
     row.remark = (payload.remark or "").strip()[:255]
+    if payload.dns_credential is not None:
+        credential_id = payload.dns_credential.strip()
+        if credential_id:
+            credential = db.query(Credential).filter(Credential.cred_id == credential_id).first()
+            if credential is None:
+                raise HTTPException(status_code=404, detail="ACME DNS 凭证不存在")
+            ensure_credential_access(db, credential, current_user)
+        row.dns_credential = credential_id
     # 到期时间留空 = 不修改（与凭证编辑「留空不改」口径一致）；
     # 不能走 parse_expire_date("") 的 +365 天默认，否则清空日期保存会把到期时间静默推后一年
     if expiry is not None:

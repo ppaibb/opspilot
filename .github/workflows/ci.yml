@@ -7,8 +7,26 @@ on:
 
 jobs:
   check:
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: opspilot
+          POSTGRES_PASSWORD: ci-password-only
+          POSTGRES_DB: opspilot_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U opspilot -d opspilot_test"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+    env:
+      DATABASE_URL: postgresql+psycopg://opspilot:ci-password-only@127.0.0.1:5432/opspilot_test
+      POSTGRES_PASSWORD: ci-password-only
+      SECRET_KEY: ci-only-secret-key-with-at-least-32-characters
+      CREDENTIAL_ENCRYPTION_KEY: ci-only-independent-encryption-key-32chars
+      GRAFANA_ADMIN_PASSWORD: ci-only-grafana-password
+      GRAFANA_AUTH_PROXY_WHITELIST: 172.30.250.0/24
     steps:
       - uses: actions/checkout@v4
 
@@ -31,22 +49,31 @@ jobs:
         working-directory: backend
         run: |
           python -m venv .venv
-          .venv\\Scripts\\python.exe -m pip install -r requirements.txt
+          .venv/bin/python -m pip install -r requirements.txt pip-audit
 
       - name: Install root tooling (pyflakes)
         run: |
           python -m venv .venv
-          .venv\\Scripts\\python.exe -m pip install pyflakes
+          .venv/bin/python -m pip install pyflakes
 
       - name: Install frontend deps
         run: pnpm --dir frontend install --frozen-lockfile
 
       - name: Backend pytest
         working-directory: backend
-        run: .venv\\Scripts\\python.exe -m pytest -q
+        run: .venv/bin/python -m pytest -q
+
+      - name: Alembic full upgrade
+        working-directory: backend
+        run: .venv/bin/python -m alembic upgrade head
 
       - name: Pyflakes undefined names
-        run: .venv\\Scripts\\python.exe -m pyflakes backend/app
+        run: .venv/bin/python -m pyflakes backend/app
+
+      - name: Dependency audits
+        run: |
+          backend/.venv/bin/pip-audit -r backend/requirements.txt
+          cd frontend && pnpm audit --audit-level high
 
       - name: Frontend lint
         run: pnpm --dir frontend run lint
@@ -56,3 +83,15 @@ jobs:
 
       - name: Frontend build
         run: pnpm --dir frontend run build
+
+      - name: Compose validation
+        run: |
+          docker compose -f docker-compose.yml config --quiet
+          docker compose -f deploy/monitoring/docker-compose.yml config --quiet
+          docker compose -f deploy/offline/app/docker-compose.yaml --env-file deploy/offline/env.example config --quiet
+          docker compose -f deploy/offline/monitoring/docker-compose.yaml --env-file deploy/offline/env.example config --quiet
+
+      - name: Container builds
+        run: |
+          docker build -t opspilot/backend:ci backend
+          docker build -t opspilot/frontend:ci frontend

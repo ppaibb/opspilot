@@ -11,8 +11,8 @@ import {
   ArrowLeftOutlined, EditOutlined,
 } from '@ant-design/icons'
 import { applicationsApi } from '@/api'
-import client from '@/api/client'
-import { extractAxiosDetail } from '@/hooks/usePermission'
+import client, { riskPathResource, riskTicketConfig } from '@/api/client'
+import { extractAxiosDetail, useRiskConfirm } from '@/hooks/usePermission'
 import ComponentDetailDrawer from '@/components/ComponentDetailDrawer'
 import DeploymentProgressModal from '@/components/DeploymentProgressModal'
 import type {
@@ -37,6 +37,7 @@ export default function AppDetailPage() {
   const { appId } = useParams<{ appId: string }>()
   const navigate = useNavigate()
   const { message, modal } = App.useApp()
+  const riskConfirm = useRiskConfirm()
   const queryClient = useQueryClient()
 
   const [detailDrawerOpen, setDetailDrawerOpen]       = useState(false)
@@ -120,8 +121,8 @@ export default function AppDetailPage() {
   }
 
   const controlMut = useMutation({
-    mutationFn: ({ componentId, action }: { componentId: string; action: string }) =>
-      applicationsApi.controlComponent(appId!, componentId, action),
+    mutationFn: ({ componentId, action, ticket }: { componentId: string; action: string; ticket: string }) =>
+      applicationsApi.controlComponent(appId!, componentId, action, riskTicketConfig(ticket)),
     onSuccess: (res, vars) => {
       invalidate()
       setActionOutput({ title: `${vars.action === 'status' ? '刷新状态' : '执行操作'}：${vars.action}`, response: res })
@@ -134,6 +135,15 @@ export default function AppDetailPage() {
     onSuccess: () => { invalidate(); message.success('部署组件已移除') },
     onError: () => message.error('删除失败'),
   })
+
+  const handleControl = (componentId: string, action: string) => riskConfirm.confirm({
+    actionKey: 'apps:control_component',
+    permissionKey: 'action.apps.control',
+    actionId: 'control_component',
+    resourceId: riskPathResource([['app_id', appId!], ['component_id', componentId]]),
+    httpMethod: 'POST',
+    routeTemplate: '/api/applications/{app_id}/components/{component_id}/actions',
+  }, (ticket) => controlMut.mutate({ componentId, action, ticket }), `确认对该部署组件执行「${action}」操作？`)
 
   const bindResourcesMut = useMutation({
     mutationFn: (resources: Array<{ resource_type: string; resource_id: string }>) =>
@@ -277,7 +287,7 @@ export default function AppDetailPage() {
               components={components}
               autoRefresh={autoRefresh}
               setAutoRefresh={setAutoRefresh}
-              onControl={(componentId, action) => controlMut.mutate({ componentId, action })}
+              onControl={handleControl}
               controlPendingComponentId={controlMut.isPending ? controlMut.variables?.componentId : undefined}
               onDelete={(componentId) => deleteMut.mutate(componentId)}
               onOpenDetail={(component) => { setSelectedComponent(component); setDetailDrawerOpen(true) }}
@@ -318,7 +328,7 @@ export default function AppDetailPage() {
             title: `对「${selectedComponent?.name}」执行 ${controlActions.find(a => a.key === action)?.label}？`,
             okText: '执行',
             onOk: () => {
-              controlMut.mutate({ componentId, action })
+              void handleControl(componentId, action)
               setDetailDrawerOpen(false)
             },
           })

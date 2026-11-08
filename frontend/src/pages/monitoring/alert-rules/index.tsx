@@ -66,7 +66,7 @@ export default function AlertRulesPage() {
     retry: false,
   })
 
-  const rules: AlertRuleItem[] = data?.rules ?? []
+  const rules: AlertRuleItem[] = useMemo(() => data?.rules ?? [], [data?.rules])
   const stats = useMemo(() => ruleStats(rules), [rules])
   const displayRules = useMemo(
     () => filterRules(rules, { status: statusFilter, severity: severityFilter, search }),

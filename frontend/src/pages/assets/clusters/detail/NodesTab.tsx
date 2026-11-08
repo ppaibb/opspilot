@@ -10,6 +10,7 @@ import {
   DragOutlined, TagsOutlined,
 } from '@ant-design/icons'
 import { clusterDetailApi, clusterOpsApi } from '@/api'
+import { riskTicketConfig } from '@/api/client'
 import {
   usePermission, useRiskConfirm, extractAxiosDetail, fetchRiskTicket,
 } from '@/hooks/usePermission'
@@ -127,8 +128,10 @@ export default function NodesTab({ clusterId }: { clusterId: string }) {
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ['cluster-nodes', clusterId] })
 
   const cordonMutation = useMutation({
-    mutationFn: ({ name, uncordon }: { name: string; uncordon: boolean }) =>
-      uncordon ? clusterDetailApi.nodeUncordon(clusterId, name) : clusterDetailApi.nodeCordon(clusterId, name),
+    mutationFn: ({ name, uncordon, ticket }: { name: string; uncordon: boolean; ticket: string }) =>
+      uncordon
+        ? clusterDetailApi.nodeUncordon(clusterId, name, riskTicketConfig(ticket))
+        : clusterDetailApi.nodeCordon(clusterId, name, riskTicketConfig(ticket)),
     onSuccess: (_d, vars) => {
       message.success(vars.uncordon ? '已恢复调度' : '已设置不可调度')
       invalidate()
@@ -137,7 +140,8 @@ export default function NodesTab({ clusterId }: { clusterId: string }) {
   })
 
   const drainMutation = useMutation({
-    mutationFn: (name: string) => clusterDetailApi.nodeDrain(clusterId, name),
+    mutationFn: ({ name, ticket }: { name: string; ticket: string }) =>
+      clusterDetailApi.nodeDrain(clusterId, name, undefined, riskTicketConfig(ticket)),
     onSuccess: () => { message.success('排空完成'); setDrainNode(null); invalidate() },
     onError: (error: unknown) => message.error(extractAxiosDetail(error) ?? '排空失败'),
   })
@@ -189,13 +193,13 @@ export default function NodesTab({ clusterId }: { clusterId: string }) {
           {record.unschedulable ? (
             <Button size="small" icon={<PlayCircleOutlined />} disabled={!canManage}
               loading={cordonMutation.isPending && cordonMutation.variables?.name === record.name}
-              onClick={() => riskConfirm.confirm('clusters:uncordon', () => cordonMutation.mutate({ name: record.name, uncordon: true }))}>
+              onClick={() => riskConfirm.confirm('clusters:uncordon', (ticket) => cordonMutation.mutate({ name: record.name, uncordon: true, ticket }))}>
               恢复调度
             </Button>
           ) : (
             <Button size="small" icon={<PauseCircleOutlined />} disabled={!canManage}
               loading={cordonMutation.isPending && cordonMutation.variables?.name === record.name}
-              onClick={() => riskConfirm.confirm('clusters:cordon', () => cordonMutation.mutate({ name: record.name, uncordon: false }),
+              onClick={() => riskConfirm.confirm('clusters:cordon', (ticket) => cordonMutation.mutate({ name: record.name, uncordon: false, ticket }),
                 `将把节点 ${record.name} 标记为不可调度：新 Pod 不再调度到该节点，已有 Pod 保持运行；如目的是下线节点，请改用「排空」`)}>
               停止调度
             </Button>
@@ -263,7 +267,7 @@ export default function NodesTab({ clusterId }: { clusterId: string }) {
             key="drain" type="primary" danger
             loading={drainMutation.isPending}
             disabled={loadingPreview || !drainPreview}
-            onClick={() => riskConfirm.confirm('clusters:drain', () => drainMutation.mutate(drainNode!.name),
+            onClick={() => riskConfirm.confirm('clusters:drain', (ticket) => drainMutation.mutate({ name: drainNode!.name, ticket }),
               `将驱逐节点 ${drainNode?.name} 上的 ${drainPreview?.total ?? 0} 个业务 Pod（DaemonSet 与镜像 Pod 跳过），驱逐期间相关服务可能只剩其余副本`)}
           >
             确认排空（{drainPreview?.total ?? '?'} 个 Pod）
@@ -395,11 +399,11 @@ function NodeMetaEditor({ clusterId, node, onClose }: { clusterId: string; node:
     // 标签与污点是两条独立 PATCH、对应后端两个守卫动作（patch_labels / patch_taints），
     // 票据一次性消费：各取各的票并随请求头显式携带，不依赖全局待发送槽位。
     mutationFn: async () => {
-      const labelsTicket = await fetchRiskTicket('clusters:patch_labels')
+      const labelsTicket = await fetchRiskTicket({ actionKey: 'clusters:patch_labels' })
       await clusterOpsApi.patchNodeLabels(clusterId, node!.name, parseLabels(labelsText), {
         headers: { 'X-Risk-Ticket': labelsTicket },
       })
-      const taintsTicket = await fetchRiskTicket('clusters:patch_taints')
+      const taintsTicket = await fetchRiskTicket({ actionKey: 'clusters:patch_taints' })
       await clusterOpsApi.patchNodeTaints(clusterId, node!.name, parseTaints(taintsText), {
         headers: { 'X-Risk-Ticket': taintsTicket },
       })

@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 # 环境变量配置已交由 app.core.config 接管
 import re
 from urllib.parse import unquote
+import logging
 
 from app.api.ai_agent import router as ai_router
 from app.api.applications import router as applications_router
@@ -42,8 +43,8 @@ from app.core.security import get_current_user, require_permissions
 setup_logging()
 from contextlib import asynccontextmanager
 import asyncio
-from jose import JWTError, jwt
 from app.core.config import settings
+from app.core.tokens import TokenValidationError, decode_access_token
 from app.db.database import Base, engine, SessionLocal
 from app.db import models as db_models  # noqa: F401
 from app.db.bootstrap import ensure_bootstrap_admin, ensure_localhost_asset, ensure_monitoring_config
@@ -79,7 +80,7 @@ from app.models.collector import (
     CollectorRegistrationToken,
     CollectorRelease,
 )
-from app.core.crypto import encrypt_secret
+from app.core.crypto import encrypt_secret, validate_credential_encryption_settings
 
 
 def migrate_asset_passwords():
@@ -145,6 +146,8 @@ def ensure_model_columns():
 async def lifespan(app: FastAPI):
     import logging
     logging.getLogger(__name__).info("OpsPilot backend starting (log file: logs/app.log)")
+    # 凭证密钥错误会让全部云账号/SSH 密码不可恢复，必须在服务接流量前失败。
+    validate_credential_encryption_settings()
     if settings.DB_AUTO_CREATE_TABLES:
         # 本地开发/演示保留自动建表体验；生产环境建议关闭并使用 Alembic。
         Base.metadata.create_all(bind=engine)
@@ -347,6 +350,11 @@ AUDIT_RISK_ROUTE_RULES = (
     ("GET", re.compile(r"^/api/credentials/[^/]+/export$"), "action.assets.credentials.export", "export"),
     ("POST", re.compile(r"^/api/credentials/batch-export$"), "action.assets.credentials.export", "export"),
     ("GET", re.compile(r"^/api/certificates/[^/]+/download$"), "action.assets.certificates.download", "download"),
+    ("GET", re.compile(r"^/api/wireguard/networks/[^/]+/server-config$"), "module.wireguard.manage", "download_config"),
+    ("GET", re.compile(r"^/api/wireguard/networks/[^/]+/server-install-script$"), "module.wireguard.manage", "download_config"),
+    ("GET", re.compile(r"^/api/wireguard/peers/[^/]+/config$"), "module.wireguard.manage", "download_config"),
+    ("GET", re.compile(r"^/api/db/tickets/[^/]+/rollback$"), "action.db.execute", "download_rollback"),
+    ("GET", re.compile(r"^/api/assets/terminal/files/[^/]+/download$"), "action.assets.hosts.connect", "download_file"),
     ("POST", re.compile(r"^/api/certificates/[^/]+/deploy$"), "action.assets.certificates.manage", "deploy"),
     ("POST", re.compile(r"^/api/certificates/batch-delete$"), "action.assets.certificates.manage", "delete"),
     ("DELETE", re.compile(r"^/api/certificates/[^/]+$"), "action.assets.certificates.manage", "delete"),
@@ -392,6 +400,13 @@ def resolve_request_risk_level(method: str, path: str) -> str:
     return "low"
 
 
+def sanitize_risk_reason(raw_value: str | None) -> str:
+    """清除审计原因中的控制字符并限制长度，防日志伪造与异常膨胀。"""
+    decoded = unquote(str(raw_value or ""))
+    cleaned = re.sub(r"[\x00-\x1f\x7f]+", " ", decoded)
+    return re.sub(r"\s+", " ", cleaned).strip()[:500]
+
+
 @app.middleware("http")
 async def audit_write_operations(request, call_next):
     method = request.method.upper()
@@ -415,7 +430,7 @@ async def audit_write_operations(request, call_next):
     display_name = "未知用户"
     if token:
         try:
-            payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+            payload = decode_access_token(token)
             username = payload.get("sub") or username
             db = SessionLocal()
             try:
@@ -426,11 +441,12 @@ async def audit_write_operations(request, call_next):
                     display_name = username
             finally:
                 db.close()
-        except JWTError:
+        except TokenValidationError:
             pass
 
-    db = SessionLocal()
+    db = None
     try:
+        db = SessionLocal()
         db.add(
             AuditLog(
                 user=display_name,
@@ -439,12 +455,20 @@ async def audit_write_operations(request, call_next):
                 ip=request.client.host if request.client else "-",
                 result="success" if response.status_code < 400 else "failed",
                 risk_level=risk_level,
-                risk_reason=unquote(request.headers.get("X-Risk-Reason", "")),
+                risk_reason=sanitize_risk_reason(request.headers.get("X-Risk-Reason", "")),
             )
         )
         db.commit()
+    except Exception as exc:  # 审计是旁路能力，失败不能覆盖已经生成的业务响应
+        if db is not None:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+        logging.getLogger(__name__).exception("审计日志写入失败: %s", exc)
     finally:
-        db.close()
+        if db is not None:
+            db.close()
 
     return response
 
@@ -458,15 +482,18 @@ if __name__ == "__main__":
     uvicorn.run("app.main:app", host="0.0.0.0", port=8001, reload=True)
 
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 class LogError(BaseModel):
-    msg: str
-    stack: str
+    msg: str = Field(max_length=1000)
+    stack: str = Field(max_length=8000)
 
 @app.post("/api/log_error")
-async def log_error(error: LogError):
-    print("================ FRONTEND ERROR ==================")
-    print("MSG:", error.msg)
-    print("STACK:", error.stack)
-    print("==================================================")
+async def log_error(error: LogError, current_user: User = Depends(get_current_user)):
+    """记录已登录用户的前端异常，拒绝匿名灌日志。"""
+    logging.getLogger(__name__).error(
+        "前端异常 user=%s msg=%s stack=%s",
+        current_user.username,
+        sanitize_risk_reason(error.msg),
+        sanitize_risk_reason(error.stack),
+    )
     return {"status": "ok"}

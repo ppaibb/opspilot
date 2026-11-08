@@ -19,6 +19,7 @@ import {
 } from 'antd'
 import { SaveOutlined, PlusOutlined, DeleteOutlined } from '@ant-design/icons'
 import client from '@/api/client'
+import { riskTicketConfig } from '@/api/client'
 import { useRiskConfirm, extractAxiosDetail } from '@/hooks/usePermission'
 
 const { Text } = Typography
@@ -109,7 +110,7 @@ export default function ResourceEditDrawer({ target, onClose }: { target: EditTa
   }, [payload, form])
 
   const saveMutation = useMutation({
-    mutationFn: (values: EditFormValues) => {
+    mutationFn: ({ values, ticket }: { values: EditFormValues; ticket: string }) => {
       const body: Record<string, unknown> = {}
       if (payload?.fields.replicas && values.replicas != null) body.replicas = values.replicas
       if (payload?.fields.containers && values.containers?.length) {
@@ -132,6 +133,7 @@ export default function ResourceEditDrawer({ target, onClose }: { target: EditTa
       return client.patch(
         `/clusters/${target!.clusterId}/resources/${target!.namespace || 'default'}/${target!.kind}/${target!.name}/edit`,
         body,
+        riskTicketConfig(ticket),
       ).then((r) => r.data)
     },
     onSuccess: () => {
@@ -166,7 +168,9 @@ export default function ResourceEditDrawer({ target, onClose }: { target: EditTa
         <Button type="primary" icon={<SaveOutlined />} loading={saveMutation.isPending}
           disabled={!payload?.editable}
           // 后端资源表单编辑挂 edit 守卫动作，需确认 + 一次性票据
-          onClick={() => confirm('clusters:edit', () => form.submit())}>
+          onClick={() => confirm('clusters:edit', (ticket) => {
+            void form.validateFields().then((values) => saveMutation.mutate({ values, ticket }))
+          })}>
           保存
         </Button>
       }
@@ -176,7 +180,7 @@ export default function ResourceEditDrawer({ target, onClose }: { target: EditTa
       ) : !payload ? (
         <Empty description="资源不存在" />
       ) : (
-        <Form form={form} layout="vertical" onFinish={(values) => saveMutation.mutate(values)}>
+        <Form form={form} layout="vertical">
           {!payload.editable && (
             <Alert type="warning" showIcon style={{ marginBottom: 12 }} message="Secret 不支持表单编辑，请走 YAML 通道" />
           )}

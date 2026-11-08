@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Modal, Progress, Typography, Alert, Space, Button } from 'antd'
 import { CheckCircleOutlined, CloseCircleOutlined, LoadingOutlined } from '@ant-design/icons'
@@ -29,6 +29,7 @@ interface Props {
 }
 
 export default function DeploymentProgressModal({ taskId, open, onClose, onSuccess }: Props) {
+  const notifiedTaskRef = useRef<string | null>(null)
   const { data: task } = useQuery<DeploymentTask>({
     queryKey: ['deployment-task', taskId],
     queryFn: () => client.get<DeploymentTask>(`/applications/tasks/${taskId}`).then(r => r.data),
@@ -44,10 +45,15 @@ export default function DeploymentProgressModal({ taskId, open, onClose, onSucce
   })
 
   useEffect(() => {
-    if (task?.status === 'success' && onSuccess) {
+    if (task?.status === 'success' && onSuccess && notifiedTaskRef.current !== task.task_id) {
+      notifiedTaskRef.current = task.task_id
       onSuccess()
     }
-  }, [task?.status, onSuccess])
+  }, [task, onSuccess])
+
+  useEffect(() => {
+    if (taskId !== notifiedTaskRef.current) notifiedTaskRef.current = null
+  }, [taskId])
 
   if (!taskId || !open) return null
 

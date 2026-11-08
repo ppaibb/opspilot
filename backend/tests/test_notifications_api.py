@@ -365,12 +365,18 @@ class TestSSEPubSub:
 
     def test_verify_sse_ticket_valid(self, db, user):
         """合法票据（scope=notifications-sse）可通过校验。"""
-        from jose import jwt
+        import jwt
+        from datetime import datetime, timedelta
         from app.core.config import settings
         from app.api.notifications import SSE_TICKET_SCOPE, _verify_sse_ticket
 
         ticket = jwt.encode(
-            {"sub": user.username, "scope": SSE_TICKET_SCOPE},
+            {
+                "sub": user.username,
+                "scope": SSE_TICKET_SCOPE,
+                "ver": int(user.token_version or 0),
+                "exp": datetime.utcnow() + timedelta(seconds=60),
+            },
             settings.SECRET_KEY,
             algorithm=settings.ALGORITHM,
         )
@@ -379,7 +385,7 @@ class TestSSEPubSub:
 
     def test_verify_sse_ticket_rejects_access_token(self, db, user):
         """长期 access token 没有 notifications-sse scope，不能当票据用。"""
-        from jose import jwt
+        import jwt
         from app.core.config import settings
         from app.api.notifications import _verify_sse_ticket
         from fastapi import HTTPException

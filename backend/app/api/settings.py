@@ -957,6 +957,7 @@ def delete_user(
     request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    _=Depends(require_permissions("module.settings.users", "action.settings.users.manage")),
     _risk=Depends(require_risk_ack("action.settings.users.manage", "delete")),
 ):
     """删除用户（高危，需二次确认票据）。

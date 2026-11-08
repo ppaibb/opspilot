@@ -17,12 +17,12 @@ docker build -t "opspilot/frontend:${TAG}" "$ROOT/frontend"
 # 若 tag 非 1.0.0，同步改 compose 默认（仍保留 1.0.0 便于 env 覆盖）
 log "拉取基础/监控镜像 ..."
 docker pull postgres:16-alpine
-docker pull nginx:1.27-alpine
+docker pull nginxinc/nginx-unprivileged:1.27-alpine
 docker pull node:22-alpine
 docker pull python:3.12-slim
 docker pull victoriametrics/victoria-metrics:v1.140.0
 docker pull victoriametrics/victoria-logs:v1.50.0
-docker pull grafana/grafana:11.0.0
+docker pull grafana/grafana:11.6.14-security-04
 docker pull grafana/alloy:v1.16.3
 
 mkdir -p "$IMAGES_DIR"
@@ -30,21 +30,52 @@ IMAGES=(
   "opspilot/backend:${TAG}"
   "opspilot/frontend:${TAG}"
   "postgres:16-alpine"
-  "nginx:1.27-alpine"
+  "nginxinc/nginx-unprivileged:1.27-alpine"
   "node:22-alpine"
   "python:3.12-slim"
   "victoriametrics/victoria-metrics:v1.140.0"
   "victoriametrics/victoria-logs:v1.50.0"
-  "grafana/grafana:11.0.0"
+  "grafana/grafana:11.6.14-security-04"
   "grafana/alloy:v1.16.3"
 )
 
+MANIFEST_ROWS=()
 for img in "${IMAGES[@]}"; do
   safe="$(echo "$img" | tr '/:' '__')"
   out="$IMAGES_DIR/${safe}.tar"
   log "save $img -> $(basename "$out")"
   docker save -o "$out" "$img"
+  archive_sha256="$(sha256sum "$out" | awk '{print $1}')"
+  image_id="$(docker image inspect --format '{{.Id}}' "$img")"
+  MANIFEST_ROWS+=("${img}|$(basename "$out")|${archive_sha256}|${image_id}")
 done
+
+python3 - "$PKG/manifest.json" "$TAG" "${MANIFEST_ROWS[@]}" <<'PY'
+import json
+import pathlib
+import sys
+
+output, version, *rows = sys.argv[1:]
+names = {
+    "opspilot/backend": "backend", "opspilot/frontend": "frontend",
+    "postgres": "postgres", "nginxinc/nginx-unprivileged": "nginx", "node": "node", "python": "python",
+    "victoriametrics/victoria-metrics": "victoriametrics",
+    "victoriametrics/victoria-logs": "victorialogs",
+    "grafana/grafana": "grafana", "grafana/alloy": "alloy",
+}
+images = {}
+for row in rows:
+    ref, archive, sha256, image_id = row.split("|", 3)
+    repository = ref.rsplit(":", 1)[0]
+    images[names[repository]] = {
+        "ref": ref, "archive": archive, "sha256": sha256, "image_id": image_id,
+    }
+pathlib.Path(output).write_text(
+    json.dumps({"version": version, "images": images}, ensure_ascii=False, indent=2) + "\n",
+    encoding="utf-8",
+)
+PY
+log "已生成带镜像 ID 与归档 sha256 的 manifest.json"
 
 # 可选：Alloy 二进制（业务机 Agent 用），网络允许时下载
 if [[ ! -f "$IMAGES_DIR/../alloy/alloy" ]]; then

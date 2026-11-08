@@ -13,7 +13,15 @@ class Settings(BaseSettings):
     # [安全审计要求] 必须从外部 .env 加载的敏感信息
     SECRET_KEY: str
     ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 480
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
+    REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+    # 只有请求的直接来源属于这些网段时，登录接口才信任 X-Forwarded-For。
+    TRUSTED_PROXY_CIDRS: str = "127.0.0.1/32,::1/128"
+    OUTBOUND_ALLOWED_HOSTS: str = ""
+    OUTBOUND_ALLOWED_CIDRS: str = ""
+    OUTBOUND_TIMEOUT_SECONDS: int = 30
+    OUTBOUND_MAX_RESPONSE_BYTES: int = 4194304
+    OUTBOUND_MAX_REDIRECTS: int = 3
 
     # 数据库配置。统一使用 PostgreSQL，连接串必须由 .env 的 DATABASE_URL 提供。
     # 不设默认值：漏配时启动即报错，避免静默回退到 SQLite 生成空库（曾导致排障误判）。

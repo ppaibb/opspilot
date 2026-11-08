@@ -3,13 +3,19 @@ import { persist } from 'zustand/middleware'
 
 interface AuthState {
   token: string | null
+  refreshToken: string | null
   userInfo: { id: number; username: string; role: string; name?: string; email?: string } | null
   permissions: Record<string, boolean> | null
   riskLevels: Record<string, 'high' | 'medium' | 'low'> | null
   bootstrapped: boolean  // 登录后权限是否已加载
   bootstrapError: boolean // 登录后初始化（me/rbac metadata）是否失败，失败时不放行进入系统
 
-  setAuth: (token: string, user: { id: number; username: string; role: string }) => void
+  setAuth: (
+    token: string,
+    user: { id: number; username: string; role: string },
+    refreshToken?: string,
+  ) => void
+  setTokens: (token: string, refreshToken: string) => void
   setPermissions: (perms: Record<string, boolean>) => void
   setRiskLevels: (levels: Record<string, 'high' | 'medium' | 'low'>) => void
   setBootstrapped: (v: boolean) => void
@@ -23,13 +29,21 @@ export const useAuthStore = create<AuthState>()(
   persist(
     (set) => ({
       token: null,
+      refreshToken: null,
       userInfo: null,
       permissions: null,
       riskLevels: null,
       bootstrapped: false,
       bootstrapError: false,
 
-      setAuth: (token, userInfo) => set({ token, userInfo, bootstrapped: false }),
+      setAuth: (token, userInfo, refreshToken) =>
+        set((state) => ({
+          token,
+          refreshToken: refreshToken ?? state.refreshToken,
+          userInfo,
+          bootstrapped: false,
+        })),
+      setTokens: (token, refreshToken) => set({ token, refreshToken }),
       setPermissions: (permissions) => set({ permissions }),
       setRiskLevels: (riskLevels) => set({ riskLevels }),
       setBootstrapped: (bootstrapped) => set({ bootstrapped }),
@@ -38,6 +52,7 @@ export const useAuthStore = create<AuthState>()(
       logout: () =>
         set({
           token: null,
+          refreshToken: null,
           userInfo: null,
           permissions: null,
           riskLevels: null,
@@ -47,7 +62,11 @@ export const useAuthStore = create<AuthState>()(
     }),
     {
       name: 'opspilot-auth',
-      partialize: (state) => ({ token: state.token, userInfo: state.userInfo }),
+      partialize: (state) => ({
+        token: state.token,
+        refreshToken: state.refreshToken,
+        userInfo: state.userInfo,
+      }),
     },
   ),
 )

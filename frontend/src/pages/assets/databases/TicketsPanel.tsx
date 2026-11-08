@@ -14,9 +14,11 @@ import {
 import dayjs from 'dayjs'
 import axios from 'axios'
 import { dbApi } from '@/api'
+import { riskPathResource, riskTicketConfig } from '@/api/client'
 import { useAuthStore } from '@/store/auth'
-import { usePermission, extractAxiosDetail } from '@/hooks/usePermission'
+import { usePermission, useRiskConfirm, extractAxiosDetail } from '@/hooks/usePermission'
 import DbObjectBrowser from '@/components/db/DbObjectBrowser'
+import { downloadBlob, getDownloadErrorMessage } from '@/utils/download'
 import type { DbApprovalLogItem, DbAuditFinding, DbExecResultItem, DbInstance, DbTicket } from '@/types/api'
 import { TICKET_STATUS, sqlBrief, type TicketFormValues } from './types'
 
@@ -37,6 +39,7 @@ export function TicketsTab({
   /** 空态引导跳自助查询（父组件切 Tab 用） */
   onGoSelfQuery?: () => void
 }) {
+  const riskConfirm = useRiskConfirm()
   const { message, modal } = App.useApp()
   const queryClient = useQueryClient()
   const { has } = usePermission()
@@ -81,6 +84,16 @@ export function TicketsTab({
   // 库表面板的选中态：与表单的「目标实例」联动，提交时作为工单的目标库。
   const [browserInstance, setBrowserInstance] = useState<number | null>(null)
   const [browserDatabase, setBrowserDatabase] = useState('')
+
+  /** 下载回滚 SQL 时复用认证客户端，并优先展示后端返回的 detail。 */
+  const downloadRollback = async (ticketId: number) => {
+    try {
+      const response = await dbApi.downloadRollback(ticketId)
+      downloadBlob(response.data, `rollback-${ticketId}.sql`, response.headers['content-disposition'])
+    } catch (error) {
+      message.error(await getDownloadErrorMessage(error, '回滚语句下载失败'))
+    }
+  }
 
   const invalidateTickets = () => {
     queryClient.invalidateQueries({ queryKey: ['db-tickets'] })
@@ -129,7 +142,8 @@ export function TicketsTab({
   })
 
   const executeMutation = useMutation({
-    mutationFn: (id: number) => dbApi.executeTicket(id),
+    mutationFn: ({ id, ticket }: { id: number; ticket: string }) =>
+      dbApi.executeTicket(id, riskTicketConfig(ticket)),
     onSuccess: (ticket) => {
       if (ticket.status === 'success') message.success('执行成功')
       else message.warning('执行失败，详见工单详情')
@@ -188,7 +202,14 @@ export function TicketsTab({
         </Space>
       ),
       okText: '确认执行', okButtonProps: { danger: true }, cancelText: '取消',
-      onOk: () => executeMutation.mutate(id),
+      onOk: () => riskConfirm.confirm({
+        actionKey: 'db:execute',
+        permissionKey: 'action.db.execute',
+        actionId: 'execute',
+        resourceId: riskPathResource([['ticket_id', id]]),
+        httpMethod: 'POST',
+        routeTemplate: '/api/db/tickets/{ticket_id}/execute',
+      }, (riskTicket) => executeMutation.mutate({ id, ticket: riskTicket }), '确认在目标数据库执行该 SQL 工单？'),
     })
   }
 
@@ -245,7 +266,7 @@ export function TicketsTab({
           )}
           {record.status === 'approved' && canExecute && (
             <Button size="small" type="primary" danger icon={<PlayCircleOutlined />}
-              loading={executeMutation.isPending && executeMutation.variables === record.id}
+              loading={executeMutation.isPending && executeMutation.variables?.id === record.id}
               onClick={() => confirmExecute(record.id)}>
               执行
             </Button>
@@ -253,7 +274,7 @@ export function TicketsTab({
           {record.has_rollback && (
             <Tooltip title="下载回滚语句（执行前自动生成的反向 INSERT）">
               <Button size="small" type="text" icon={<DownloadOutlined />}
-                onClick={() => window.open(`/api/db/tickets/${record.id}/rollback`)} />
+                onClick={() => void downloadRollback(record.id)} />
             </Tooltip>
           )}
           <Button size="small" onClick={() => setDetailTicket(record)}>详情</Button>
@@ -560,6 +581,14 @@ function SubmitTicketDrawer({
 
 function TicketDetailDrawer({ ticket, onClose }: { ticket: DbTicket | null; onClose: () => void }) {
   const { message } = App.useApp()
+  const downloadRollback = async (ticketId: number) => {
+    try {
+      const response = await dbApi.downloadRollback(ticketId)
+      downloadBlob(response.data, `rollback-${ticketId}.sql`, response.headers['content-disposition'])
+    } catch (error) {
+      message.error(await getDownloadErrorMessage(error, '回滚语句下载失败'))
+    }
+  }
   const columns: ColumnsType<DbExecResultItem> = [
     { title: '#', dataIndex: 'index', width: 40 },
     {
@@ -626,7 +655,7 @@ function TicketDetailDrawer({ ticket, onClose }: { ticket: DbTicket | null; onCl
                   <Tag color="green">已自动备份受影响数据</Tag>
                   {ticket.has_rollback && (
                     <Button size="small" icon={<DownloadOutlined />}
-                      onClick={() => window.open(`/api/db/tickets/${ticket.id}/rollback`)}>
+                      onClick={() => void downloadRollback(ticket.id)}>
                       下载回滚语句
                     </Button>
                   )}

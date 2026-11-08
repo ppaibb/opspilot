@@ -690,11 +690,17 @@ ROLE_TEMPLATE_CONFIG_KEY = "rbac_role_templates"
 
 ACTION_RISK_LEVELS: dict[tuple[str, str], str] = {
     ("action.assets.credentials.export", "export"): "high",
+    ("module.wireguard.manage", "download_config"): "high",
+    ("action.db.execute", "download_rollback"): "high",
+    ("action.assets.hosts.connect", "download_file"): "medium",
     ("action.assets.certificates.manage", "revoke"): "high",
     ("action.assets.certificates.download", "download"): "high",
     ("action.assets.certificates.manage", "deploy"): "low",
     ("action.assets.certificates.manage", "delete"): "medium",
     ("action.assets.hosts.manage", "batch_delete"): "medium",
+    ("action.assets.hosts.connect", "exec"): "high",
+    ("action.assets.hosts.connect", "exec_session"): "high",
+    ("action.assets.hosts.monitoring", "uninstall_collector"): "high",
     ("action.assets.vms.power", "poweroff"): "medium",
     ("action.assets.vms.power", "restart"): "medium",
     ("action.assets.vms.manage", "delete"): "medium",
@@ -733,6 +739,10 @@ ACTION_RISK_LEVELS: dict[tuple[str, str], str] = {
     ("action.assets.domains.manage", "delete"): "medium",
     ("action.tools.scripts.execute", "execute"): "medium",
     ("action.change.execute", "execute"): "high",
+    ("action.db.execute", "execute"): "high",
+    ("action.apps.manage", "batch_delete_components"): "medium",
+    ("action.apps.control", "control_component"): "high",
+    ("module.dashboard", "clear_notifications"): "medium",
     ("action.settings.users.manage", "disable"): "medium",
     # 删除用户（2026-10-05 新增端点）：不可恢复且影响登录主体，高危
     ("action.settings.users.manage", "delete"): "high",

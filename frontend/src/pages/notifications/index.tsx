@@ -18,6 +18,8 @@ import {
 } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
 import { notificationsApi } from '@/api'
+import { riskTicketConfig } from '@/api/client'
+import { useRiskConfirm } from '@/hooks/usePermission'
 import type { NotificationApiItem } from '@/types/api'
 import { useNotificationStore } from '@/store/notifications'
 
@@ -86,6 +88,7 @@ type FilterKey = 'all' | 'unread' | 'read'
 export default function NotificationsPage() {
   const navigate = useNavigate()
   const { message, modal } = App.useApp()
+  const riskConfirm = useRiskConfirm()
 
   const [items, setItems] = useState<NotificationApiItem[]>([])
   const [total, setTotal] = useState(0)
@@ -204,9 +207,15 @@ export default function NotificationsPage() {
       okText: '清空',
       okButtonProps: { danger: true },
       cancelText: '取消',
-      onOk: async () => {
+      onOk: () => riskConfirm.confirm({
+        actionKey: 'dashboard:clear_notifications',
+        permissionKey: 'module.dashboard',
+        actionId: 'clear_notifications',
+        httpMethod: 'POST',
+        routeTemplate: '/api/notifications/clear',
+      }, async (ticket) => {
         try {
-          await notificationsApi.clear()
+          await notificationsApi.clear(riskTicketConfig(ticket))
           setPage(1)
           await load()
           setBellUnread()
@@ -214,7 +223,7 @@ export default function NotificationsPage() {
         } catch {
           message.error('清空失败')
         }
-      },
+      }),
     })
   }
 

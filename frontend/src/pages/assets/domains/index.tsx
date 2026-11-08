@@ -14,6 +14,7 @@ import {
 } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import { domainsApi, credentialsApi } from '@/api'
+import { riskTicketConfig } from '@/api/client'
 import { usePermission, useRiskConfirm } from '@/hooks/usePermission'
 import { useCrudResource } from '@/hooks/useCrudResource'
 import GroupSidebar from '@/components/GroupSidebar'
@@ -68,8 +69,8 @@ export default function DomainsPage() {
   })
 
   const { data: domains = [], isLoading } = useQuery<DomainResponse[]>({
-    queryKey: ['domains'],
-    queryFn: () => domainsApi.list(),
+    queryKey: ['domains', groupFilter],
+    queryFn: () => domainsApi.list({ group_id: groupFilter ?? undefined }),
   })
   const editingDomain = domains.find((item) => item.id === editingId)
   const selectedSpec = providers.find((item) => item.key === selectedProvider)
@@ -87,7 +88,7 @@ export default function DomainsPage() {
   })
 
   const batchDeleteMut = useMutation({
-    mutationFn: () => domainsApi.batchDelete(selectedKeys.map(Number)),
+    mutationFn: (ticket: string) => domainsApi.batchDelete(selectedKeys.map(Number), riskTicketConfig(ticket)),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['domains'] })
       setSelectedKeys([])
@@ -99,8 +100,14 @@ export default function DomainsPage() {
   // 统计指标
   const totalCount = domains.length
   const activeCount = domains.filter((d) => d.status === 'active').length
-  const expiringCount = domains.filter((d) => d.status === 'expiring' || (d.expires_at && daysToExpiry(d.expires_at)! <= 30)).length
-  const expiredCount = domains.filter((d) => d.status === 'expired' || (d.expires_at && daysToExpiry(d.expires_at)! < 0)).length
+  const expiringCount = domains.filter((d) => {
+    const days = daysToExpiry(d.expires_at)
+    return d.status === 'expiring' || (days !== null && days >= 0 && days <= 30)
+  }).length
+  const expiredCount = domains.filter((d) => {
+    const days = daysToExpiry(d.expires_at)
+    return d.status === 'expired' || (days !== null && days < 0)
+  }).length
 
   // 筛选
   const filtered = domains.filter((d) => {
@@ -121,6 +128,7 @@ export default function DomainsPage() {
         expire_reminder_days: dom.expire_reminder_days,
         remark: dom.remark,
         acme_enabled: dom.acme_enabled === 'yes',
+        dns_credential: dom.dns_credential || undefined,
       })
     } else {
       setEditingId(null)
@@ -133,8 +141,9 @@ export default function DomainsPage() {
   const handleSave = () => {
     form.validateFields().then((values) => {
       // 清空表示显式解绑；未触碰的缺失字段继续使用PATCH的“不修改”语义。
-      const data = editingId && form.isFieldTouched('account_id') && values.account_id === undefined
-        ? { ...values, account_id: '' } : values
+      const accountCleared = editingId && values.account_id === undefined
+        && (form.isFieldTouched('account_id') || values.provider !== editingDomain?.provider)
+      const data = accountCleared ? { ...values, account_id: '' } : values
       saveMut.mutate({ id: editingId ?? undefined, data })
       if (values.acme_enabled) {
         modal.info({
@@ -217,7 +226,7 @@ export default function DomainsPage() {
               title: `删除域名 ${r.domain}`,
               content: 'DNS 记录列表将一并移除（不改动外部 DNS 服务商配置）。确定继续？',
               okText: '删除', okButtonProps: { danger: true }, cancelText: '取消',
-              onOk: () => confirm('domains:delete', () => deleteMut.mutate(r.id)),
+              onOk: () => confirm('domains:delete', (ticket) => deleteMut.mutate({ id: r.id, riskTicket: ticket })),
             })
           }
         }
@@ -241,7 +250,7 @@ export default function DomainsPage() {
         resourceType="domain"
         selectedGroupId={groupFilter}
         onSelect={setGroupFilter}
-        selectedIds={selectedKeys}
+        selectedIds={domains.filter((item) => selectedKeys.includes(String(item.id))).map((item) => item.domain)}
       />
 
       <Flex vertical gap={16} style={{ flex: 1, minWidth: 0 }}>
@@ -301,7 +310,7 @@ export default function DomainsPage() {
               style={{ width: 240 }}
             />
             {selectedKeys.length > 0 && (
-              <Button danger icon={<DeleteOutlined />} onClick={() => confirm('domains:delete', () => batchDeleteMut.mutate())}>
+              <Button danger icon={<DeleteOutlined />} onClick={() => confirm('domains:delete', (ticket) => batchDeleteMut.mutate(ticket))}>
                 批量删除 ({selectedKeys.length})
               </Button>
             )}

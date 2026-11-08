@@ -1,13 +1,14 @@
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
-  Table, Input, Select, DatePicker, Typography, Flex, Button, Space, Tag, Tooltip, Statistic, Card, Row, Col,
+  Table, Input, Select, DatePicker, Typography, Flex, Button, Space, Tag, Tooltip, Statistic, Card, Row, Col, App,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { SearchOutlined, ReloadOutlined, DownloadOutlined } from '@ant-design/icons'
 import dayjs, { type Dayjs } from 'dayjs'
 import { financeApi } from '@/api'
 import type { CloudAccountItem, CloudBillItem } from '@/types/api'
+import { downloadBlob, getDownloadErrorMessage } from '@/utils/download'
 
 const { Text } = Typography
 
@@ -21,6 +22,7 @@ function formatAmount(value: number): string {
 }
 
 export default function FinanceBillsPage() {
+  const { message } = App.useApp()
   const [month, setMonth] = useState<Dayjs>(dayjs())
   const [accountId, setAccountId] = useState<number | undefined>(undefined)
   const [product, setProduct] = useState('')
@@ -30,6 +32,22 @@ export default function FinanceBillsPage() {
   const pageSize = 50
 
   const monthKey = month.format('YYYY-MM')
+
+  /** 导出接口需要 Bearer 认证，下载 Blob 后再由浏览器保存。 */
+  const exportBills = async () => {
+    try {
+      const response = await financeApi.exportBillsFile({
+        month: monthKey,
+        account_id: accountId,
+        product: product || undefined,
+        keyword: keyword || undefined,
+        subscription_type: subscription,
+      })
+      downloadBlob(response.data, `cloud-bills-${monthKey}.csv`, response.headers['content-disposition'])
+    } catch (error) {
+      message.error(await getDownloadErrorMessage(error, '账单导出失败'))
+    }
+  }
 
   const { data: accounts = [] } = useQuery({
     queryKey: ['finance-accounts'],
@@ -164,7 +182,7 @@ export default function FinanceBillsPage() {
             onSearch={() => setPage(1)}
             prefix={<SearchOutlined style={{ color: '#bfbfbf' }} />}
           />
-          <Button icon={<DownloadOutlined />} onClick={() => { window.open(financeApi.exportBillsUrl({ month: monthKey, account_id: accountId, product, keyword, subscription_type: subscription }), '_blank') }}>导出 CSV</Button>
+          <Button icon={<DownloadOutlined />} onClick={() => void exportBills()}>导出 CSV</Button>
           <Button icon={<ReloadOutlined />} onClick={() => refetch()} loading={isFetching}>刷新</Button>
         </Space>
       </Flex>

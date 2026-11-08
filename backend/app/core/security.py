@@ -4,13 +4,12 @@
 import uuid
 from datetime import timedelta
 
-from jose import JWTError, jwt
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from app.core.config import settings
+from app.core.tokens import TokenValidationError, decode_access_token
 from app.core.rbac import (
     ACTION_RISK_LEVELS,
     PERMISSION_DEFAULTS,
@@ -82,14 +81,14 @@ def get_current_user(
     )
 
     try:
-        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        payload = decode_access_token(token)
         username = payload.get("sub")
         if not username:
             raise credentials_exception
         # 一次性票据反向隔离：SSE 票据即使未过期也不得冒充 access token。
         if str(payload.get("scope") or "") == SSE_TICKET_SCOPE:
             raise credentials_exception
-    except JWTError:
+    except TokenValidationError:
         raise credentials_exception
 
     user = db.query(User).filter(User.username == username).first()
@@ -168,6 +167,10 @@ def consume_risk_ticket(
     permission_key: str,
     action_id: str,
     user: User,
+    resource_id: str | None = None,
+    http_method: str | None = None,
+    route_template: str | None = None,
+    request_digest: str | None = None,
 ) -> None:
     """原子消费一张高危操作二次确认票据；不满足则一律 403。
 
@@ -186,6 +189,15 @@ def consume_risk_ticket(
     Raises:
         HTTPException: 缺票、票据无效/过期/已消费、权限键或动作不匹配（均 403）。
     """
+    # 每次消费都按当前角色和覆盖项重新计算权限。这样即使签票后角色被撤销，
+    # 或某业务路由漏挂显式 require_permissions，票据也不能扩大调用者权限。
+    permission_map = resolve_effective_permissions(user)
+    if not permission_map.get(permission_key, False):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="当前账号无权执行该高危操作",
+        )
+
     ticket_id = str(request.headers.get("x-risk-ticket") or "").strip()
     if not ticket_id:
         raise HTTPException(
@@ -194,33 +206,28 @@ def consume_risk_ticket(
         )
 
     # 原子消费：单条 UPDATE 只在票据完全匹配时抢到行，rowcount==1 才算通过。
-    # - 全键票据：permission_key 与 action_id 必须精确匹配当前路由；
-    # - 短键票据：action_id 匹配且票据里的短前缀是当前权限键的任一别名
-    #   （别名生成逻辑与 GET /risk-levels 完全一致）。
+    # 新票据只保存规范化全权限键；历史短键票据不再接受，避免跨路由复用。
+    # 新增绑定字段保持 nullable 是为了滚动升级，但只要签发时写入，消费时就
+    # 必须逐字符匹配。匹配失败不更新 consumed_at，可让用户修正目标后重试。
     now_str = risk_ticket_now()
-    alias_keys = permission_key_aliases(permission_key)
-    matched = (
-        db.query(RiskAckTicket)
-        .filter(
+    query = db.query(RiskAckTicket).filter(
             RiskAckTicket.id == ticket_id,
             RiskAckTicket.user_id == user.id,
             RiskAckTicket.consumed_at.is_(None),
             RiskAckTicket.expires_at > now_str,
-            or_(
-                (
-                    (RiskAckTicket.short_key.is_(False))
-                    & (RiskAckTicket.permission_key == permission_key)
-                    & (RiskAckTicket.action_id == action_id)
-                ),
-                (
-                    (RiskAckTicket.short_key.is_(True))
-                    & (RiskAckTicket.action_id == action_id)
-                    & (RiskAckTicket.permission_key.in_(alias_keys))
-                ),
-            ),
+            RiskAckTicket.short_key.is_(False),
+            RiskAckTicket.permission_key == permission_key,
+            RiskAckTicket.action_id == action_id,
         )
-        .update({"consumed_at": risk_ticket_now()}, synchronize_session=False)
+    bindings = (
+        (RiskAckTicket.resource_id, resource_id),
+        (RiskAckTicket.http_method, str(http_method or "").strip().upper() or None),
+        (RiskAckTicket.route_template, str(route_template or "").strip() or None),
+        (RiskAckTicket.request_digest, str(request_digest or "").strip() or None),
     )
+    for column, expected in bindings:
+        query = query.filter(or_(column.is_(None), column == expected))
+    matched = query.update({"consumed_at": risk_ticket_now()}, synchronize_session=False)
     db.commit()
     if matched != 1:
         raise HTTPException(
@@ -229,7 +236,26 @@ def consume_risk_ticket(
         )
 
 
-def require_risk_ack(permission_key: str, action_id: str):
+def _risk_route_template(request: Request) -> str | None:
+    """返回 FastAPI 已匹配的完整路由模板，无法反射时保持兼容。"""
+    route = request.scope.get("route") if hasattr(request, "scope") else None
+    return str(getattr(route, "path", "") or "").strip() or None
+
+
+def _risk_path_resource(request: Request, names: tuple[str, ...]) -> str | None:
+    """按固定参数顺序生成路径资源标识，供前后端逐字符绑定。"""
+    if not names:
+        return None
+    path_params = getattr(request, "path_params", {}) or {}
+    return "&".join(f"{name}={path_params.get(name, '')}" for name in names)
+
+
+def require_risk_ack(
+    permission_key: str,
+    action_id: str,
+    *,
+    resource_params: tuple[str, ...] = (),
+):
     """
     校验高危操作二次确认票据（强制执行，不再直通放行）。
 
@@ -254,6 +280,9 @@ def require_risk_ack(permission_key: str, action_id: str):
             permission_key=permission_key,
             action_id=action_id,
             user=current_user,
+            resource_id=_risk_path_resource(request, resource_params),
+            http_method=getattr(request, "method", None),
+            route_template=_risk_route_template(request),
         )
         return current_user
 
@@ -261,6 +290,7 @@ def require_risk_ack(permission_key: str, action_id: str):
     # 契约测试与审计反射核对路由实际绑定的 action 字符串（闭包参数本身不可见）。
     _guard.risk_permission_key = permission_key
     _guard.risk_action_id = action_id
+    _guard.risk_resource_params = resource_params
     return _guard
 
 
@@ -353,6 +383,9 @@ def create_risk_ticket(
     action_id: str,
     short_key: bool,
     resource_id: str | None = None,
+    http_method: str | None = None,
+    route_template: str | None = None,
+    request_digest: str | None = None,
     ttl_seconds: int = 120,
 ) -> RiskAckTicket:
     """签发一张一次性风险确认票据，并顺带清理已过期的历史票据。"""
@@ -368,6 +401,9 @@ def create_risk_ticket(
         permission_key=permission_key,
         action_id=action_id,
         resource_id=(str(resource_id).strip() or None) if resource_id else None,
+        http_method=(str(http_method).strip().upper() or None) if http_method else None,
+        route_template=(str(route_template).strip() or None) if route_template else None,
+        request_digest=(str(request_digest).strip() or None) if request_digest else None,
         short_key=short_key,
         created_at=now_str,
         expires_at=expires,

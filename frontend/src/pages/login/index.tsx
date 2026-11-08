@@ -102,7 +102,11 @@ export default function LoginPage() {
     setErrorMsg(null)
     try {
       const res = await authApi.login(values)
-      setAuth(res.access_token, { id: res.user.id, username: res.user.username, role: res.user.role })
+      setAuth(
+        res.access_token,
+        { id: res.user.id, username: res.user.username, role: res.user.role },
+        res.refresh_token,
+      )
       navigate('/', { replace: true })
     } catch (err: unknown) {
       const status = (err as { response?: { status?: number } })?.response?.status

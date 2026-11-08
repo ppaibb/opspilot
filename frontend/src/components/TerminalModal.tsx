@@ -17,6 +17,9 @@ import {
 } from '@ant-design/icons'
 import { Terminal, useTerminal } from '@wterm/react'
 import { terminalApi, aiApi } from '@/api'
+import { riskTicketConfig } from '@/api/client'
+import { useRiskConfirm } from '@/hooks/usePermission'
+import { downloadBlob, getDownloadErrorMessage } from '@/utils/download'
 
 const NORMAL_COLS = 120
 const NORMAL_ROWS = 28
@@ -104,6 +107,9 @@ function splitJsonFrames(raw: string): Array<Record<string, unknown>> {
 }
 
 export default function TerminalModal({ open, assetId, assetName = '', assetIp = '', onClose }: Props) {
+  const riskConfirm = useRiskConfirm()
+  const riskConfirmRef = useRef(riskConfirm)
+  useEffect(() => { riskConfirmRef.current = riskConfirm }, [riskConfirm])
   const { ref: termRef, write, resize, focus } = useTerminal()
   const wsRef = useRef<WebSocket | null>(null)
   const mountRef = useRef(true)
@@ -134,6 +140,19 @@ export default function TerminalModal({ open, assetId, assetName = '', assetIp =
   const [actionBusy, setActionBusy] = useState('')
 
   const curTheme = THEMES[themeKey]
+
+  /** 通过 Axios 注入 Bearer 令牌下载，禁止用裸链接绕过认证拦截器。 */
+  const handleDownloadFile = async (item: FileItem) => {
+    setActionBusy(`download:${item.path}`)
+    try {
+      const response = await terminalApi.downloadFile(assetId, item.path)
+      downloadBlob(response.data, item.name, response.headers['content-disposition'])
+    } catch (error) {
+      antdMessage.error(await getDownloadErrorMessage(error, '文件下载失败'))
+    } finally {
+      setActionBusy('')
+    }
+  }
 
   const connectRef = useRef<() => Promise<void>>(async () => {})
 
@@ -215,7 +234,17 @@ export default function TerminalModal({ open, assetId, assetName = '', assetIp =
 
     let sessionToken: string, wsPath: string
     try {
-      const res = await terminalApi.createSession(assetId, currentCols, currentRows)
+      let res: Awaited<ReturnType<typeof terminalApi.createSession>> | undefined
+      await riskConfirmRef.current.confirm({
+        actionKey: 'hosts:exec_session',
+        permissionKey: 'action.assets.hosts.connect',
+        actionId: 'exec_session',
+        httpMethod: 'POST',
+        routeTemplate: '/api/assets/terminal/session',
+      }, async (ticket) => {
+        res = await terminalApi.createSession(assetId, currentCols, currentRows, riskTicketConfig(ticket))
+      }, `即将连接主机 ${assetName || assetId} 的 SSH 终端，确认继续？`)
+      if (!res) return
       const r = res as Record<string, unknown>
       sessionToken = String(r.session_token ?? '')
       wsPath = String(r.ws_path ?? '')
@@ -793,9 +822,12 @@ export default function TerminalModal({ open, assetId, assetName = '', assetIp =
                     <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }} onClick={(e) => e.stopPropagation()}>
                       {!item.is_dir && (
                         <Tooltip title="下载文件">
-                          <a
-                            href={terminalApi.downloadUrl(assetId, item.path)}
-                            download={item.name}
+                          <Button
+                            type="text"
+                            size="small"
+                            aria-label={`下载 ${item.name}`}
+                            loading={actionBusy === `download:${item.path}`}
+                            onClick={() => void handleDownloadFile(item)}
                             style={{
                               color: '#38bdf8',
                               padding: '2px 6px',
@@ -806,7 +838,7 @@ export default function TerminalModal({ open, assetId, assetName = '', assetIp =
                             }}
                           >
                             <DownloadOutlined style={{ fontSize: 12 }} />
-                          </a>
+                          </Button>
                         </Tooltip>
                       )}
 

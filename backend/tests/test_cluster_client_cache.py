@@ -33,7 +33,10 @@ class ClusterClientCacheTest(unittest.TestCase):
         with patch.object(clusters.config, "new_client_from_config", return_value=object()) as new_client, \
              patch.object(clusters.client, "CoreV1Api", return_value=fake_v1), \
              patch.object(clusters.client, "VersionApi", return_value=fake_version):
-            result = clusters.scan_kubernetes_cluster(KubeScanRequest(kubeconfig_yaml="apiVersion: v1\nkind: Config\n"))
+            result = clusters.scan_kubernetes_cluster(KubeScanRequest(kubeconfig_yaml=(
+                "apiVersion: v1\nkind: Config\nclusters:\n"
+                "  - name: test\n    cluster:\n      server: https://8.8.8.8:6443\n"
+            )))
 
         self.assertEqual(result["status"], "success")
         self.assertEqual(result["node_count"], 1)

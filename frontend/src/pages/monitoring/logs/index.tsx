@@ -366,7 +366,7 @@ export default function LogsQueryPage() {
       rowKey={(r, i) => `${r.id || r.stream_id || 'row'}-${r.time}-${i}`}
       columns={columns}
       dataSource={data}
-      pagination={false}
+      pagination={{ defaultPageSize: 100, pageSizeOptions: [50, 100, 200], showSizeChanger: true, hideOnSinglePage: true }}
       scroll={{ x: 820, y: 420 }}
       onRow={onRowClick ? (row) => ({ onClick: () => onRowClick(row), style: { cursor: 'pointer' } }) : undefined}
       locale={{

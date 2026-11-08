@@ -76,6 +76,28 @@ DEFAULT_RULE_GROUP_NAME = "opspilot-managed"
 # - 所有默认规则的 channel_ids 为空，避免未配置通知渠道时产生无效告警噪音。
 DEFAULT_ALERT_RULES = [
     {
+        "id": "rule-monitoring-stack-down",
+        "name": "OpsPilotMonitoringStackDown",
+        "expr": 'up{job=~"victoriametrics|victorialogs|alloy"} == 0',
+        "duration": "2m",
+        "severity": "critical",
+        "enabled": True,
+        "channel_ids": [],
+        "summary": "监控基础组件失联",
+        "description": "{{ $labels.job }} 已连续 2 分钟无法抓取",
+    },
+    {
+        "id": "rule-monitoring-disk-low",
+        "name": "OpsPilotMonitoringDiskLow",
+        "expr": "vm_free_disk_space_bytes < 5368709120 or vl_free_disk_space_bytes < 5368709120",
+        "duration": "5m",
+        "severity": "critical",
+        "enabled": True,
+        "channel_ids": [],
+        "summary": "监控存储剩余空间不足",
+        "description": "{{ $labels.job }} 数据目录剩余空间不足 5 GiB",
+    },
+    {
         "id": "rule-target-down",
         "name": "OpsPilotTargetDown",
         "expr": "up == 0",

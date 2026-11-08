@@ -5,4 +5,8 @@ __pycache__
 logs
 .env
 storage
+app/kubeconfigs
+app/storage/kubeconfigs
+storage/kubeconfigs
+**/kubeconfigs
 .git
