@@ -370,6 +370,7 @@ export interface DomainResponse {
   cert_targets?: string
   records_count?: number
   provider_zone_id?: string
+  dns_credential?: string
 }
 
 export interface DomainCreate {
@@ -391,6 +392,7 @@ export interface DomainCreate {
 
 export interface DomainUpdate {
   provider?: string
+  dns_credential?: string
   remark?: string
   expires_at?: string
   expire_reminder_days?: number

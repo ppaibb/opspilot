@@ -123,6 +123,7 @@ class DomainCreate(BaseModel):
 class DomainUpdate(BaseModel):
     account_id: str | None = None
     provider: str | None = None
+    dns_credential: str | None = None
     remark: str = ""
     expires_at: str = ""
     expire_reminder_days: int = 30
@@ -1436,6 +1437,14 @@ def update_domain(
         raise HTTPException(status_code=400, detail="更换厂商时请选择对应的域名账户")
 
     row.remark = (payload.remark or "").strip()[:255]
+    if payload.dns_credential is not None:
+        credential_id = payload.dns_credential.strip()
+        if credential_id:
+            credential = db.query(Credential).filter(Credential.cred_id == credential_id).first()
+            if credential is None:
+                raise HTTPException(status_code=404, detail="ACME DNS 凭证不存在")
+            ensure_credential_access(db, credential, current_user)
+        row.dns_credential = credential_id
     # 到期时间留空 = 不修改（与凭证编辑「留空不改」口径一致）；
     # 不能走 parse_expire_date("") 的 +365 天默认，否则清空日期保存会把到期时间静默推后一年
     if expiry is not None:

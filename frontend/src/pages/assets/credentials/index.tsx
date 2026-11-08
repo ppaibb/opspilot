@@ -203,9 +203,14 @@ export default function CredentialsPage() {
   // audit：本地生成的脱敏审计表（只含元数据，不含密文），无需取票；
   // encrypted：调后端批量导出接口（ZIP 附件 + manifest 审计清单），走 credentials:export 票据。
   const handleExecuteExport = () => {
+    const selected = filtered.filter((credential) => selectedKeys.includes(credential.cred_id))
+    if (!selected.length) {
+      message.warning('请先勾选要导出的凭证')
+      return
+    }
     if (exportMode === 'audit') {
       const headers = ['凭证ID', '凭证名称', '类型', '适用范围', '授权权限组', '创建时间', '过期时间', '状态', '敏感内容']
-      const rows = filtered.map((c) => [
+      const rows = selected.map((c) => [
         c.cred_id,
         `"${c.name}"`,
         TYPE_MAP[c.type]?.text || c.type,
@@ -228,11 +233,7 @@ export default function CredentialsPage() {
       return
     }
 
-    const ids = filtered.map((c) => c.cred_id)
-    if (!ids.length) {
-      message.warning('没有可导出的凭证')
-      return
-    }
+    const ids = selected.map((c) => c.cred_id)
     confirm('credentials:export', async (ticket) => {
       setExporting(true)
       try {
@@ -427,7 +428,7 @@ export default function CredentialsPage() {
           >
             <Select
               mode="multiple" allowClear placeholder="默认全部权限组可用"
-              options={accessRoles.map((r) => ({ value: r.role, label: `${r.title}${r.description ? ` — ${r.description}` : ''}` }))}
+              options={accessRoles.map((r) => ({ value: r.role, label: r.title }))}
             />
           </Form.Item>
 

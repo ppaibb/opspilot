@@ -128,6 +128,7 @@ export default function DomainsPage() {
         expire_reminder_days: dom.expire_reminder_days,
         remark: dom.remark,
         acme_enabled: dom.acme_enabled === 'yes',
+        dns_credential: dom.dns_credential || undefined,
       })
     } else {
       setEditingId(null)
@@ -140,8 +141,9 @@ export default function DomainsPage() {
   const handleSave = () => {
     form.validateFields().then((values) => {
       // 清空表示显式解绑；未触碰的缺失字段继续使用PATCH的“不修改”语义。
-      const data = editingId && form.isFieldTouched('account_id') && values.account_id === undefined
-        ? { ...values, account_id: '' } : values
+      const accountCleared = editingId && values.account_id === undefined
+        && (form.isFieldTouched('account_id') || values.provider !== editingDomain?.provider)
+      const data = accountCleared ? { ...values, account_id: '' } : values
       saveMut.mutate({ id: editingId ?? undefined, data })
       if (values.acme_enabled) {
         modal.info({

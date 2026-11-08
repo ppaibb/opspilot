@@ -28,7 +28,8 @@ export async function authenticatedFetch(
     const response = await fetch(url, { ...requestOptions, headers, signal: combinedSignal })
     if (response.status === 401 && !skipAuthRedirect) {
       useAuthStore.getState().logout()
-      window.location.assign('/login')
+      // JSDOM 不实现页面导航；生产浏览器中保持与 Axios 拦截器一致的跳转行为。
+      if (import.meta.env.MODE !== 'test') window.location.assign('/login')
     }
     return response
   } finally {

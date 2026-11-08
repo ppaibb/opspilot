@@ -285,7 +285,7 @@ function PeerConfigModal({ peerId, onClose }: { peerId: number | null; onClose: 
 // ───────────────────────── 成员管理抽屉 ─────────────────────────
 
 function PeersDrawer({ network, onClose }: { network: WgNetwork | null; onClose: () => void }) {
-  const { message } = App.useApp()
+  const { message, modal } = App.useApp()
 
   /** 服务端配置属于敏感凭据，必须通过认证客户端获取后再保存。 */
   const downloadServerConfig = async () => {
@@ -394,7 +394,7 @@ function PeersDrawer({ network, onClose }: { network: WgNetwork | null; onClose:
         ]
         const onMore: MenuProps['onClick'] = ({ key }) => {
           if (key !== 'delete') return
-          Modal.confirm({
+          modal.confirm({
             title: `删除成员 ${record.name}`,
             content: '成员配置将随之失效，确定继续？',
             okText: '删除', okButtonProps: { danger: true }, cancelText: '取消',
