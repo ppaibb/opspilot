@@ -34,7 +34,7 @@ DNS_PROVIDERS = {
         DNSProviderSpec("aliyun", "阿里云 DNS", ("AccessKey",), _aliyun_factory, supports_priority=True, supports_acme=True),
         DNSProviderSpec("huawei", "华为云 DNS", ("AccessKey",), HuaweiDNS, supports_multi_values=True, can_rename_records=False),
         DNSProviderSpec("cloudflare", "Cloudflare DNS", ("Token",), CloudflareDNS, supports_proxy=True, supports_priority=True),
-        DNSProviderSpec("tencent", "腾讯云 DNSPod", ("AccessKey",), TencentDNS, supports_priority=True, supports_record_write=False),
+        DNSProviderSpec("tencent", "腾讯云 DNSPod", ("AccessKey",), TencentDNS, supports_priority=True, supports_record_write=False, supports_acme=True),
     )
 }
 
