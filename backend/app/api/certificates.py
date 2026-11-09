@@ -34,7 +34,11 @@ import requests
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from app.core.crypto import decrypt_secret
+from app.core.crypto import (
+    CredentialDecryptionError,
+    CredentialEncryptionConfigError,
+    decrypt_secret,
+)
 from app.core.filesystem import ensure_private_directory, write_sensitive_text_file
 from app.core.security import get_current_user, require_permissions, require_risk_ack
 from app.db.database import SessionLocal, get_db
@@ -46,6 +50,7 @@ from app.models.resource_group_member import RESOURCE_TYPE_CERT, ResourceGroupMe
 from app.models.user import User
 from app.api.notifications import create_notification, NotificationCreate
 from app.services.credential_access import ensure_credential_access, filter_credentials_for_user
+from app.services.credential_usage import sync_credential_usage
 
 logger = logging.getLogger(__name__)
 
@@ -398,6 +403,11 @@ def load_or_create_account_jwk(account_id: str, server_alias: str) -> tuple[jose
         if not isinstance(loaded, rsa.RSAPrivateKey):
             raise RuntimeError("ACME 账户私钥格式非法")
         private_key = loaded
+        # 存量密钥文件可能是旧逻辑以默认 umask（0644）落盘的，读到即收紧为 0600。
+        try:
+            os.chmod(key_path, 0o600)
+        except OSError:
+            logger.debug("ACME 账户私钥权限收紧失败：%s", key_path, exc_info=True)
     else:
         private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
         pem = private_key.private_bytes(
@@ -405,7 +415,9 @@ def load_or_create_account_jwk(account_id: str, server_alias: str) -> tuple[jose
             format=serialization.PrivateFormat.TraditionalOpenSSL,
             encryption_algorithm=serialization.NoEncryption(),
         )
-        key_path.write_bytes(pem)
+        # 账户私钥与证书私钥同一标准：0600 落盘（write_sensitive_text_file 会在写后 chmod，
+        # 新文件与已存在文件都保证 0600）。
+        write_sensitive_text_file(key_path, pem.decode("utf-8"))
     return jose.JWKRSA(key=private_key), private_key
 
 
@@ -1071,7 +1083,17 @@ def run_issue_job(cert_id: str, renew: bool = False, reserved: bool = False, use
             )
             return
 
-        content = decrypt_secret(cred.content or "")
+        try:
+            content = decrypt_secret(cred.content or "")
+        except CredentialDecryptionError:
+            # 签发账户凭证密文已损坏：走与前置校验失败同一口径（失败状态 + 通知），不要 500。
+            set_issue_failed(db, cert, "引用的凭证已损坏，需重新录入")
+            _notify_issue_failed(db, cert, renew=renew, user_id=user_id, reason="引用的凭证已损坏，需重新录入")
+            return
+        except CredentialEncryptionConfigError:
+            set_issue_failed(db, cert, "凭证加密配置异常，请联系管理员")
+            _notify_issue_failed(db, cert, renew=renew, user_id=user_id, reason="凭证加密配置异常，请联系管理员")
+            return
         access_key, secret_key = parse_access_key_content(content)
         if not access_key or not secret_key:
             set_issue_failed(db, cert, "凭证内容无法解析 AccessKey/SecretKey")
@@ -1412,6 +1434,8 @@ def issue_certificate(
         updated_at=created_at,
     )
     db.add(row)
+    # 新证书即引用签发账户凭证：同步 used_by，否则删凭证保护看不到这条引用。
+    sync_credential_usage(db, {account_id})
     db.commit()
     db.refresh(row)
 
@@ -1785,21 +1809,28 @@ def _deploy_cert_to_cloud(
     provider: str,
     cred: Credential,
 ) -> dict:
-    """云路只记录推送目标，不调用云厂商接口（本次不实现真的云推送）。"""
+    """云路只记录推送目标，不调用云厂商接口（本次不实现真的云推送）。
+
+    历史状态必须诚实：逐目标结果记 ``recorded``（未推送），run_deploy_job
+    据此把历史记为 ``recorded`` 而不是 ``success``；``success`` 恒为 False，
+    这样部署历史的“成功 x/y”也不会把未推送算成已推送。
+    """
     deploy_msg = (
-        f"已记录云平台证书推送目标 [{provider.upper()}]（凭证：{cred.name}），"
-        "本次未调用云厂商接口，请在云控制台确认证书已更新。"
+        f"仅记录云平台证书推送目标 [{provider.upper()}]（凭证：{cred.name}），"
+        "未推送：本次未调用云厂商接口，请在云控制台手动更新证书。"
     )
     append_cert_log(row.cert_id, deploy_msg)
     row.deploy_targets = f"{provider.upper()} CDN/ALB ({cred.name})"
     row.updated_at = now_ts()
     return {
-        "success": True,
+        "success": False,
+        "recorded": True,
         "message": deploy_msg,
         "results": [
             {
                 "target": f"{provider}-cdn",
-                "success": True,
+                "success": False,
+                "recorded": True,
                 "message": deploy_msg,
             }
         ],
@@ -1860,6 +1891,7 @@ def _deploy_cert_to_host(
         sftp.close()
 
         out_msg = "已分发证书。"
+        script_ok = True
         if post_script:
             _, stdout, stderr = client.exec_command(post_script, timeout=15.0)
             out = (stdout.read() or b"").decode(errors="ignore").strip()
@@ -1868,8 +1900,11 @@ def _deploy_cert_to_host(
             if exit_code == 0:
                 out_msg += f" 后置脚本执行成功: {out[:100]}"
             else:
+                # 后置脚本（如 reload nginx）失败 = 证书未生效，该台必须记失败，
+                # 不能只在 message 后缀一句就仍算成功。
                 out_msg += f" 后置脚本执行失败(Code {exit_code}): {err[:100]}"
-        return {"asset_id": asset_id, "target": asset_id, "success": True, "message": out_msg}
+                script_ok = False
+        return {"asset_id": asset_id, "target": asset_id, "success": script_ok, "message": out_msg}
     except HTTPException as exc:
         return {"asset_id": asset_id, "target": asset_id, "success": False, "message": str(exc.detail)}
     except Exception as e:
@@ -1949,7 +1984,11 @@ def run_deploy_job(cert_id: str, deploy_id: str, params: dict, user_id: int | No
         if not results:
             results = [{"target": "", "success": False, "message": "无有效部署目标"}]
         success_count = sum(1 for item in results if item.get("success"))
-        if success_count == len(results):
+        recorded_count = sum(1 for item in results if item.get("recorded"))
+        if recorded_count == len(results):
+            # 云路只记录目标、未调用云厂商接口：历史记 recorded（未推送），不是 success。
+            status = "recorded"
+        elif success_count == len(results):
             status = "success"
         elif success_count > 0:
             status = "partial"
@@ -1995,7 +2034,8 @@ def deploy_certificate(
 
     说明：
     1. 当 target_type == 'cloud' 时：只校验云账号凭证合法性并记录推送目标，
-       不调用云厂商接口（本次不实现真的云推送），历史记录如实写明；
+       不调用云厂商接口（本次不实现真的云推送），历史记录记为 ``recorded``
+       （未推送，仅记录目标），不在任何地方显示为成功；
     2. 当 target_type == 'host' 时：使用 Paramiko SSH 打开 SFTP 通道将证书与私钥上传至指定绝对路径，并执行后置重载命令。
     """
     row = db.query(CertificateRecord).filter(CertificateRecord.cert_id == cert_id).first()
@@ -2187,6 +2227,7 @@ def batch_delete_certificates(
 
     failed: List[dict] = []
     success_count = 0
+    released_account_ids: set[str] = set()
     for cert_id in ids:
         row = db.query(CertificateRecord).filter(CertificateRecord.cert_id == cert_id).first()
         if not row:
@@ -2197,8 +2238,11 @@ def batch_delete_certificates(
             continue
         cert_dir = resolve_cert_dir(row)
         safe_remove_cert_dir(cert_dir)
+        released_account_ids.add(str(row.account_id or "").strip())
         db.delete(row)
         success_count += 1
+    # 批量删证书即批量释放签发账户引用：同步后相关凭证的 used_by 才会降下来。
+    sync_credential_usage(db, released_account_ids)
     db.commit()
     return {"success_count": success_count, "failed": failed}
 
@@ -2217,13 +2261,16 @@ def delete_certificate(
         raise HTTPException(status_code=400, detail="签发任务执行中，暂不可删除")
     cert_dir = resolve_cert_dir(row)
     safe_remove_cert_dir(cert_dir)
+    old_account_id = str(row.account_id or "").strip()
     db.delete(row)
+    # 删证书即释放签发账户引用：同步后该凭证的 used_by 才会降下来。
+    sync_credential_usage(db, {old_account_id})
     db.commit()
     return {"message": "success"}
 
 
 def run_certificates_auto_renew_cycle() -> None:
-    """自动续费周期函数：扫描即将过期的阿里云证书并自动执行 ACME 签发；同时回收超时 renewing 状态。"""
+    """自动续费周期函数：扫描即将过期的证书并自动执行 ACME 签发；同时回收超时 renewing 状态。"""
     db = SessionLocal()
     try:
         # 兜底：回收卡在 renewing 超过 10 分钟的证书
@@ -2271,8 +2318,11 @@ def run_certificates_auto_renew_cycle() -> None:
         for cert in certs:
             status = calc_certificate_status(cert.not_after or "", int(cert.renew_before_days or 30), cert.status or "pending")
             if status in {"expiring", "expired"}:
-                # 当前自动签发只支持阿里云
-                if cert.provider == "aliyun" and (cert.account_id or "").strip():
+                # 自动签发只支持已实现 ACME DNS-01 插件的厂商（见 ACME_PROVIDER_PLUGINS
+                # 的 implemented 标记）；不要再手写厂商白名单，插件落地后这里自动放行。
+                # 手动上传证书（provider == "custom"）无插件，走不到这里。
+                plugin_meta = ACME_PROVIDER_PLUGINS.get((cert.provider or "").strip().lower())
+                if plugin_meta and bool(plugin_meta.get("implemented")) and (cert.account_id or "").strip():
                     # 重试冷却：上次触发续签距今不足 24 小时则跳过本轮。
                     # 否则续签失败的证书会每轮 + 每次重启都被重新触发，通知与 ACME 请求翻倍。
                     if (cert.last_renew_attempt_at or "").strip() and cert.last_renew_attempt_at > cooldown_cutoff:

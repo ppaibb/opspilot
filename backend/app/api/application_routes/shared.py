@@ -153,6 +153,7 @@ from app.services.application_runtime import (
 )
 from app.services.application_time import format_app_datetime, now_dt, parse_app_datetime
 from app.services.credential_access import ensure_credential_access, filter_credentials_for_user
+from app.services.credential_usage import sync_credential_usage
 from app.api.assets import decode_asset_password, get_credential_content as get_asset_credential_content, run_ssh_command
 from app.api.tools import (
     AnsiblePlaybookRunRequest,
@@ -902,11 +903,15 @@ def _upsert_runtime_file_config(
     now = _now_str()
     if row:
         old_value = row.value or ""
+        old_credential_ref = row.credential_ref or ""
         row.value = value
         row.value_type = "file"
         row.credential_ref = ""
         row.remark = remark[:500]
         row.updated_at = now
+        if old_credential_ref:
+            # 运行实例文件镜像会清掉该行的凭证引用：同步后 used_by 才会降下来。
+            sync_credential_usage(db, {old_credential_ref})
         _add_config_revision(
             db=db,
             current_user=current_user,

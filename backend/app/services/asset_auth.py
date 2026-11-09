@@ -5,7 +5,11 @@ from dataclasses import dataclass
 
 from sqlalchemy.orm import Session
 
-from app.core.crypto import decrypt_secret
+from app.core.crypto import (
+    CredentialDecryptionError,
+    CredentialEncryptionConfigError,
+    decrypt_secret,
+)
 from app.models.asset import Asset
 from app.models.credential import Credential
 from app.models.user import User
@@ -51,8 +55,14 @@ def resolve_credential_ssh_auth(credential: Credential | None, fallback_password
     if credential is None:
         return AssetSshAuth(password=password, notice="SSH 密码" if password else "凭证不存在")
 
-    content = decrypt_secret(str(credential.content or "")).strip()
     credential_ref = str(credential.cred_id or "").strip()
+    try:
+        content = decrypt_secret(str(credential.content or "")).strip()
+    except CredentialDecryptionError:
+        # 凭证密文已损坏：转业务错误（notice），不要 500 拖垮主机登录链路。
+        return AssetSshAuth(password=password, notice=f"引用的凭证 {credential_ref} 已损坏，需重新录入")
+    except CredentialEncryptionConfigError:
+        return AssetSshAuth(password=password, notice="凭证加密配置异常，请联系管理员")
     credential_type = str(credential.type or "").strip()
     if not content:
         return AssetSshAuth(password=password, notice=f"凭证 {credential_ref} 内容为空")
@@ -91,7 +101,17 @@ def load_credential_ssh_auth(
 
 def resolve_asset_ssh_auth(db: Session, asset: Asset, current_user: User | None = None) -> AssetSshAuth:
     """解析主机资产最终 SSH 认证材料。"""
-    password = decrypt_secret(str(asset.ssh_password or "")).strip() if asset.ssh_password else ""
+    password = ""
+    password_damaged = False
+    if asset.ssh_password:
+        try:
+            password = decrypt_secret(str(asset.ssh_password or "")).strip()
+        except CredentialDecryptionError:
+            # 资产自身存的 SSH 密码密文已损坏：记下来继续走凭证路径，不要 500；
+            # 无凭证可走时再由下面的 notice 报“已损坏”。
+            password_damaged = True
+        except CredentialEncryptionConfigError:
+            return AssetSshAuth(password="", notice="凭证加密配置异常，请联系管理员")
     credential_ref = str(asset.credential_ref or "").strip()
     if credential_ref:
         return load_credential_ssh_auth(
@@ -100,4 +120,6 @@ def resolve_asset_ssh_auth(db: Session, asset: Asset, current_user: User | None 
             current_user=current_user,
             fallback_password=password,
         )
+    if password_damaged:
+        return AssetSshAuth(password="", notice="引用的凭证已损坏，需重新录入")
     return AssetSshAuth(password=password, notice="SSH 密码" if password else "未配置可用 SSH 认证")

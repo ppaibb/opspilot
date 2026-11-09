@@ -346,6 +346,7 @@ export default function CertificatesPage() {
     deployForm.resetFields()
     deployForm.setFieldsValue({
       target_type: 'host',
+      cloud_provider: 'aliyun',
       cert_path: `/etc/nginx/ssl/${cert.primary_domain}.crt`,
       key_path: `/etc/nginx/ssl/${cert.primary_domain}.key`,
       reload_cmd: 'systemctl reload nginx',
@@ -847,7 +848,9 @@ export default function CertificatesPage() {
                   ) : (
                     r.results.map((item, i) => (
                       <Flex key={i} align="center" gap={8} style={{ padding: '4px 0' }}>
-                        <Tag color={item.success ? 'success' : 'error'}>{item.success ? '成功' : '失败'}</Tag>
+                        <Tag color={item.recorded ? 'warning' : item.success ? 'success' : 'error'}>
+                          {item.recorded ? '仅记录' : item.success ? '成功' : '失败'}
+                        </Tag>
                         <span style={{ minWidth: 120 }}>{item.target || item.asset_id || '-'}</span>
                         <span style={{ color: '#595959', fontSize: 12 }}>{item.message}</span>
                       </Flex>
@@ -957,9 +960,29 @@ export default function CertificatesPage() {
 
           {deployTab === 'cloud' && (
             <>
+              <div style={{ color: '#8c8c8c', fontSize: 12, marginBottom: 12 }}>
+                仅记录推送目标，未调用云厂商接口：提交后请在云控制台手动更新证书。
+              </div>
+              <Form.Item name="cloud_provider" label="云厂商" initialValue="aliyun" rules={[{ required: true }]}>
+                <Radio.Group buttonStyle="solid">
+                  <Radio.Button value="aliyun">阿里云</Radio.Button>
+                  <Radio.Button value="tencent">腾讯云</Radio.Button>
+                </Radio.Group>
+              </Form.Item>
               <Form.Item name="cloud_credential" label="云服务商 API 密钥凭证" rules={[{ required: true }]}>
                 <Select
-                  placeholder="选择阿里云 / 腾讯云 / AWS AccessKey 凭证"
+                  placeholder="选择阿里云 / 腾讯云 AccessKey 凭证"
+                  onChange={(value) => {
+                    // 按凭证名称推断厂商并联动选择器，与后端 infer_provider_key 同口径；
+                    // 名称无厂商关键词时保持用户已选的厂商不变
+                    const cred = credentials.find((c: CredentialResponse) => c.cred_id === value)
+                    const name = `${cred?.name || ''}`.toLowerCase()
+                    if (name.includes('腾讯') || name.includes('tencent') || name.includes('dnspod')) {
+                      deployForm.setFieldsValue({ cloud_provider: 'tencent' })
+                    } else if (name.includes('阿里') || name.includes('aliyun') || name.includes('alibaba')) {
+                      deployForm.setFieldsValue({ cloud_provider: 'aliyun' })
+                    }
+                  }}
                   options={credentials
                     .filter((c: CredentialResponse) => c.type === 'AccessKey')
                     .map((c: CredentialResponse) => ({ value: c.cred_id, label: `${c.name} (${c.type})` }))}
@@ -971,9 +994,6 @@ export default function CertificatesPage() {
                   <Radio.Button value="alb">ALB / CLB 负载均衡</Radio.Button>
                   <Radio.Button value="waf">WAF 应用防火墙</Radio.Button>
                 </Radio.Group>
-              </Form.Item>
-              <Form.Item name="domain_instance" label="云资源关联的实例域名 / ID" rules={[{ required: true }]}>
-                <Input placeholder="例如 cdn.opspilot.com 或 alb-instance-889a" />
               </Form.Item>
             </>
           )}

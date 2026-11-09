@@ -26,11 +26,13 @@ function deployment(status: string): CertificateDeployment {
 }
 
 describe('部署历史状态映射', () => {
-  it('状态文案：running 进行中、success 成功、partial 部分成功、failed 失败', () => {
+  it('状态文案：running 进行中、success 成功、partial 部分成功、failed 失败、recorded 仅记录未推送', () => {
     expect(deployStatusText('running')).toBe('进行中')
     expect(deployStatusText('success')).toBe('成功')
     expect(deployStatusText('partial')).toBe('部分成功')
     expect(deployStatusText('failed')).toBe('失败')
+    // 云路只记录目标、未调用云厂商接口：不是成功，也不是失败
+    expect(deployStatusText('recorded')).toBe('仅记录，未推送')
   })
 
   it('未知/空状态回落原文或 —', () => {
@@ -45,6 +47,7 @@ describe('部署历史状态映射', () => {
     expect(deployStatusTagColor('success')).toBe('success')
     expect(deployStatusTagColor('partial')).toBe('warning')
     expect(deployStatusTagColor('failed')).toBe('error')
+    expect(deployStatusTagColor('recorded')).toBe('warning')
     expect(deployStatusTagColor('queued')).toBe('default')
     expect(deployStatusTagColor(undefined)).toBe('default')
   })
@@ -67,6 +70,14 @@ describe('部署历史状态映射', () => {
         { target: 'HOST-3', success: true, message: 'ok' },
       ]),
     ).toEqual({ success: 2, total: 3 })
+  })
+
+  it('仅记录的结果不计入成功台数', () => {
+    expect(
+      deploySuccessCount([
+        { target: 'aliyun-cdn', success: false, recorded: true, message: '仅记录，未推送' },
+      ]),
+    ).toEqual({ success: 0, total: 1 })
   })
 
   it('任一记录 running 时需要轮询，否则不轮询', () => {
