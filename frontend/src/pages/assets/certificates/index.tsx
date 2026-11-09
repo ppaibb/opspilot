@@ -1,17 +1,17 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
-  Table, Button, Space, Input, Tag, Drawer, Form, Select, App, Tooltip,
-  Badge, Progress, Flex, Card, Statistic, Row, Col, Switch, Tabs, Radio, Dropdown, Spin,
+  Table, Button, Space, Input, InputNumber, Tag, Drawer, Form, Select, App, Tooltip,
+  Badge, Flex, Card, Statistic, Row, Col, Switch, Tabs, Radio, Dropdown, Spin,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import type { MenuProps } from 'antd'
 import {
   PlusOutlined, SearchOutlined, DeleteOutlined, SafetyCertificateOutlined,
   CloudUploadOutlined, SyncOutlined, StopOutlined, SendOutlined,
-  CheckCircleOutlined, ClockCircleOutlined, DownloadOutlined,
+  CheckCircleOutlined, ClockCircleOutlined, DownOutlined,
   HddOutlined, CloudOutlined, ClusterOutlined, DeploymentUnitOutlined,
-  MoreOutlined, FileTextOutlined,
+  FileTextOutlined,
 } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import { certificatesApi, assetsApi, credentialsApi, clustersApi, domainsApi } from '@/api'
@@ -30,6 +30,12 @@ import {
   CERT_LIST_POLL_INTERVAL_MS, CERT_LOG_POLL_INTERVAL_MS,
   isCertLogErrorLine, isTransientCertStatus, shouldPollCertList,
 } from './certIssueLog'
+import {
+  CERT_PROVIDER_FILTER_OPTIONS, CERT_STATUS_FILTER_OPTIONS, CERT_STATUS_BADGE_PULSE,
+  certStatusBadgeBg, expiryDisplay, EXPIRY_TONE_COLOR, formatIssuer, formatKeyType,
+  matchProviderFilter, matchStatusFilter,
+} from './certTableMeta'
+import type { CertProviderFilter } from './certTableMeta'
 
 const STATUS_MAP: Record<string, { text: string; color: string }> = {
   valid:    { text: '有效',     color: 'success' },
@@ -54,9 +60,13 @@ export default function CertificatesPage() {
   const queryClient = useQueryClient()
   const [selectedKeys, setSelectedKeys] = useState<string[]>([])
   const [search, setSearch] = useState('')
+  // 搜索框草稿：点「搜索」或回车后才应用到 search，避免每次 keystroke 都重算列表
+  const [searchInput, setSearchInput] = useState('')
+  const [providerFilter, setProviderFilter] = useState<CertProviderFilter>('all')
+  const [statusFilter, setStatusFilter] = useState('all')
   const [groupFilter, setGroupFilter] = useState<number | null>(null)
   const [drawerOpen, setDrawerOpen] = useState(false)
-  const [mode, setMode] = useState<'issue' | 'upload'>('issue')
+  const [mode, setMode] = useState<'issue' | 'upload' | 'edit'>('issue')
 
   // 部署任务大抽屉控制
   const [deployDrawerOpen, setDeployDrawerOpen] = useState(false)
@@ -66,6 +76,10 @@ export default function CertificatesPage() {
   // 签发日志抽屉：打开的证书（null 表示关闭）
   const [logCert, setLogCert] = useState<CertificateResponse | null>(null)
   const logContainerRef = useRef<HTMLDivElement | null>(null)
+
+  // 编辑证书：复用申请抽屉的编辑态，只改可编辑字段（名称、SAN、自动续期、提前续期天数、备注），不动签发参数
+  const [editingCert, setEditingCert] = useState<CertificateResponse | null>(null)
+  const [editForm] = Form.useForm()
 
   // 抽屉表单里的 san_domains 是逗号/换行分隔的文本，提交时再转成 string[]
   type IssueFormValues = Omit<CertificateIssueRequest, 'san_domains'> & { san_domains?: string }
@@ -133,7 +147,7 @@ export default function CertificatesPage() {
     if (el && logLines.length > 0) el.scrollTop = el.scrollHeight
   }, [logLines])
 
-  const { deleteMut } = useCrudResource<CertificateIssueRequest, string>({
+  const { saveMut, deleteMut } = useCrudResource<CertificateIssueRequest, string>({
     queryKey: ['certificates'],
     entityName: '证书',
     createFn: certificatesApi.issue,
@@ -149,6 +163,8 @@ export default function CertificatesPage() {
         deploy_targets: data.deploy_targets,
       }),
     deleteFn: certificatesApi.delete,
+    // 保存成功后关闭抽屉（saveMut 在本页只用于编辑；新增走 issueMut）
+    onSaved: () => { setDrawerOpen(false); setEditingCert(null) },
   })
 
   const batchDeleteMut = useMutation({
@@ -246,15 +262,58 @@ export default function CertificatesPage() {
   }).length
   const autoRenewCount = certs.filter((c) => c.auto_renew).length
 
-  const filtered = certs.filter((c) =>
-    !search || (c.name && c.name.includes(search)) || (c.primary_domain && c.primary_domain.includes(search)),
+  const filtered = certs.filter(
+    (c) =>
+      (!search || (c.name && c.name.includes(search)) || (c.primary_domain && c.primary_domain.includes(search))) &&
+      matchProviderFilter(c.provider, providerFilter) &&
+      matchStatusFilter(c.status, statusFilter),
   )
 
   const openDrawer = () => {
     setMode('issue')
+    setEditingCert(null)
     issueForm.resetFields()
     uploadForm.resetFields()
     setDrawerOpen(true)
+  }
+
+  const openEditDrawer = (cert: CertificateResponse) => {
+    setEditingCert(cert)
+    setMode('edit')
+    editForm.resetFields()
+    editForm.setFieldsValue({
+      name: cert.name,
+      san_domains: (cert.san_domains ?? []).join(', '),
+      auto_renew: cert.auto_renew,
+      renew_before_days: cert.renew_before_days,
+      remark: cert.remark,
+    })
+    setDrawerOpen(true)
+  }
+
+  const handleEditSubmit = () => {
+    if (!editingCert) return
+    const targetId = editingCert.cert_id || editingCert.id || ''
+    editForm.validateFields().then((v) => {
+      const san_domains = (v.san_domains ?? '')
+        .split(/[,，\n]+/)
+        .map((item: string) => item.trim())
+        .filter(Boolean)
+      // primary_domain / account_id 只是满足 CertificateIssueRequest 的必填类型；
+      // updateFn 只取其中可编辑字段，不动签发参数
+      saveMut.mutate({
+        id: targetId,
+        data: {
+          name: v.name,
+          primary_domain: editingCert.primary_domain,
+          san_domains,
+          account_id: editingCert.account_id ?? '',
+          auto_renew: v.auto_renew,
+          renew_before_days: v.renew_before_days,
+          remark: v.remark,
+        },
+      })
+    })
   }
 
   const openDeployDrawer = (cert: CertificateResponse) => {
@@ -328,39 +387,59 @@ export default function CertificatesPage() {
 
   const columns: ColumnsType<CertificateResponse> = [
     {
-      title: '证书名称', dataIndex: 'name', width: 180, fixed: 'left',
+      title: '证书名称', dataIndex: 'name', width: 160, fixed: 'left',
       render: (v: string, r) => v || r.primary_domain || '-',
     },
-    { title: '主域名', dataIndex: 'primary_domain', width: 170, render: (v: string) => v || '-' },
     {
-      title: 'SAN 备用域名', dataIndex: 'san_domains', width: 140,
-      render: (v: string[]) => v?.length ? <Tooltip title={v.join(', ')}><Tag>{v.length} 个</Tag></Tooltip> : '-',
+      title: '绑定域名', dataIndex: 'primary_domain', width: 200,
+      render: (v: string, r) => (
+        <div>
+          <div>{v || '-'}</div>
+          {r.san_domains?.length ? (
+            <div style={{ color: '#8c8c8c', fontSize: 12 }}>{r.san_domains.join('，')}</div>
+          ) : null}
+        </div>
+      ),
     },
     {
-      title: '部署任务', dataIndex: 'deploy_targets', width: 220,
-      render: (v: string) => {
-        if (!v) return <Tag style={{ opacity: 0.6 }}>未配置部署任务</Tag>
-        return (
-          <Tooltip title={`已绑定部署目标: ${v}`}>
-            <Space size={4} wrap>
-              {v.includes('ALIYUN') || v.includes('TENCENT') ? (
-                <Tag color="orange" icon={<CloudOutlined />}>云服务 CDN/ALB</Tag>
-              ) : v.includes('k8s') || v.includes('secret') ? (
-                <Tag color="purple" icon={<ClusterOutlined />}>K8s Secret</Tag>
-              ) : (
-                <Tag color="blue" icon={<HddOutlined />}>{v.length > 18 ? `${v.slice(0, 16)}...` : v}</Tag>
-              )}
-            </Space>
-          </Tooltip>
-        )
-      },
+      title: '证书信息', width: 190,
+      render: (_: unknown, r) => (
+        <div>
+          <div>签名算法：{formatKeyType(r.key_type)}</div>
+          <div style={{ color: '#8c8c8c', fontSize: 12 }}>颁发机构：{formatIssuer(r.acme_server)}</div>
+        </div>
+      ),
     },
     {
-      title: '状态', dataIndex: 'status', width: 100,
+      title: '证书账户', dataIndex: 'account_name', width: 150,
+      render: (v: string, r) => (
+        <span>
+          <SafetyCertificateOutlined style={{ color: '#8c8c8c', marginRight: 6 }} />
+          {v || r.provider_label || '-'}
+        </span>
+      ),
+    },
+    {
+      title: '状态', dataIndex: 'status', width: 110,
       render: (s: string, r: CertificateResponse) => {
         // 未知状态回落原文，不能默认 revoked（会把签发中/失败误显示成已吊销）
-        const item = STATUS_MAP[s] ?? { text: s || '-', color: 'default' }
-        const badge = <Badge status={item.color as 'success' | 'processing' | 'warning' | 'error' | 'default'} text={item.text} />
+        const text = STATUS_MAP[s]?.text ?? s ?? '-'
+        const bg = certStatusBadgeBg(s)
+        const badge = (
+          <Tag
+            style={{ backgroundColor: bg, borderColor: bg, color: '#fff', marginInlineEnd: 0, cursor: ['pending', 'issuing', 'renewing', 'failed', 'issued'].includes(s) ? 'pointer' : 'default' }}
+          >
+            {CERT_STATUS_BADGE_PULSE.includes(s) && (
+              <span
+                style={{
+                  display: 'inline-block', width: 6, height: 6, borderRadius: '50%',
+                  background: '#fff', marginRight: 6, animation: 'cert-status-pulse 1.2s infinite',
+                }}
+              />
+            )}
+            {text}
+          </Tag>
+        )
         // 进行中/失败/已签发可点开签发日志；pending 是新建记录的初始状态，同样可点
         if (['pending', 'issuing', 'renewing', 'failed', 'issued'].includes(s)) {
           return (
@@ -373,27 +452,17 @@ export default function CertificatesPage() {
       },
     },
     {
-      title: '剩余有效时间', dataIndex: 'not_after', width: 200,
+      title: '签发时间', dataIndex: 'not_before', width: 110,
       render: (v: string) => {
-        if (!v) return '-'
-        const days = daysLeft(v)
-        if (days === null) return '-'
-        let status: 'normal' | 'exception' | 'active' = 'normal'
-        if (days < 0) status = 'exception'
-        else if (days <= 30) status = 'exception'
-
-        const percent = Math.max(0, Math.min(100, Math.round((days / 90) * 100)))
-        return (
-          <div>
-            <Flex justify="space-between" style={{ fontSize: 12 }}>
-              <span>{dayjs(v).format('YYYY-MM-DD')}</span>
-              <span style={{ color: days < 0 ? '#ff4d4f' : days <= 30 ? '#faad14' : '#52c41a' }}>
-                {days < 0 ? '已过期' : `${days} 天`}
-              </span>
-            </Flex>
-            <Progress percent={percent} size="small" status={status} showInfo={false} />
-          </div>
-        )
+        if (!v || !dayjs(v).isValid()) return '-'
+        return dayjs(v).format('YYYY-MM-DD')
+      },
+    },
+    {
+      title: '到期时间', dataIndex: 'not_after', width: 110,
+      render: (v: string) => {
+        const { text, tone } = expiryDisplay(daysLeft(v))
+        return <span style={{ color: EXPIRY_TONE_COLOR[tone], fontWeight: 600 }}>{text}</span>
       },
     },
     {
@@ -415,17 +484,23 @@ export default function CertificatesPage() {
       },
     },
     {
-      title: '操作', key: 'action', width: 130, fixed: 'right',
+      title: '操作', key: 'action', width: 300, fixed: 'right',
       render: (_: unknown, r) => {
         const targetId = r.cert_id || r.id || ''
+        const isTransient = ['pending', 'issuing', 'renewing'].includes(r.status)
+        // 手动上传（custom）证书无 ACME 账号，续期必然失败——续签禁用
+        const isCustom = r.provider === 'custom' || r.acme_server === 'custom'
         const moreItems: MenuProps['items'] = [
           { key: 'logs', icon: <FileTextOutlined />, label: '查看签发日志' },
+          { key: 'deploy', icon: <DeploymentUnitOutlined />, label: '部署任务' },
           { key: 'revoke', icon: <StopOutlined />, label: '吊销证书', danger: true },
           { key: 'delete', icon: <DeleteOutlined />, label: '删除', danger: true },
         ]
         const onMore: MenuProps['onClick'] = ({ key }) => {
           if (key === 'logs') {
             setLogCert(r)
+          } else if (key === 'deploy') {
+            openDeployDrawer(r)
           } else if (key === 'revoke') {
             confirm('certificates:revoke', (ticket) => revokeMut.mutate({ id: targetId, ticket }))
           } else if (key === 'delete') {
@@ -438,20 +513,27 @@ export default function CertificatesPage() {
           }
         }
         return (
-          <Space size={4}>
-            <Tooltip title="配置多模态部署任务">
-              <Button size="small" type="primary" ghost icon={<DeploymentUnitOutlined />} onClick={() => openDeployDrawer(r)}>
-                部署任务
+          <Space size={6}>
+            <Tooltip title="下载证书文件包（cert/key/fullchain）">
+              <Button size="small" color="green" variant="solid" disabled={isTransient} onClick={() => handleDownload(r)}>
+                下载
               </Button>
             </Tooltip>
-            <Tooltip title="手动触发续期">
-              <Button size="small" type="text" icon={<SyncOutlined />} onClick={() => renewMut.mutate(targetId)} loading={renewMut.isPending} />
+            <Tooltip title={isCustom ? '手动上传的证书没有 ACME 账号，无法自动续期' : '手动触发续期'}>
+              <Button
+                size="small" color="orange" variant="solid" disabled={isTransient || isCustom}
+                onClick={() => renewMut.mutate(targetId)} loading={renewMut.isPending}
+              >
+                续签
+              </Button>
             </Tooltip>
-            <Tooltip title="下载证书文件包（cert/key/fullchain）">
-              <Button size="small" type="text" icon={<DownloadOutlined />} onClick={() => handleDownload(r)} />
-            </Tooltip>
+            <Button size="small" color="blue" variant="solid" onClick={() => openEditDrawer(r)}>
+              修改
+            </Button>
             <Dropdown menu={{ items: moreItems, onClick: onMore }} trigger={['click']}>
-              <Button size="small" type="text" icon={<MoreOutlined />} />
+              <Button size="small" color="blue" variant="solid">
+                更多 <DownOutlined />
+              </Button>
             </Dropdown>
           </Space>
         )
@@ -461,6 +543,8 @@ export default function CertificatesPage() {
 
   return (
     <Flex gap={16} style={{ height: '100%' }}>
+      {/* 仅本页用：斑马纹行底色 + 进行中状态徽章呼吸点 */}
+      <style>{`.cert-row-alt{background:#fafafa;}\n@keyframes cert-status-pulse{0%,100%{opacity:1}50%{opacity:.25}}`}</style>
       <GroupSidebar
         resourceType="cert"
         selectedGroupId={groupFilter}
@@ -519,18 +603,43 @@ export default function CertificatesPage() {
             <Input
               prefix={<SearchOutlined />}
               placeholder="搜索证书名称或主域名"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
+              value={searchInput}
+              onChange={(e) => { setSearchInput(e.target.value); if (!e.target.value) setSearch('') }}
+              onPressEnter={() => setSearch(searchInput)}
               allowClear
               style={{ width: 240 }}
             />
-            {selectedKeys.length > 0 && (
-              <Button danger icon={<DeleteOutlined />} onClick={() => confirm('certificates:delete', (ticket) => batchDeleteMut.mutate(ticket))}>
-                批量删除 ({selectedKeys.length})
-              </Button>
-            )}
+            <Select
+              value={providerFilter}
+              onChange={(v) => setProviderFilter(v)}
+              options={CERT_PROVIDER_FILTER_OPTIONS}
+              style={{ width: 120 }}
+            />
+            <Select
+              value={statusFilter}
+              onChange={(v) => setStatusFilter(v)}
+              options={CERT_STATUS_FILTER_OPTIONS}
+              style={{ width: 130 }}
+            />
+            <Button type="primary" onClick={() => setSearch(searchInput)}>搜索</Button>
+            <Button onClick={() => queryClient.invalidateQueries({ queryKey: ['certificates'] })}>刷新</Button>
           </Space>
-          <Button type="primary" icon={<PlusOutlined />} onClick={openDrawer}>申请 / 上传证书</Button>
+          <Space>
+            <Dropdown
+              menu={{
+                items: [{ key: 'batchDelete', icon: <DeleteOutlined />, label: `批量删除 (${selectedKeys.length})`, danger: true, disabled: selectedKeys.length === 0 }],
+                onClick: ({ key }) => {
+                  if (key === 'batchDelete') confirm('certificates:delete', (ticket) => batchDeleteMut.mutate(ticket))
+                },
+              }}
+              trigger={['click']}
+            >
+              <Button disabled={selectedKeys.length === 0}>
+                批量操作 <DownOutlined />
+              </Button>
+            </Dropdown>
+            <Button type="primary" icon={<PlusOutlined />} onClick={openDrawer}>申请 / 上传证书</Button>
+          </Space>
         </Flex>
 
         <Table<CertificateResponse>
@@ -540,39 +649,66 @@ export default function CertificatesPage() {
           dataSource={filtered}
           loading={isLoading}
           size="middle"
-          scroll={{ x: 1300 }}
-          pagination={{ defaultPageSize: 20, showSizeChanger: true, showTotal: (t) => `共 ${t} 个证书` }}
+          scroll={{ x: 1600 }}
+          rowClassName={(_, index) => (index % 2 === 1 ? 'cert-row-alt' : '')}
+          pagination={{ defaultPageSize: 20, showSizeChanger: true, showTotal: (total, range) => `显示 ${range[0]} 到第 ${range[1]} 条，总共 ${total} 条` }}
         />
       </Flex>
 
-      {/* ── 申请 / 上传 Drawer ── */}
+      {/* ── 申请 / 上传 / 编辑 Drawer ── */}
       <Drawer
-        title="申请 / 上传证书"
+        title={mode === 'edit' ? `编辑证书 · ${editingCert?.primary_domain || ''}` : '申请 / 上传证书'}
         open={drawerOpen}
-        onClose={() => setDrawerOpen(false)}
+        onClose={() => { setDrawerOpen(false); setEditingCert(null) }}
         width={500}
         extra={
-          <Button type="primary" onClick={handleSubmit} loading={issueMut.isPending || uploadMut.isPending}>
-            {mode === 'issue' ? '申请签发' : '确认上传'}
-          </Button>
+          mode === 'edit' ? (
+            <Button type="primary" onClick={handleEditSubmit} loading={saveMut.isPending}>
+              保存修改
+            </Button>
+          ) : (
+            <Button type="primary" onClick={handleSubmit} loading={issueMut.isPending || uploadMut.isPending}>
+              {mode === 'issue' ? '申请签发' : '确认上传'}
+            </Button>
+          )
         }
       >
-        <Radio.Group
-          value={mode}
-          onChange={(e) => setMode(e.target.value)}
-          buttonStyle="solid"
-          style={{ marginBottom: 20, width: '100%' }}
-        >
-          <Radio.Button value="issue" style={{ width: '50%', textAlign: 'center' }}>
-            <SafetyCertificateOutlined /> ACME 自动申请
-          </Radio.Button>
-          <Radio.Button value="upload" style={{ width: '50%', textAlign: 'center' }}>
-            <CloudUploadOutlined /> 手动上传已有证书
-          </Radio.Button>
-        </Radio.Group>
+        {mode === 'edit' ? (
+          <Form form={editForm} layout="vertical">
+            <Form.Item name="name" label="证书备注名称" rules={[{ required: true }]}>
+              <Input placeholder="例如 生产环境 *.opspilot.com 证书" />
+            </Form.Item>
+            <Form.Item name="san_domains" label="SAN 备用域名（逗号或换行分隔）">
+              <Input.TextArea rows={3} placeholder="www.example.com, api.example.com" />
+            </Form.Item>
+            <Form.Item name="auto_renew" label="自动续期" valuePropName="checked">
+              <Switch />
+            </Form.Item>
+            <Form.Item name="renew_before_days" label="提前续期天数">
+              <InputNumber min={1} max={90} style={{ width: '100%' }} placeholder="例如 30" />
+            </Form.Item>
+            <Form.Item name="remark" label="备注">
+              <Input.TextArea rows={2} />
+            </Form.Item>
+          </Form>
+        ) : (
+          <>
+            <Radio.Group
+              value={mode}
+              onChange={(e) => setMode(e.target.value)}
+              buttonStyle="solid"
+              style={{ marginBottom: 20, width: '100%' }}
+            >
+              <Radio.Button value="issue" style={{ width: '50%', textAlign: 'center' }}>
+                <SafetyCertificateOutlined /> ACME 自动申请
+              </Radio.Button>
+              <Radio.Button value="upload" style={{ width: '50%', textAlign: 'center' }}>
+                <CloudUploadOutlined /> 手动上传已有证书
+              </Radio.Button>
+            </Radio.Group>
 
-        {mode === 'issue' ? (
-          <Form form={issueForm} layout="vertical">
+            {mode === 'issue' ? (
+              <Form form={issueForm} layout="vertical">
             <Form.Item name="name" label="证书备注名称" rules={[{ required: true }]}>
               <Input placeholder="例如 生产环境 *.opspilot.com 证书" />
             </Form.Item>
@@ -620,6 +756,8 @@ export default function CertificatesPage() {
               <Input.TextArea rows={6} placeholder="-----BEGIN RSA PRIVATE KEY-----" />
             </Form.Item>
           </Form>
+            )}
+          </>
         )}
       </Drawer>
 
