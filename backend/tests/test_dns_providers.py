@@ -128,6 +128,7 @@ def test_metadata_only_advertises_implemented_capabilities():
     assert specs["cloudflare"]["supports_proxy"]
     assert not specs["cloudflare"]["supports_acme"]
     assert specs["tencent"]["supports_import"]
+    assert specs["tencent"]["supports_acme"]
     assert not specs["tencent"]["supports_record_write"]
 
 

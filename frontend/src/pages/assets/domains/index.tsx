@@ -1,5 +1,4 @@
 import { useState, useCallback } from 'react'
-import { useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Table, Button, Space, Input, Tag, Drawer, Form, Select, App, Tooltip,
@@ -24,7 +23,7 @@ import CloudDomainImportDrawer from './CloudDomainImportDrawer'
 import DNSRecordsDrawer from './DNSRecordsDrawer'
 import { credentialMatches } from './providerForm'
 
-const { Text, Paragraph } = Typography
+const { Text } = Typography
 
 const STATUS_MAP: Record<string, { text: string; color: string }> = {
   active: { text: '正常', color: 'success' },
@@ -44,7 +43,6 @@ function daysToExpiry(expiresAt?: string): number | null {
 
 export default function DomainsPage() {
   const queryClient = useQueryClient()
-  const navigate = useNavigate()
   const [selectedKeys, setSelectedKeys] = useState<string[]>([])
   const [search, setSearch] = useState('')
   const [groupFilter, setGroupFilter] = useState<number | null>(null)
@@ -151,25 +149,9 @@ export default function DomainsPage() {
       const accountCleared = editingId && values.account_id === undefined
         && (form.isFieldTouched('account_id') || values.provider !== editingDomain?.provider)
       const data = accountCleared ? { ...values, account_id: '' } : values
+      // 保存结果由 useCrudResource 统一提示：成功才 toast，失败只报失败原因。
+      // 不再声称触发了 ACME——保存域名本身不会触发任何证书任务。
       saveMut.mutate({ id: editingId ?? undefined, data })
-      if (values.acme_enabled) {
-        modal.info({
-          title: 'ACME 自动证书申请已触发',
-          icon: <SafetyCertificateOutlined style={{ color: '#1677ff' }} />,
-          content: (
-            <div>
-              <Paragraph style={{ margin: 0 }}>
-                系统正通过选定的 DNS 凭证为域名 <Text style={{ fontWeight: 600 }}>{values.domain}</Text> 自动向 Let's Encrypt 提交泛域名证书申请。
-              </Paragraph>
-              <Paragraph type="secondary" style={{ marginTop: 8, fontSize: 12 }}>
-                您可以在“证书管理”中实时查看该域名的签发进度、到期提醒以及自动化分发任务。
-              </Paragraph>
-            </div>
-          ),
-          okText: '前往证书管理查看',
-          onOk: () => navigate('/assets/certificates'),
-        })
-      }
     })
   }
 
@@ -377,7 +359,7 @@ export default function DomainsPage() {
                 <Select placeholder="选择关联的 DNS API 凭证" allowClear options={credOptions} />
               </Form.Item>
               <Text type="secondary" style={{ fontSize: 12 }}>
-                开启后，OpsPilot 将通过 ACME 协议向 Let's Encrypt 自动签发和续期泛域名证书，并实时推送存入“证书管理”。
+                开启仅标记该域名支持 ACME 证书申请；签发与续期请在证书管理中操作。
               </Text>
             </div>
           )}

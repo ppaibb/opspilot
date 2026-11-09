@@ -1,4 +1,5 @@
-"""合入账户同步分支的腾讯云 DNSPod 读取能力；记录按云端ID与线路保留。"""
+"""腾讯云 DNSPod 适配器：读取和同步走通用接口；ACME DNS-01 挑战记录的
+创建/删除走专用方法，通用记录编辑仍只读、请在云控制台完成。"""
 
 import re
 
@@ -26,7 +27,7 @@ class TencentDNS:
             self._api = DnspodClient(Credential(self._access_key, self._secret_key), "ap-guangzhou", profile)
         return self._api
 
-    def _call(self, method: str, request):
+    def _call(self, method: str, request, action: str = "查询"):
         try:
             return getattr(self._client(), method)(request)
         except Exception as exc:
@@ -35,7 +36,7 @@ class TencentDNS:
             safe_code = code if re.fullmatch(r"(?:AuthFailure|ResourceNotFound|FailedOperation|InvalidParameter|RequestLimitExceeded)(?:\.[A-Za-z0-9]+)*", code) else ""
             if method == "DescribeRecordList" and code == "ResourceNotFound.NoDataOfRecord":
                 return None
-            raise DNSProviderError(f"腾讯云 DNSPod 查询失败，请检查凭证权限和网络{f'（{safe_code}）' if safe_code else ''}", 400) from None
+            raise DNSProviderError(f"腾讯云 DNSPod {action}失败，请检查凭证权限和网络{f'（{safe_code}）' if safe_code else ''}", 400) from None
 
     def list_zones(self) -> list[DNSZone]:
         from tencentcloud.dnspod.v20210323.models import DescribeDomainListRequest
@@ -89,6 +90,42 @@ class TencentDNS:
             if len(rows) < PAGE_SIZE:
                 return result
         raise DNSProviderError("腾讯云记录分页超过单次上限，已停止同步")
+
+    def create_txt_record(self, zone_name: str, subdomain: str, value: str, ttl: int = 600) -> str:
+        """ACME DNS-01 专用写路径：创建一条 TXT 记录，返回云端 RecordId。
+
+        只供证书签发流程调用（创建后由同一流程删除）；通用记录编辑仍走
+        云控制台，见 create_record。
+        """
+        from tencentcloud.dnspod.v20210323.models import CreateRecordRequest
+
+        request = CreateRecordRequest()
+        request.Domain = zone_name
+        request.SubDomain = subdomain
+        request.RecordType = "TXT"
+        request.RecordLine = "默认"
+        request.Value = value
+        request.TTL = ttl
+        response = self._call("CreateRecord", request, action="创建")
+        record_id = str(getattr(response, "RecordId", "") or "").strip()
+        if not record_id:
+            raise DNSProviderError("腾讯云 DNSPod 未返回新记录 ID，请同步核对", 502)
+        return record_id
+
+    def delete_txt_record(self, zone_name: str, record_id: str) -> None:
+        """ACME DNS-01 专用写路径：删除一条挑战 TXT 记录。"""
+        if not record_id:
+            return
+        from tencentcloud.dnspod.v20210323.models import DeleteRecordRequest
+
+        try:
+            numeric_id = int(str(record_id).strip())
+        except (TypeError, ValueError):
+            raise DNSProviderError("腾讯云 DNSPod 记录 ID 非法，无法删除挑战记录", 400) from None
+        request = DeleteRecordRequest()
+        request.Domain = zone_name
+        request.RecordId = numeric_id
+        self._call("DeleteRecord", request, action="删除")
 
     def create_record(self, zone: DNSZone, record: DNSRecord) -> DNSRecord:
         raise DNSProviderError("腾讯云DNSPod本次仅接入读取和同步，写操作请在云控制台完成", 400)

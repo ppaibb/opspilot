@@ -10,6 +10,7 @@ import hmac
 import io
 import json
 import logging
+import os
 from pathlib import Path
 import re
 import shutil
@@ -62,6 +63,7 @@ ACME_DIRECTORY_MAP = {
 DNS_PROPAGATION_SECONDS = 15
 ACME_POLL_TIMEOUT_SECONDS = 360
 ALIYUN_DNS_TXT_TTL = 600
+TENCENT_DNS_TXT_TTL = 600
 CERT_LOG_MAX_LINES = 400
 # 自动续签轮询周期（12 小时）。
 CERT_AUTO_RENEW_INTERVAL_SECONDS = 12 * 3600
@@ -73,6 +75,11 @@ ACME_PROVIDER_PLUGINS: dict[str, dict] = {
     "aliyun": {
         "env": ("Ali_Key", "Ali_Secret"),
         "label": "Alibaba Cloud DNS",
+        "implemented": True,
+    },
+    "tencent": {
+        "env": ("SecretId", "SecretKey"),
+        "label": "Tencent Cloud DNS",
         "implemented": True,
     },
     "aws": {
@@ -349,6 +356,26 @@ def resolve_acme_directory_url(server: str) -> str:
     return ACME_DIRECTORY_MAP.get(alias, ACME_DIRECTORY_MAP["letsencrypt"])
 
 
+def resolve_acme_contact_email() -> str:
+    """ACME 注册联系邮箱，取自环境变量 ACME_CONTACT_EMAIL。
+
+    只对新生成的账户密钥生效：已注册的老账户密钥复用时不会重新注册，
+    邮箱也不会被补上。格式明显非法时返回空，不阻断签发。
+    """
+    email = (os.environ.get("ACME_CONTACT_EMAIL") or "").strip()
+    if not email or "@" not in email or " " in email:
+        return ""
+    return email
+
+
+def build_acme_registration_kwargs() -> dict:
+    kwargs: dict = {"terms_of_service_agreed": True}
+    contact_email = resolve_acme_contact_email()
+    if contact_email:
+        kwargs["email"] = contact_email
+    return kwargs
+
+
 def sanitize_file_segment(raw: str) -> str:
     text = (raw or "").strip().lower()
     text = re.sub(r"[^a-z0-9_.-]+", "-", text).strip("-")
@@ -513,7 +540,7 @@ def fetch_aliyun_domains(access_key: str, secret_key: str) -> list[str]:
     return sorted(list(dict.fromkeys(domains)))
 
 
-def resolve_best_zone(fqdn: str, zones: list[str]) -> str:
+def resolve_best_zone(fqdn: str, zones: list[str], provider_label: str = "阿里云") -> str:
     domain = (fqdn or "").strip().lower().rstrip(".")
     zone = ""
     for item in zones:
@@ -524,7 +551,7 @@ def resolve_best_zone(fqdn: str, zones: list[str]) -> str:
             if len(candidate) > len(zone):
                 zone = candidate
     if not zone:
-        raise RuntimeError(f"无法为域名 {fqdn} 匹配到阿里云托管 Zone")
+        raise RuntimeError(f"无法为域名 {fqdn} 匹配到{provider_label}托管 Zone")
     return zone
 
 
@@ -581,11 +608,89 @@ def delete_aliyun_record(access_key: str, secret_key: str, record_id: str) -> No
     )
 
 
-def retry_delete_aliyun_record(access_key: str, secret_key: str, record_id: str) -> None:
+def fetch_dns_zones(provider: str, access_key: str, secret_key: str) -> list[str]:
+    """按厂商拉取一次托管域名列表，供 DNS-01 挑战的 Zone 匹配复用。"""
+    if provider == "aliyun":
+        return fetch_aliyun_domains(access_key, secret_key)
+    if provider == "tencent":
+        from app.services.dns_providers.tencent import TencentDNS
+
+        return [zone.name for zone in TencentDNS(access_key, secret_key).list_zones()]
+    raise RuntimeError(f"当前不支持该 DNS 厂商自动签发: {provider}")
+
+
+def create_tencent_txt_record(
+    access_key: str,
+    secret_key: str,
+    fqdn: str,
+    txt_value: str,
+    zones: list[str] | None = None,
+) -> tuple[str, str]:
+    """腾讯云 DNSPod 创建 DNS-01 挑战 TXT 记录，返回 (RecordId, Zone)。"""
+    from app.services.dns_providers.tencent import TencentDNS
+
+    client = TencentDNS(access_key, secret_key)
+    if zones is None:
+        zones = [zone.name for zone in client.list_zones()]
+    zone = resolve_best_zone(fqdn, zones, provider_label="腾讯云")
+    rr = resolve_rr_from_fqdn(fqdn, zone)
+    record_id = client.create_txt_record(zone, rr, txt_value, ttl=TENCENT_DNS_TXT_TTL)
+    return record_id, zone
+
+
+def create_dns_txt_record(
+    provider: str,
+    access_key: str,
+    secret_key: str,
+    fqdn: str,
+    txt_value: str,
+    zones: list[str] | None = None,
+) -> tuple[str, str]:
+    """按厂商创建 DNS-01 挑战 TXT 记录，返回 (RecordId, Zone)。"""
+    if provider == "aliyun":
+        if zones is None:
+            zones = fetch_aliyun_domains(access_key, secret_key)
+        zone = resolve_best_zone(fqdn, zones)
+        record_id = create_aliyun_txt_record(
+            access_key, secret_key, fqdn, txt_value, zones=zones,
+        )
+        return record_id, zone
+    if provider == "tencent":
+        return create_tencent_txt_record(access_key, secret_key, fqdn, txt_value, zones=zones)
+    raise RuntimeError(f"当前不支持该 DNS 厂商自动签发: {provider}")
+
+
+def delete_dns_txt_record(
+    provider: str,
+    access_key: str,
+    secret_key: str,
+    zone: str,
+    record_id: str,
+) -> None:
+    """按厂商删除 DNS-01 挑战 TXT 记录；腾讯云删除需要 Zone 名。"""
+    if not record_id:
+        return
+    if provider == "aliyun":
+        delete_aliyun_record(access_key, secret_key, record_id)
+    elif provider == "tencent":
+        from app.services.dns_providers.tencent import TencentDNS
+
+        TencentDNS(access_key, secret_key).delete_txt_record(zone, record_id)
+    else:
+        raise RuntimeError(f"当前不支持该 DNS 厂商自动签发: {provider}")
+
+
+def retry_delete_dns_txt_record(
+    provider: str,
+    access_key: str,
+    secret_key: str,
+    zone: str,
+    record_id: str,
+) -> None:
     for i in range(3):
         time.sleep(15 * (i + 1))
         try:
-            delete_aliyun_record(access_key, secret_key, record_id)
+            delete_dns_txt_record(provider, access_key, secret_key, zone, record_id)
             logger.info(f"异步清理 TXT 记录成功: {record_id}")
             return
         except Exception as e:
@@ -821,6 +926,52 @@ def set_issue_failed(db: Session, cert: CertificateRecord, message: str) -> None
     append_cert_log(cert.cert_id or "", cert.last_error or "签发失败", "ERROR")
 
 
+def _notify_issue_failed(
+    db: Session, cert: CertificateRecord, *, renew: bool, user_id: int | None, reason: str
+) -> None:
+    """前置校验失败的站内通知，与 run_issue_job 异常分支同口径。
+
+    有 user_id 时通知触发用户本人（标题按 renew 区分签发/续期失败），
+    无 user_id 时视为自动续期，通知全体管理员。通知失败只记日志，不影响
+    证书状态落盘（set_issue_failed 已提交）。
+    """
+    if user_id:
+        try:
+            create_notification(
+                db,
+                data=NotificationCreate(
+                    user_id=user_id,
+                    type="error",
+                    category="certificate",
+                    title="证书续期失败" if renew else "证书签发失败",
+                    content=f"{cert.primary_domain} {'续期' if renew else '签发'}失败：{reason[:200]}",
+                    link="/assets/certificates",
+                    resource_id=cert.cert_id,
+                ),
+            )
+        except Exception:
+            logger.debug("Failed to send error notification for cert %s", cert.cert_id)
+    else:
+        for admin in db.query(User).filter(User.role == "admin").all():
+            try:
+                create_notification(
+                    db,
+                    data=NotificationCreate(
+                        user_id=admin.id,
+                        type="error",
+                        category="certificate",
+                        title="证书自动续期失败",
+                        content=f"{cert.primary_domain} 自动续期失败：{reason[:200]}",
+                        link="/assets/certificates",
+                        resource_id=cert.cert_id,
+                    ),
+                )
+            except Exception:
+                logger.debug(
+                    "Failed to send error notification for cert %s", cert.cert_id
+                )
+
+
 def serialize_certificate(row: CertificateRecord) -> dict:
     san = [item.strip() for item in (row.san_domains or "").split(",") if item.strip()]
     provider_meta = ACME_PROVIDER_PLUGINS.get((row.provider or "").strip().lower())
@@ -883,21 +1034,27 @@ def run_issue_job(cert_id: str, renew: bool = False, reserved: bool = False, use
         cred = db.query(Credential).filter(Credential.cred_id == cert.account_id).first()
         if not cred:
             set_issue_failed(db, cert, "签发账户不存在")
+            _notify_issue_failed(db, cert, renew=renew, user_id=user_id, reason="签发账户不存在")
             return
 
         provider = infer_provider_key(f"{cred.name} {cred.scope} {cred.type}")
         plugin_meta = ACME_PROVIDER_PLUGINS.get(provider)
         if not plugin_meta or not bool(plugin_meta.get("implemented")):
             set_issue_failed(db, cert, f"当前不支持该 DNS 厂商自动签发: {provider}")
+            _notify_issue_failed(
+                db, cert, renew=renew, user_id=user_id,
+                reason=f"当前不支持该 DNS 厂商自动签发: {provider}",
+            )
             return
 
         content = decrypt_secret(cred.content or "")
         access_key, secret_key = parse_access_key_content(content)
         if not access_key or not secret_key:
             set_issue_failed(db, cert, "凭证内容无法解析 AccessKey/SecretKey")
-            return
-        if provider != "aliyun":
-            set_issue_failed(db, cert, f"当前 ACME 自动签发仅支持阿里云 DNS，当前账户厂商为: {provider}")
+            _notify_issue_failed(
+                db, cert, renew=renew, user_id=user_id,
+                reason="凭证内容无法解析 AccessKey/SecretKey",
+            )
             return
 
         CERT_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
@@ -916,6 +1073,7 @@ def run_issue_job(cert_id: str, renew: bool = False, reserved: bool = False, use
         domains = list(dict.fromkeys([item for item in domains if item]))
         if not domains:
             set_issue_failed(db, cert, "签发域名为空")
+            _notify_issue_failed(db, cert, renew=renew, user_id=user_id, reason="签发域名为空")
             return
         server_alias = parse_server_alias(cert.acme_server)
 
@@ -937,7 +1095,7 @@ def run_issue_job(cert_id: str, renew: bool = False, reserved: bool = False, use
 
             try:
                 acme_v2.new_account(
-                    messages.NewRegistration.from_data(terms_of_service_agreed=True)
+                    messages.NewRegistration.from_data(**build_acme_registration_kwargs())
                 )
             except acme_errors.ConflictError as conflict:
                 existing = messages.RegistrationResource(
@@ -953,13 +1111,13 @@ def run_issue_job(cert_id: str, renew: bool = False, reserved: bool = False, use
 
             order = acme_v2.new_order(csr_pem)
             append_cert_log(cert_id, "ACME 订单创建成功，开始处理 DNS-01 挑战")
-            challenge_records: list[str] = []
+            challenge_records: list[dict] = []
             try:
                 # 同一证书签发任务只拉取一次托管域名列表，避免多 SAN 时重复请求。
-                aliyun_zones = fetch_aliyun_domains(access_key, secret_key)
-                if not aliyun_zones:
-                    raise RuntimeError("阿里云账户下未查询到可用托管域名，无法完成 DNS-01 验证")
-                append_cert_log(cert_id, f"已拉取托管域名列表，共 {len(aliyun_zones)} 个")
+                dns_zones = fetch_dns_zones(provider, access_key, secret_key)
+                if not dns_zones:
+                    raise RuntimeError("当前账户下未查询到可用托管域名，无法完成 DNS-01 验证")
+                append_cert_log(cert_id, f"已拉取托管域名列表，共 {len(dns_zones)} 个")
                 for authzr in order.authorizations:
                     dns01 = extract_dns01_challenge(authzr)
                     domain_value = str(authzr.body.identifier.value or "").strip()
@@ -967,14 +1125,15 @@ def run_issue_job(cert_id: str, renew: bool = False, reserved: bool = False, use
                         raise RuntimeError("ACME 返回的授权域名为空")
                     validation_name = dns01.chall.validation_domain_name(domain_value)
                     validation_value = dns01.chall.validation(account_jwk)
-                    record_id = create_aliyun_txt_record(
+                    record_id, zone = create_dns_txt_record(
+                        provider,
                         access_key,
                         secret_key,
                         validation_name,
                         validation_value,
-                        zones=aliyun_zones,
+                        zones=dns_zones,
                     )
-                    challenge_records.append(record_id)
+                    challenge_records.append({"provider": provider, "zone": zone, "record_id": record_id})
                     append_cert_log(cert_id, f"已创建 TXT 验证记录：{validation_name}（RecordId={record_id}）")
 
                 # 等待 TXT 记录在公共 DNS 侧生效，避免立即校验导致 pending/unauthorized。
@@ -990,14 +1149,15 @@ def run_issue_job(cert_id: str, renew: bool = False, reserved: bool = False, use
                 finalized_order = acme_v2.poll_and_finalize(order, deadline=deadline)
                 append_cert_log(cert_id, "ACME 订单已完成签发")
             finally:
-                for record_id in challenge_records:
+                for item in challenge_records:
+                    record_id = item["record_id"]
                     try:
-                        delete_aliyun_record(access_key, secret_key, record_id)
+                        delete_dns_txt_record(item["provider"], access_key, secret_key, item["zone"], record_id)
                         append_cert_log(cert_id, f"已清理 TXT 验证记录：{record_id}")
                     except Exception as e:
                         logger.warning(f"TXT 记录清理失败 {record_id}: {e}，已进入异步重试")
                         append_cert_log(cert_id, f"TXT 记录清理失败：{record_id}，将异步重试", "WARNING")
-                        threading.Thread(target=retry_delete_aliyun_record, args=(access_key, secret_key, record_id), daemon=True).start()
+                        threading.Thread(target=retry_delete_dns_txt_record, args=(item["provider"], access_key, secret_key, item["zone"], record_id), daemon=True).start()
 
             fullchain_pem = (finalized_order.fullchain_pem or "").strip()
             if not fullchain_pem:
