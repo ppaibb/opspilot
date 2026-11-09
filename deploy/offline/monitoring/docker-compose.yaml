@@ -13,7 +13,6 @@ services:
       - --retentionPeriod=${VM_RETENTION:-30d}
       - --httpListenAddr=:8428
       - --selfScrapeInterval=30s
-      - --storage.maxDiskSpaceUsageBytes=${VM_MAX_DISK_BYTES:-53687091200}
     volumes:
       - vmdata:/storage
     ports:
@@ -138,11 +137,7 @@ services:
     depends_on:
       - victoriametrics
       - victorialogs
-    healthcheck:
-      test: ['CMD-SHELL', 'wget -qO- http://127.0.0.1:12346/-/ready || exit 1']
-      interval: 15s
-      timeout: 5s
-      retries: 5
+    # 无健康检查：alloy 镜像内没有 wget/curl，放健康检查只会恒 unhealthy。
     restart: unless-stopped
 
 networks:

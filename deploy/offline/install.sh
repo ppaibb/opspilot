@@ -313,6 +313,27 @@ ensure_private_monitoring_network() {
   fi
 }
 
+fix_backend_volume_ownership() {
+  # 旧版后端以 root 运行，数据卷属 root；新版以后端 opspilot（999:999）运行，
+  # 卷属主不对会 PermissionError crash-loop。重装/升级时卷已存在且属主不对才 chown，
+  # 全新安装卷不存在，直接跳过。
+  set -a
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+  set +a
+  local project="${OPSPILOT_PROJECT:-opspilot}"
+  local image="${OPSPILOT_BACKEND_IMAGE:-opspilot/backend:1.0.0}"
+  local vol owner
+  for vol in "${project}-backend-storage" "${project}-backend-logs"; do
+    docker volume inspect "$vol" >/dev/null 2>&1 || continue
+    owner="$(docker run --rm --entrypoint stat -v "$vol:/data" "$image" -c '%u:%g' /data 2>/dev/null || echo unknown)"
+    if [[ "$owner" != '999:999' ]]; then
+      log "数据卷 $vol 属主为 $owner，改为 999:999"
+      docker run --rm --user root --entrypoint chown -v "$vol:/data" "$image" -R 999:999 /data
+    fi
+  done
+}
+
 write_backend_env() {
   # 应用容器内 .env（compose env_file）
   local dest="$ROOT/app/.env"
@@ -495,6 +516,7 @@ main() {
   apply_manifest_images
   ensure_private_monitoring_network
   write_backend_env
+  fix_backend_volume_ownership
   start_monitoring_if_needed
   start_app
   verify_service_matrix

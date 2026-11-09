@@ -115,6 +115,13 @@ export default function DomainsPage() {
     return matchSearch
   })
 
+  // 存量 dns_credential 可能是旧的凭证名，也可能是 cred_id；下拉的 value 一律是 cred_id，
+  // 回填时先解析成 cred_id，解析不上的历史脏值（如厂商标签）不回填，避免提交即 404。
+  const resolveDnsCredentialId = useCallback((stored?: string) => {
+    if (!stored) return undefined
+    return credentials.find((c) => c.cred_id === stored || c.name === stored)?.cred_id
+  }, [credentials])
+
   const openDrawer = useCallback((dom?: DomainResponse) => {
     if (dom) {
       setEditingId(dom.id)
@@ -128,7 +135,7 @@ export default function DomainsPage() {
         expire_reminder_days: dom.expire_reminder_days,
         remark: dom.remark,
         acme_enabled: dom.acme_enabled === 'yes',
-        dns_credential: dom.dns_credential || undefined,
+        dns_credential: resolveDnsCredentialId(dom.dns_credential),
       })
     } else {
       setEditingId(null)
@@ -136,7 +143,7 @@ export default function DomainsPage() {
       form.setFieldsValue({ provider: 'custom', status: 'active', expire_reminder_days: 30, acme_enabled: false })
     }
     setDrawerOpen(true)
-  }, [form])
+  }, [form, resolveDnsCredentialId])
 
   const handleSave = () => {
     form.validateFields().then((values) => {
@@ -166,7 +173,7 @@ export default function DomainsPage() {
     })
   }
 
-  const credOptions = credentials.map((c) => ({ value: c.name, label: `${c.name} (${c.type})` }))
+  const credOptions = credentials.map((c) => ({ value: c.cred_id, label: `${c.name} (${c.type})` }))
 
   const columns: ColumnsType<DomainResponse> = [
     {
