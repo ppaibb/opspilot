@@ -227,3 +227,26 @@ def test_resolve_best_zone_reports_provider_label():
     assert certificates.resolve_best_zone(
         "_acme-challenge.example.com", ["example.com"],
     ) == "example.com"
+
+
+def test_resolve_acme_contact_email_reads_env(monkeypatch):
+    monkeypatch.setenv("ACME_CONTACT_EMAIL", "  ops@example.com  ")
+    assert certificates.resolve_acme_contact_email() == "ops@example.com"
+    monkeypatch.setenv("ACME_CONTACT_EMAIL", "not-an-email")
+    assert certificates.resolve_acme_contact_email() == ""
+    monkeypatch.setenv("ACME_CONTACT_EMAIL", "a @example.com")
+    assert certificates.resolve_acme_contact_email() == ""
+    monkeypatch.delenv("ACME_CONTACT_EMAIL", raising=False)
+    assert certificates.resolve_acme_contact_email() == ""
+
+
+def test_build_acme_registration_kwargs_includes_email_only_when_configured(monkeypatch):
+    monkeypatch.delenv("ACME_CONTACT_EMAIL", raising=False)
+    assert certificates.build_acme_registration_kwargs() == {
+        "terms_of_service_agreed": True,
+    }
+    monkeypatch.setenv("ACME_CONTACT_EMAIL", "ops@example.com")
+    assert certificates.build_acme_registration_kwargs() == {
+        "terms_of_service_agreed": True,
+        "email": "ops@example.com",
+    }

@@ -10,6 +10,7 @@ import hmac
 import io
 import json
 import logging
+import os
 from pathlib import Path
 import re
 import shutil
@@ -353,6 +354,26 @@ def resolve_acme_directory_url(server: str) -> str:
     if alias.startswith("http://") or alias.startswith("https://"):
         return alias
     return ACME_DIRECTORY_MAP.get(alias, ACME_DIRECTORY_MAP["letsencrypt"])
+
+
+def resolve_acme_contact_email() -> str:
+    """ACME 注册联系邮箱，取自环境变量 ACME_CONTACT_EMAIL。
+
+    只对新生成的账户密钥生效：已注册的老账户密钥复用时不会重新注册，
+    邮箱也不会被补上。格式明显非法时返回空，不阻断签发。
+    """
+    email = (os.environ.get("ACME_CONTACT_EMAIL") or "").strip()
+    if not email or "@" not in email or " " in email:
+        return ""
+    return email
+
+
+def build_acme_registration_kwargs() -> dict:
+    kwargs: dict = {"terms_of_service_agreed": True}
+    contact_email = resolve_acme_contact_email()
+    if contact_email:
+        kwargs["email"] = contact_email
+    return kwargs
 
 
 def sanitize_file_segment(raw: str) -> str:
@@ -1018,7 +1039,7 @@ def run_issue_job(cert_id: str, renew: bool = False, reserved: bool = False, use
 
             try:
                 acme_v2.new_account(
-                    messages.NewRegistration.from_data(terms_of_service_agreed=True)
+                    messages.NewRegistration.from_data(**build_acme_registration_kwargs())
                 )
             except acme_errors.ConflictError as conflict:
                 existing = messages.RegistrationResource(
