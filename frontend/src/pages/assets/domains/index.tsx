@@ -359,7 +359,7 @@ export default function DomainsPage() {
                 <Select placeholder="选择关联的 DNS API 凭证" allowClear options={credOptions} />
               </Form.Item>
               <Text type="secondary" style={{ fontSize: 12 }}>
-                开启后，OpsPilot 将通过 ACME 协议向 Let's Encrypt 自动签发和续期泛域名证书，并实时推送存入“证书管理”。
+                开启仅标记该域名支持 ACME 证书申请；签发与续期请在证书管理中操作。
               </Text>
             </div>
           )}
