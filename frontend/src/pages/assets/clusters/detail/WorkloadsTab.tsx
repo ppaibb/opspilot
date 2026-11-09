@@ -9,10 +9,10 @@ import {
 import type { ColumnsType } from 'antd/es/table'
 import type { MenuProps } from 'antd'
 import {
-  ReloadOutlined, SyncOutlined, RollbackOutlined, FileTextOutlined,
-  DeleteOutlined, NodeIndexOutlined, RocketOutlined, DeploymentUnitOutlined,
+  ReloadOutlined, RollbackOutlined,
+  RocketOutlined, DeploymentUnitOutlined,
   EyeOutlined, ClockCircleOutlined, PartitionOutlined, SendOutlined,
-  ExperimentOutlined, MoreOutlined,
+  ExperimentOutlined, DownOutlined,
 } from '@ant-design/icons'
 import { clusterDetailApi, clusterOpsApi } from '@/api'
 import { riskTicketConfig } from '@/api/client'
@@ -192,7 +192,7 @@ export default function WorkloadsTab({ clusterId, namespaces }: { clusterId: str
     },
     { title: '创建', dataIndex: 'age', width: 100 },
     {
-      title: '操作', key: 'ops', width: 235, fixed: 'right',
+      title: '操作', key: 'ops', width: 320, fixed: 'right',
       render: (_, record) => {
         const paused = isPaused(record)
         const moreItems: MenuProps['items'] = []
@@ -212,6 +212,7 @@ export default function WorkloadsTab({ clusterId, namespaces }: { clusterId: str
         if (record.kind === 'CronJob') {
           if (moreItems.length) moreItems.push({ type: 'divider' })
           moreItems.push(
+            { key: 'trigger', icon: <SendOutlined />, label: '手动触发一次', disabled: !canManage },
             { key: 'suspend', icon: <ClockCircleOutlined />, label: record.status === 'Suspended' ? '恢复 CronJob 调度' : '挂起 CronJob', disabled: !canManage },
             { key: 'jobs', icon: <ExperimentOutlined />, label: '执行记录（Jobs）' },
           )
@@ -223,32 +224,32 @@ export default function WorkloadsTab({ clusterId, namespaces }: { clusterId: str
           if (key === 'image') { setImageTarget(record); setImageValues({ main: record.image || '' }) }
           if (key === 'pause') riskConfirm.confirm('clusters:pause', (ticket) => pauseMutation.mutate({ w: record, paused: !paused, ticket }))
           if (key === 'status') setRolloutTarget(record)
+          if (key === 'trigger') riskConfirm.confirm('clusters:trigger_cronjob', (ticket) => triggerCronMutation.mutate({ w: record, ticket }))
           if (key === 'suspend') riskConfirm.confirm('clusters:suspend_cronjob', (ticket) =>
             suspendCronMutation.mutate({ w: record, suspend: record.status !== 'Suspended', ticket }))
           if (key === 'jobs') setCronJobsTarget(record)
         }
         return (
-          <Space size={2}>
+          <Space size={6}>
             <Tooltip title={SCALE_KINDS.includes(record.kind) ? '扩缩容' : `${record.kind} 不支持扩缩容`}>
-              <Button size="small" type="text" icon={<NodeIndexOutlined />}
+              <Button size="small" color="green" variant="solid"
                 disabled={!canManage || !SCALE_KINDS.includes(record.kind)}
-                onClick={() => { setScaleTarget(record); setScaleReplicas(parseInt(record.ready) || 1) }} />
+                onClick={() => { setScaleTarget(record); setScaleReplicas(parseInt(record.ready) || 1) }}>
+                扩缩容
+              </Button>
             </Tooltip>
             <Tooltip title={ROLLOUT_KINDS.includes(record.kind) ? '滚动重启' : `${record.kind} 不支持滚动重启`}>
-              <Button size="small" type="text" icon={<SyncOutlined />}
+              <Button size="small" color="orange" variant="solid"
                 disabled={!canManage || !ROLLOUT_KINDS.includes(record.kind)}
-                onClick={() => riskConfirm.confirm('clusters:restart', (ticket) => restartMutation.mutate({ w: record, ticket }))} />
+                onClick={() => riskConfirm.confirm('clusters:restart', (ticket) => restartMutation.mutate({ w: record, ticket }))}>
+                重启
+              </Button>
             </Tooltip>
             <Tooltip title="查看 YAML">
-              <Button size="small" type="text" icon={<FileTextOutlined />} onClick={() => setYamlTarget(record)} />
+              <Button size="small" color="blue" variant="solid" onClick={() => setYamlTarget(record)}>
+                YAML
+              </Button>
             </Tooltip>
-            {record.kind === 'CronJob' && (
-              <Tooltip title="手动触发一次">
-                <Button size="small" type="text" icon={<SendOutlined />}
-                  disabled={!canManage}
-                  onClick={() => riskConfirm.confirm('clusters:trigger_cronjob', (ticket) => triggerCronMutation.mutate({ w: record, ticket }))} />
-              </Tooltip>
-            )}
             <Tooltip title={DELETE_KINDS.includes(record.kind) ? undefined : `暂不支持删除 ${record.kind}（请用 YAML 工作台）`}>
               <span>
                 <Popconfirm
@@ -258,15 +259,19 @@ export default function WorkloadsTab({ clusterId, namespaces }: { clusterId: str
                   onConfirm={() => riskConfirm.confirm('clusters:delete', (ticket) => deleteMutation.mutate({ w: record, ticket }),
                     `将删除 ${record.kind} ${record.namespace}/${record.name} 及其全部 Pod，不可恢复`)}
                 >
-                  <Button size="small" type="text" danger icon={<DeleteOutlined />}
-                    disabled={!canManage || !DELETE_KINDS.includes(record.kind)} />
+                  <Button size="small" color="red" variant="solid"
+                    disabled={!canManage || !DELETE_KINDS.includes(record.kind)}>
+                    删除
+                  </Button>
                 </Popconfirm>
               </span>
             </Tooltip>
             {moreItems.length > 0 && (
-              <Tooltip title="更多操作（回滚 / 镜像 / 暂停 / 发布状态 / 执行记录）">
+              <Tooltip title="更多操作（回滚 / 镜像 / 暂停 / 发布状态 / 手动触发 / 执行记录）">
                 <Dropdown menu={{ items: moreItems, onClick: onMore }} trigger={['click']}>
-                  <Button size="small" type="text" icon={<MoreOutlined />} />
+                  <Button size="small" color="blue" variant="solid">
+                    更多 <DownOutlined />
+                  </Button>
                 </Dropdown>
               </Tooltip>
             )}
@@ -306,7 +311,7 @@ export default function WorkloadsTab({ clusterId, namespaces }: { clusterId: str
         loading={isLoading}
         rowClassName={(r) => focusRowClass(focus, r.kind, r.namespace, r.name)}
         pagination={{ pageSize: 15, showSizeChanger: false, showTotal: (t) => `共 ${t} 个` }}
-        scroll={{ x: 1060 }}
+        scroll={{ x: 1150 }}
       />
 
       <Modal

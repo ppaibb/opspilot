@@ -6,8 +6,7 @@ import {
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import {
-  ReloadOutlined, PauseCircleOutlined, PlayCircleOutlined,
-  DragOutlined, TagsOutlined,
+  ReloadOutlined, PauseCircleOutlined,
 } from '@ant-design/icons'
 import { clusterDetailApi, clusterOpsApi } from '@/api'
 import { riskTicketConfig } from '@/api/client'
@@ -189,26 +188,28 @@ export default function NodesTab({ clusterId }: { clusterId: string }) {
     {
       title: '操作', key: 'ops', width: 200, fixed: 'right',
       render: (_, record) => (
-        <Space size={4}>
+        <Space size={6}>
           {record.unschedulable ? (
-            <Button size="small" icon={<PlayCircleOutlined />} disabled={!canManage}
+            <Button size="small" color="green" variant="solid" disabled={!canManage}
               loading={cordonMutation.isPending && cordonMutation.variables?.name === record.name}
               onClick={() => riskConfirm.confirm('clusters:uncordon', (ticket) => cordonMutation.mutate({ name: record.name, uncordon: true, ticket }))}>
               恢复调度
             </Button>
           ) : (
-            <Button size="small" icon={<PauseCircleOutlined />} disabled={!canManage}
+            <Button size="small" color="orange" variant="solid" disabled={!canManage}
               loading={cordonMutation.isPending && cordonMutation.variables?.name === record.name}
               onClick={() => riskConfirm.confirm('clusters:cordon', (ticket) => cordonMutation.mutate({ name: record.name, uncordon: false, ticket }),
                 `将把节点 ${record.name} 标记为不可调度：新 Pod 不再调度到该节点，已有 Pod 保持运行；如目的是下线节点，请改用「排空」`)}>
               停止调度
             </Button>
           )}
-          <Button size="small" icon={<DragOutlined />} disabled={!canManage} onClick={() => setDrainNode(record)}>
+          <Button size="small" color="orange" variant="solid" disabled={!canManage} onClick={() => setDrainNode(record)}>
             排空
           </Button>
           <Tooltip title="标签 / 污点">
-            <Button size="small" type="text" icon={<TagsOutlined />} disabled={!canManage} onClick={() => setEditNodeMeta(record)} />
+            <Button size="small" color="blue" variant="solid" disabled={!canManage} onClick={() => setEditNodeMeta(record)}>
+              标签
+            </Button>
           </Tooltip>
         </Space>
       ),

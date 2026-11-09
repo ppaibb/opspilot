@@ -8,8 +8,7 @@ import type { ColumnsType } from 'antd/es/table'
 import type { MenuProps } from 'antd'
 import {
   PlusOutlined, SearchOutlined, EditOutlined,
-  DeleteOutlined, InfoCircleOutlined, CloudServerOutlined, HeartOutlined, ArrowRightOutlined,
-  MoreOutlined,
+  DeleteOutlined, InfoCircleOutlined, CloudServerOutlined, DownOutlined,
 } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
 import { clustersApi } from '@/api'
@@ -148,7 +147,7 @@ export default function ClustersPage() {
     { title: '内存(GB)', dataIndex: 'mem_gb', width: 90 },
     { title: '纳管时间', dataIndex: 'created_at', width: 160, render: (v: string) => v ?? '-' },
     {
-      title: '操作', key: 'action', width: 110, fixed: 'right',
+      title: '操作', key: 'action', width: 210, fixed: 'right',
       render: (_: unknown, r) => {
         const moreItems: MenuProps['items'] = [
           { key: 'edit', icon: <EditOutlined />, label: '编辑' },
@@ -166,16 +165,20 @@ export default function ClustersPage() {
           }
         }
         return (
-          <Space size={4}>
-            <Tooltip title="进入详情">
-              <Button size="small" type="primary" ghost icon={<ArrowRightOutlined />} onClick={() => navigate(`/assets/clusters/${r.cluster_id}`)} />
-            </Tooltip>
+          <Space size={6}>
+            <Button size="small" color="blue" variant="solid" onClick={() => navigate(`/assets/clusters/${r.cluster_id}`)}>
+              详情
+            </Button>
             <Tooltip title="健康摘要">
-              <Button size="small" type="text" icon={<HeartOutlined />} onClick={() => setHealthCluster(r)} />
+              <Button size="small" color="blue" variant="solid" onClick={() => setHealthCluster(r)}>
+                健康
+              </Button>
             </Tooltip>
             <Tooltip title="更多操作（编辑 / 解除纳管）">
               <Dropdown menu={{ items: moreItems, onClick: onMore }} trigger={['click']}>
-                <Button size="small" type="text" icon={<MoreOutlined />} />
+                <Button size="small" color="blue" variant="solid">
+                  更多 <DownOutlined />
+                </Button>
               </Dropdown>
             </Tooltip>
           </Space>
@@ -208,7 +211,7 @@ export default function ClustersPage() {
         dataSource={filtered}
         loading={isLoading}
         size="middle"
-        scroll={{ x: 1100 }}
+        scroll={{ x: 1200 }}
         pagination={{ defaultPageSize: 20, showSizeChanger: true, showTotal: (t) => `共 ${t} 个集群` }}
       />
 

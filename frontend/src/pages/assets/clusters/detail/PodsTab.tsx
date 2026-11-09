@@ -6,8 +6,7 @@ import {
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import {
-  ReloadOutlined, CodeOutlined, FileTextOutlined, MedicineBoxOutlined,
-  DeleteOutlined,
+  ReloadOutlined,
 } from '@ant-design/icons'
 import { clusterDetailApi } from '@/api'
 import { riskTicketConfig } from '@/api/client'
@@ -109,17 +108,23 @@ export default function PodsTab({ clusterId, namespaces }: { clusterId: string; 
     { title: '节点', dataIndex: 'node', width: 135, ellipsis: true },
     { title: '运行时长', dataIndex: 'age', width: 100 },
     {
-      title: '操作', key: 'ops', width: 160, fixed: 'right',
+      title: '操作', key: 'ops', width: 250, fixed: 'right',
       render: (_, record) => (
-        <Space size={2}>
+        <Space size={6}>
           <Tooltip title="终端（exec /bin/sh）">
-            <Button size="small" type="text" icon={<CodeOutlined />} disabled={!canManage} onClick={() => setExecPod(record)} />
+            <Button size="small" color="green" variant="solid" disabled={!canManage} onClick={() => setExecPod(record)}>
+              终端
+            </Button>
           </Tooltip>
           <Tooltip title="日志（实时流）">
-            <Button size="small" type="text" icon={<FileTextOutlined />} onClick={() => setLogPod(record)} />
+            <Button size="small" color="blue" variant="solid" onClick={() => setLogPod(record)}>
+              日志
+            </Button>
           </Tooltip>
           <Tooltip title="诊断详情（事件/重启/探针）">
-            <Button size="small" type="text" icon={<MedicineBoxOutlined />} onClick={() => setDiagPod(record)} />
+            <Button size="small" color="blue" variant="solid" onClick={() => setDiagPod(record)}>
+              诊断
+            </Button>
           </Tooltip>
           <Popconfirm
             title={`删除 Pod ${record.name}？`} description="删除后由控制器重建（如 Deployment）。"
@@ -128,7 +133,9 @@ export default function PodsTab({ clusterId, namespaces }: { clusterId: string; 
               `将删除 Pod ${record.namespace}/${record.name}，删除后由所属控制器重建`)}
             disabled={!canManage}
           >
-            <Button size="small" type="text" danger icon={<DeleteOutlined />} disabled={!canManage} />
+            <Button size="small" color="red" variant="solid" disabled={!canManage}>
+              删除
+            </Button>
           </Popconfirm>
         </Space>
       ),
@@ -162,7 +169,7 @@ export default function PodsTab({ clusterId, namespaces }: { clusterId: string; 
         loading={isLoading}
         rowClassName={(r) => focusRowClass(focus, 'Pod', r.namespace, r.name)}
         pagination={{ pageSize: 20, showSizeChanger: false, showTotal: (t) => `共 ${t} 个` }}
-        scroll={{ x: 1100 }}
+        scroll={{ x: 1190 }}
       />
 
       <PodLogViewer

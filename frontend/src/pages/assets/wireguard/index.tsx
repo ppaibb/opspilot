@@ -21,9 +21,9 @@ import {
 import type { ColumnsType } from 'antd/es/table'
 import type { MenuProps } from 'antd'
 import {
-  PlusOutlined, ReloadOutlined, LinkOutlined, DownloadOutlined, QrcodeOutlined, SettingOutlined,
-  PauseCircleOutlined, PlayCircleOutlined, DeleteOutlined, ApiOutlined, GlobalOutlined, CopyOutlined,
-  SyncOutlined, RocketOutlined, MoreOutlined,
+  PlusOutlined, ReloadOutlined, LinkOutlined, DownloadOutlined, SettingOutlined,
+  DeleteOutlined, ApiOutlined, GlobalOutlined, CopyOutlined,
+  SyncOutlined, RocketOutlined, DownOutlined,
 } from '@ant-design/icons'
 import { assetsApi, toolsApi, wireguardApi } from '@/api'
 import { riskTicketConfig } from '@/api/client'
@@ -387,7 +387,7 @@ function PeersDrawer({ network, onClose }: { network: WgNetwork | null; onClose:
     { title: '关联资产', dataIndex: 'asset_id', width: 190, ellipsis: true, render: (v: string) => assetName(v) },
     { title: '备注', dataIndex: 'remark', ellipsis: true, render: (v: string) => v || '-' },
     {
-      title: '操作', key: 'ops', width: 140, fixed: 'right',
+      title: '操作', key: 'ops', width: 200, fixed: 'right',
       render: (_, record) => {
         const moreItems: MenuProps['items'] = [
           { key: 'delete', icon: <DeleteOutlined />, label: '删除成员', danger: true },
@@ -402,20 +402,24 @@ function PeersDrawer({ network, onClose }: { network: WgNetwork | null; onClose:
           })
         }
         return (
-          <Space size={4}>
-            <Button size="small" type="primary" ghost icon={<QrcodeOutlined />}
+          <Space size={6}>
+            <Button size="small" color="blue" variant="solid"
               onClick={() => setConfigPeerId(record.id)}>
               配置
             </Button>
             {record.enabled ? (
               <Tooltip title="禁用（服务端配置移除该 Peer 段）">
-                <Button size="small" type="text" icon={<PauseCircleOutlined />} disabled={!canManage}
-                  onClick={() => toggleMutation.mutate({ peer: record, enabled: false })} />
+                <Button size="small" color="orange" variant="solid" disabled={!canManage}
+                  onClick={() => toggleMutation.mutate({ peer: record, enabled: false })}>
+                  禁用
+                </Button>
               </Tooltip>
             ) : (
               <Tooltip title="启用">
-                <Button size="small" type="text" icon={<PlayCircleOutlined />} disabled={!canManage}
-                  onClick={() => toggleMutation.mutate({ peer: record, enabled: true })} />
+                <Button size="small" color="green" variant="solid" disabled={!canManage}
+                  onClick={() => toggleMutation.mutate({ peer: record, enabled: true })}>
+                  启用
+                </Button>
               </Tooltip>
             )}
             <Dropdown
@@ -423,7 +427,9 @@ function PeersDrawer({ network, onClose }: { network: WgNetwork | null; onClose:
               trigger={['click']}
               disabled={!canManage}
             >
-              <Button size="small" type="text" icon={<MoreOutlined />} disabled={!canManage} />
+              <Button size="small" color="blue" variant="solid" disabled={!canManage}>
+                更多 <DownOutlined />
+              </Button>
             </Dropdown>
           </Space>
         )

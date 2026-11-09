@@ -8,7 +8,7 @@ import {
 import type { ColumnsType } from 'antd/es/table'
 import type { FormInstance } from 'antd'
 import {
-  PlusOutlined, ReloadOutlined, PlayCircleOutlined, CheckCircleOutlined, CloseCircleOutlined,
+  PlusOutlined, ReloadOutlined,
   SearchOutlined, ClockCircleOutlined, DownloadOutlined, CopyOutlined, CheckOutlined,
 } from '@ant-design/icons'
 import dayjs from 'dayjs'
@@ -247,17 +247,17 @@ export function TicketsTab({
     { title: '审批人', dataIndex: 'reviewer', width: 90, render: (v: string) => v || '-' },
     { title: '提交时间', dataIndex: 'created_at', width: 150 },
     {
-      title: '操作', key: 'ops', width: 220, fixed: 'right',
+      title: '操作', key: 'ops', width: 250, fixed: 'right',
       render: (_, record) => (
-        <Space size={4}>
+        <Space size={6}>
           {record.status === 'pending' && canReviewTicket(record) && (
             <>
-              <Button size="small" type="primary" icon={<CheckCircleOutlined />}
+              <Button size="small" color="green" variant="solid"
                 loading={reviewMutation.isPending && reviewMutation.variables?.id === record.id && reviewMutation.variables?.decision === 'approve'}
                 onClick={() => confirmApprove([record.id])}>
                 批准
               </Button>
-              <Button size="small" danger icon={<CloseCircleOutlined />}
+              <Button size="small" color="red" variant="solid"
                 loading={reviewMutation.isPending && reviewMutation.variables?.id === record.id && reviewMutation.variables?.decision === 'reject'}
                 onClick={() => confirmReject(record.id)}>
                 驳回
@@ -265,7 +265,7 @@ export function TicketsTab({
             </>
           )}
           {record.status === 'approved' && canExecute && (
-            <Button size="small" type="primary" danger icon={<PlayCircleOutlined />}
+            <Button size="small" color="green" variant="solid"
               loading={executeMutation.isPending && executeMutation.variables?.id === record.id}
               onClick={() => confirmExecute(record.id)}>
               执行
@@ -273,11 +273,13 @@ export function TicketsTab({
           )}
           {record.has_rollback && (
             <Tooltip title="下载回滚语句（执行前自动生成的反向 INSERT）">
-              <Button size="small" type="text" icon={<DownloadOutlined />}
-                onClick={() => void downloadRollback(record.id)} />
+              <Button size="small" color="green" variant="solid"
+                onClick={() => void downloadRollback(record.id)}>
+                回滚
+              </Button>
             </Tooltip>
           )}
-          <Button size="small" onClick={() => setDetailTicket(record)}>详情</Button>
+          <Button size="small" color="blue" variant="solid" onClick={() => setDetailTicket(record)}>详情</Button>
         </Space>
       ),
     },
