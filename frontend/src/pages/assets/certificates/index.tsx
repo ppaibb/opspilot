@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Table, Button, Space, Input, Tag, Drawer, Form, Select, App, Tooltip,
@@ -14,7 +14,7 @@ import {
   MoreOutlined,
 } from '@ant-design/icons'
 import dayjs from 'dayjs'
-import { certificatesApi, assetsApi, credentialsApi, clustersApi } from '@/api'
+import { certificatesApi, assetsApi, credentialsApi, clustersApi, domainsApi } from '@/api'
 import { riskTicketConfig } from '@/api/client'
 import { useRiskConfirm, extractAxiosDetail } from '@/hooks/usePermission'
 import { useCrudResource } from '@/hooks/useCrudResource'
@@ -23,7 +23,9 @@ import GroupSidebar from '@/components/GroupSidebar'
 import type {
   CertificateResponse, CertificateIssueRequest, CertificateUploadRequest,
   CertificateDeployRequest, CertificateAccountItem, AssetResponse, CredentialResponse, ClusterResponse,
+  DomainResponse,
 } from '@/types/api'
+import { filterCertAccountsByDomain } from './certAccountFilter'
 
 const STATUS_MAP: Record<string, { text: string; color: string }> = {
   valid:    { text: '有效',     color: 'success' },
@@ -75,6 +77,27 @@ export default function CertificatesPage() {
     queryKey: ['certificate-accounts'],
     queryFn: () => certificatesApi.accounts(),
   })
+  // 域名资产（用于按主域名所属厂商过滤 DNS 校验凭证）
+  const { data: domains = [], isLoading: isDomainsLoading } = useQuery<DomainResponse[]>({
+    queryKey: ['domains'],
+    queryFn: () => domainsApi.list(),
+  })
+
+  // 按主域名所属厂商过滤 DNS 校验凭证；主域名为空或未在域名资产中登记时不过滤
+  const watchedPrimaryDomain = Form.useWatch('primary_domain', issueForm)
+  const filteredCertAccounts = useMemo(
+    () => filterCertAccountsByDomain(watchedPrimaryDomain ?? '', domains, acmeAccounts),
+    [watchedPrimaryDomain, domains, acmeAccounts],
+  )
+  const showDomainUnknownHint =
+    !!watchedPrimaryDomain?.trim() && !filteredCertAccounts.domainKnown && !isDomainsLoading
+  // 主域名变化导致已选凭证不在过滤结果中时清空，避免提交错厂商的凭证
+  useEffect(() => {
+    const selected = issueForm.getFieldValue('account_id')
+    if (selected && !filteredCertAccounts.accounts.some((a) => a.account_id === selected)) {
+      issueForm.setFieldsValue({ account_id: undefined })
+    }
+  }, [filteredCertAccounts, issueForm])
 
   const { data: certs = [], isLoading } = useQuery<CertificateResponse[]>({
     queryKey: ['certificates', groupFilter],
@@ -158,7 +181,7 @@ export default function CertificatesPage() {
       setDrawerOpen(false)
       message.success('已提交签发请求')
     },
-    onError: (err: unknown) => message.error(extractAxiosDetail(err) ?? '签发失败，请检查域名和 ACME 账号'),
+    onError: (err: unknown) => message.error(extractAxiosDetail(err) ?? '签发失败，请检查域名和 DNS 校验账号'),
   })
 
   const uploadMut = useMutation({
@@ -516,11 +539,26 @@ export default function CertificatesPage() {
             <Form.Item name="san_domains" label="SAN 备用域名（逗号或换行分隔）">
               <Input.TextArea rows={3} placeholder="www.example.com, api.example.com" />
             </Form.Item>
-            <Form.Item name="account_id" label="ACME 账号凭证" rules={[{ required: true, message: '请选择用于 DNS 校验的账号凭证' }]}>
+            <Form.Item
+              name="account_id"
+              label="DNS 校验账号凭证"
+              rules={[{ required: true, message: '请选择用于 DNS 校验的账号凭证' }]}
+              extra={
+                <>
+                  用于 DNS-01 验证；ACME 账号由系统自动管理。
+                  {showDomainUnknownHint && (
+                    <>
+                      <br />
+                      未在域名资产中找到该域名，显示全部可用凭证。
+                    </>
+                  )}
+                </>
+              }
+            >
               <Select
                 placeholder="选择用于 DNS 校验的云 API 凭证"
-                notFoundContent="暂无可用 ACME 账号"
-                options={acmeAccounts.map((a) => ({ value: a.account_id, label: `${a.account_name}（${a.provider_label}）` }))}
+                notFoundContent="暂无可用 DNS 校验账号"
+                options={filteredCertAccounts.accounts.map((a) => ({ value: a.account_id, label: `${a.account_name}（${a.provider_label}）` }))}
               />
             </Form.Item>
             <Form.Item name="auto_renew" label="自动续期" valuePropName="checked" initialValue={true}>
