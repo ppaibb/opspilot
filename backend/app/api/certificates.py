@@ -926,6 +926,52 @@ def set_issue_failed(db: Session, cert: CertificateRecord, message: str) -> None
     append_cert_log(cert.cert_id or "", cert.last_error or "签发失败", "ERROR")
 
 
+def _notify_issue_failed(
+    db: Session, cert: CertificateRecord, *, renew: bool, user_id: int | None, reason: str
+) -> None:
+    """前置校验失败的站内通知，与 run_issue_job 异常分支同口径。
+
+    有 user_id 时通知触发用户本人（标题按 renew 区分签发/续期失败），
+    无 user_id 时视为自动续期，通知全体管理员。通知失败只记日志，不影响
+    证书状态落盘（set_issue_failed 已提交）。
+    """
+    if user_id:
+        try:
+            create_notification(
+                db,
+                data=NotificationCreate(
+                    user_id=user_id,
+                    type="error",
+                    category="certificate",
+                    title="证书续期失败" if renew else "证书签发失败",
+                    content=f"{cert.primary_domain} {'续期' if renew else '签发'}失败：{reason[:200]}",
+                    link="/assets/certificates",
+                    resource_id=cert.cert_id,
+                ),
+            )
+        except Exception:
+            logger.debug("Failed to send error notification for cert %s", cert.cert_id)
+    else:
+        for admin in db.query(User).filter(User.role == "admin").all():
+            try:
+                create_notification(
+                    db,
+                    data=NotificationCreate(
+                        user_id=admin.id,
+                        type="error",
+                        category="certificate",
+                        title="证书自动续期失败",
+                        content=f"{cert.primary_domain} 自动续期失败：{reason[:200]}",
+                        link="/assets/certificates",
+                        resource_id=cert.cert_id,
+                    ),
+                )
+            except Exception:
+                logger.debug(
+                    "Failed to send error notification for cert %s", cert.cert_id
+                )
+
+
 def serialize_certificate(row: CertificateRecord) -> dict:
     san = [item.strip() for item in (row.san_domains or "").split(",") if item.strip()]
     provider_meta = ACME_PROVIDER_PLUGINS.get((row.provider or "").strip().lower())
@@ -988,18 +1034,27 @@ def run_issue_job(cert_id: str, renew: bool = False, reserved: bool = False, use
         cred = db.query(Credential).filter(Credential.cred_id == cert.account_id).first()
         if not cred:
             set_issue_failed(db, cert, "签发账户不存在")
+            _notify_issue_failed(db, cert, renew=renew, user_id=user_id, reason="签发账户不存在")
             return
 
         provider = infer_provider_key(f"{cred.name} {cred.scope} {cred.type}")
         plugin_meta = ACME_PROVIDER_PLUGINS.get(provider)
         if not plugin_meta or not bool(plugin_meta.get("implemented")):
             set_issue_failed(db, cert, f"当前不支持该 DNS 厂商自动签发: {provider}")
+            _notify_issue_failed(
+                db, cert, renew=renew, user_id=user_id,
+                reason=f"当前不支持该 DNS 厂商自动签发: {provider}",
+            )
             return
 
         content = decrypt_secret(cred.content or "")
         access_key, secret_key = parse_access_key_content(content)
         if not access_key or not secret_key:
             set_issue_failed(db, cert, "凭证内容无法解析 AccessKey/SecretKey")
+            _notify_issue_failed(
+                db, cert, renew=renew, user_id=user_id,
+                reason="凭证内容无法解析 AccessKey/SecretKey",
+            )
             return
 
         CERT_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
@@ -1018,6 +1073,7 @@ def run_issue_job(cert_id: str, renew: bool = False, reserved: bool = False, use
         domains = list(dict.fromkeys([item for item in domains if item]))
         if not domains:
             set_issue_failed(db, cert, "签发域名为空")
+            _notify_issue_failed(db, cert, renew=renew, user_id=user_id, reason="签发域名为空")
             return
         server_alias = parse_server_alias(cert.acme_server)
 
