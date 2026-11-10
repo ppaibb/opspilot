@@ -37,7 +37,7 @@ import {
 import {
   CERT_PROVIDER_FILTER_OPTIONS, CERT_STATUS_FILTER_OPTIONS, CERT_STATUS_BADGE_PULSE,
   certStatusBadgeBg, expiryDisplay, EXPIRY_TONE_COLOR, formatIssuer, formatKeyType,
-  matchProviderFilter, matchStatusFilter,
+  isRenewDisabled, matchProviderFilter, matchStatusFilter, renewDisabledReason,
 } from './certTableMeta'
 import type { CertProviderFilter } from './certTableMeta'
 
@@ -512,8 +512,6 @@ export default function CertificatesPage() {
       render: (_: unknown, r) => {
         const targetId = r.cert_id || r.id || ''
         const isTransient = ['pending', 'issuing', 'renewing'].includes(r.status)
-        // 手动上传（custom）证书无 ACME 账号，续期必然失败——续签禁用
-        const isCustom = r.provider === 'custom' || r.acme_server === 'custom'
         const moreItems: MenuProps['items'] = [
           { key: 'logs', icon: <FileTextOutlined />, label: '查看签发日志' },
           { key: 'deploy', icon: <DeploymentUnitOutlined />, label: '部署任务' },
@@ -546,9 +544,9 @@ export default function CertificatesPage() {
                 下载
               </Button>
             </Tooltip>
-            <Tooltip title={isCustom ? '手动上传的证书没有 ACME 账号，无法自动续期' : '手动触发续期'}>
+            <Tooltip title={renewDisabledReason(r.status, r.provider, r.acme_server)}>
               <Button
-                size="small" color="orange" variant="solid" disabled={isTransient || isCustom}
+                size="small" color="orange" variant="solid" disabled={isRenewDisabled(r.status, r.provider, r.acme_server)}
                 onClick={() => renewMut.mutate(targetId)} loading={renewMut.isPending}
               >
                 续签

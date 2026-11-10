@@ -69,6 +69,12 @@ VMAGENT_MANAGED_BEGIN = "// ===== OpsPilot managed targets begin ====="
 VMAGENT_MANAGED_END = "// ===== OpsPilot managed targets end ====="
 DEFAULT_RULE_GROUP_NAME = "opspilot-managed"
 
+# 证书到期告警的合成规则 id：证书到期扫描器（后台扫表，不走 PromQL）产出的
+# 事件用此 id 打标签，dispatch 按 id 匹配规则与通知渠道。
+# 规则本身必须进 DEFAULT_ALERT_RULES，否则事件无规则可配、无渠道可绑，
+# dispatch 会在落库前丢弃（线上已实证每 6 小时触发即丢弃）。
+CERT_EXPIRY_RULE_ID = "builtin-cert-expiry"
+
 # 默认告警规则（新环境首次加载时使用）。
 # 仅保留 3 条最基础的节点级规则，原因：
 # - 规则过多会导致新用户首次进入页面信息过载；
@@ -129,6 +135,22 @@ DEFAULT_ALERT_RULES = [
         "channel_ids": [],
         "summary": "主机内存使用率过高",
         "description": "{{ $labels.instance }} 内存使用率超过 90%",
+    },
+    {
+        # 证书到期规则（合成规则，不走 PromQL）：事件由证书到期扫描器每 6 小时
+        # 扫表产生（临近到期 warning / 已过期 critical），按 id 匹配本规则取
+        # 通知渠道。expr 仅为占位：归一化会丢弃空表达式，且内置引擎每轮都会
+        # 对启用规则的 expr 做一次 PromQL 查询；用一个永无匹配序列的合法
+        # PromQL 占位，既能通过归一化，又不会让引擎产出任何越线序列。
+        "id": CERT_EXPIRY_RULE_ID,
+        "name": "证书即将到期",
+        "expr": 'up{job="opspilot-cert-expiry-scanner"} == 0',
+        "duration": "5m",
+        "severity": "warning",
+        "enabled": True,
+        "channel_ids": [],
+        "summary": "证书即将到期",
+        "description": "证书将于 {{ $labels.not_after }} 到期，请及时续签",
     },
 ]
 

@@ -26,6 +26,7 @@ from app.api.monitoring.constants import (
     ALLOY_DEFAULT_POLICY_PREFIX,
     ALLOY_SYNC_SERVICE,
     AUTH_TYPES,
+    CERT_EXPIRY_RULE_ID,
     CONFIG_KEY,
     DASHBOARD_RANGE_QUERIES,
     DEFAULT_ALERT_RULES,

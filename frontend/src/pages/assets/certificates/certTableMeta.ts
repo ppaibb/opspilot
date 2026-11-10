@@ -94,3 +94,32 @@ export function matchStatusFilter(status: string | undefined | null, filter: str
   if (filter === 'all') return true
   return (status ?? '') === filter
 }
+
+/** 续签按钮禁用判定（与后端续签入口的 revoked 校验一致）：已吊销不可续签，
+ * 进行中（pending/issuing/renewing）不可重复续签，手动上传证书无 ACME 账号
+ * 不可续签。只禁用续签，不动其他按钮。 */
+export function isRenewDisabled(
+  status: string | undefined | null,
+  provider: string | undefined | null,
+  acmeServer: string | undefined | null,
+): boolean {
+  const s = (status ?? '').trim().toLowerCase()
+  if (s === 'revoked') return true
+  if (['pending', 'issuing', 'renewing'].includes(s)) return true
+  if ((provider ?? '').trim().toLowerCase() === 'custom') return true
+  if ((acmeServer ?? '').trim().toLowerCase() === 'custom') return true
+  return false
+}
+
+/** 续签按钮禁用原因（Tooltip 文案）：与 isRenewDisabled 同口径 */
+export function renewDisabledReason(
+  status: string | undefined | null,
+  provider: string | undefined | null,
+  acmeServer: string | undefined | null,
+): string {
+  const s = (status ?? '').trim().toLowerCase()
+  if (s === 'revoked') return '已吊销证书不可续签，如需重新签发请先删除该记录'
+  if ((provider ?? '').trim().toLowerCase() === 'custom') return '手动上传的证书没有 ACME 账号，无法自动续期'
+  if ((acmeServer ?? '').trim().toLowerCase() === 'custom') return '手动上传的证书没有 ACME 账号，无法自动续期'
+  return '手动触发续期'
+}

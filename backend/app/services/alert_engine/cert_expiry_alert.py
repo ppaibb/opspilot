@@ -12,6 +12,7 @@ import asyncio
 import logging
 from datetime import datetime
 
+from app.api.monitoring.constants import CERT_EXPIRY_RULE_ID
 from app.db.database import SessionLocal
 
 logger = logging.getLogger(__name__)
@@ -20,8 +21,11 @@ logger = logging.getLogger(__name__)
 SCAN_INTERVAL_SECONDS = 6 * 3600
 STARTUP_DELAY_SECONDS = 40
 
-# 合成规则 id/名称:让 dispatch 能按规则匹配通道,并在前端按 opspilot_rule_id 归类
-CERT_EXPIRY_RULE_ID = "builtin-cert-expiry"
+# 兜底通知去重窗口：证书到期是慢变量，24 小时内同一证书只发一次兜底站内信，
+# 避免每 6 小时扫描刷屏；24 小时后仍未处理则再提醒一次。
+CERT_EXPIRY_FALLBACK_REMINDER_HOURS = 24
+
+# 合成规则名称:让 dispatch 能按规则匹配通道,并在前端按 opspilot_rule_id 归类
 CERT_EXPIRY_RULE_NAME = "证书即将到期"
 
 
@@ -119,9 +123,119 @@ def _load_dispatch_context():
         db.close()
 
 
+def _event_has_notification_path(event: dict, rules: list[dict], alert_settings: dict | None) -> bool:
+    """本轮 dispatch 是否有路把该事件发出去（规则绑定的渠道 / 规则 @ 人 / 全局兜底渠道）。
+
+    有路可走时兜底不插手，避免同一告警既走渠道又发站内信；只有三者全空
+    （规则未命中、规则未绑渠道、也无全局兜底渠道——默认即断的那个状态）
+    时，兜底才发全体管理员站内信。
+    """
+    labels = event.get("labels") or {}
+    rule_id = str(labels.get("opspilot_rule_id") or "")
+    alert_name = str(labels.get("alertname") or "")
+    rule: dict | None = None
+    for item in rules or []:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("id") or "") == rule_id or (alert_name and str(item.get("name") or "") == alert_name):
+            rule = item
+            break
+    bound_channel_ids = list((rule or {}).get("channel_ids") or [])
+    im_user_ids = list((rule or {}).get("im_user_ids") or [])
+    default_channel_ids = list(((alert_settings or {}).get("default_channel_ids")) or [])
+    return bool(bound_channel_ids or im_user_ids or default_channel_ids)
+
+
+def _notify_cert_expiry_fallback(db, events: list[dict], rules: list[dict], alert_settings: dict | None) -> int:
+    """全体管理员站内信兜底：到期/已过期告警无任何通知出口时也要让人看到。
+
+    只覆盖 firing 事件（resolved 不发恢复通知）；复用现有的 create_notification
+    站内信链路，不另造通知系统。24 小时内同一证书已发过兜底通知则跳过。
+    返回实际发送的通知条数。
+    """
+    from datetime import timedelta
+
+    from app.api.notifications import NotificationCreate, create_notification
+    from app.models.notification import UserNotification
+    from app.models.user import User
+
+    sent = 0
+    cutoff = datetime.utcnow() - timedelta(hours=CERT_EXPIRY_FALLBACK_REMINDER_HOURS)
+    for event in events or []:
+        if (event.get("status") or "") != "firing":
+            continue
+        labels = event.get("labels") or {}
+        if str(labels.get("opspilot_rule_id") or "") != CERT_EXPIRY_RULE_ID:
+            continue
+        if _event_has_notification_path(event, rules, alert_settings):
+            continue
+        cert_id = str(labels.get("cert_id") or "").strip()
+        domain = str(labels.get("instance") or "").strip() or cert_id
+        annotations = event.get("annotations") or {}
+        summary = str(annotations.get("summary") or "").strip()
+        expired = str(labels.get("severity") or "") == "critical" or "已过期" in summary
+        title = "证书已过期" if expired else "证书即将到期"
+        recent = (
+            db.query(UserNotification)
+            .filter(
+                UserNotification.category == "certificate",
+                UserNotification.resource_id == cert_id,
+                UserNotification.title == title,
+                UserNotification.created_at >= cutoff,
+            )
+            .first()
+        )
+        if recent is not None:
+            continue
+        content = str(annotations.get("description") or summary or "").strip()
+        if not content:
+            content = f"证书 {domain} 即将到期，请及时续签。"
+        admins = db.query(User).filter(User.role == "admin").all()
+        for admin in admins:
+            try:
+                create_notification(
+                    db,
+                    data=NotificationCreate(
+                        user_id=admin.id,
+                        type="critical" if expired else "warning",
+                        category="certificate",
+                        title=title,
+                        content=content,
+                        link="/assets/certificates",
+                        resource_id=cert_id,
+                    ),
+                )
+                sent += 1
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(f"证书到期兜底通知发送失败（管理员 {admin.id}）: {exc}")
+        if admins:
+            logger.info(f"证书到期告警 [{domain}] 无规则/渠道可配，已发全体管理员站内兜底通知。")
+    return sent
+
+
+def _dispatch_with_fallback(
+    events: list[dict],
+    rules: list[dict],
+    channels: list[dict],
+    silences: list[dict],
+    now: datetime,
+    alert_settings: dict | None,
+) -> None:
+    """先走正常告警派发，再对无任何出口的证书到期 firing 事件发站内信兜底。"""
+    from app.api.monitoring.services.alert_dispatcher import dispatch_active_alerts
+
+    dispatch_active_alerts(events, rules, channels, silences, now, alert_settings)
+    db = SessionLocal()
+    try:
+        _notify_cert_expiry_fallback(db, events, rules, alert_settings)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"证书到期兜底通知异常: {exc}", exc_info=True)
+    finally:
+        db.close()
+
+
 async def start_cert_expiry_alert_runner() -> None:
     """常驻后台任务:周期扫描证书到期并经告警管道派发。随后端进程启停。"""
-    from app.api.monitoring.services.alert_dispatcher import dispatch_active_alerts
     from app.core.scheduler_registry import register_task, track_run
 
     register_task(
@@ -139,7 +253,7 @@ async def start_cert_expiry_alert_runner() -> None:
                 if events:
                     rules, channels, silences, alert_settings = await asyncio.to_thread(_load_dispatch_context)
                     await asyncio.to_thread(
-                        dispatch_active_alerts,
+                        _dispatch_with_fallback,
                         events, rules, channels, silences, datetime.now(), alert_settings,
                     )
             except asyncio.CancelledError:
