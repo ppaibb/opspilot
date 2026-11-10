@@ -45,10 +45,11 @@ def _route_dependency_values(path: str, method: str) -> set[str]:
 class BackendSecurityHardeningContractTest(unittest.TestCase):
     def test_audit_risk_level_is_resolved_from_backend_rules(self):
         """审计风险等级必须由后端规则表计算，不能直接保存 X-Risk-Ack。"""
-        # 私钥下载仍是 high：审计中间件据此高亮，前端也要二次确认。
+        # 证书下载 2026-11-10 重评为 medium：只是私钥读出、可重做，不再 high；
+        # 审计中间件仍按规则表记 medium（非 low），前端不再弹高危确认框。
         self.assertEqual(
             main.resolve_request_risk_level("GET", "/api/certificates/CERT-1/download"),
-            "high",
+            "medium",
         )
         # 证书部署当前在 ACTION_RISK_LEVELS 注册为 low（风险确认已按运维体验要求直通放行）。
         self.assertEqual(
@@ -113,9 +114,10 @@ class BackendSecurityHardeningContractTest(unittest.TestCase):
         """
         download_values = _route_dependency_values("/api/certificates/{cert_id}/download", "GET")
         self.assertIn("action.assets.certificates.download", download_values)
+        # 2026-11-10 重评：证书下载降为 medium（见上一测试注释）。
         self.assertEqual(
             main.resolve_request_risk_level("GET", "/api/certificates/CERT-1/download"),
-            "high",
+            "medium",
         )
 
         deploy_values = _route_dependency_values("/api/certificates/{cert_id}/deploy", "POST")
@@ -123,16 +125,17 @@ class BackendSecurityHardeningContractTest(unittest.TestCase):
 
         batch_delete_values = _route_dependency_values("/api/certificates/batch-delete", "POST")
         self.assertIn("action.assets.certificates.manage", batch_delete_values)
+        # 2026-11-10 重评：证书删除是硬删除（db.delete + 删磁盘目录）→ high。
         self.assertEqual(
             main.resolve_request_risk_level("POST", "/api/certificates/batch-delete"),
-            "medium",
+            "high",
         )
 
         delete_values = _route_dependency_values("/api/certificates/{cert_id}", "DELETE")
         self.assertIn("action.assets.certificates.manage", delete_values)
         self.assertEqual(
             main.resolve_request_risk_level("DELETE", "/api/certificates/CERT-1"),
-            "medium",
+            "high",
         )
 
     def test_login_rate_limiter_locks_after_failures_and_clears_on_success(self):

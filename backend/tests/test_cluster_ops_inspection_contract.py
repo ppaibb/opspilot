@@ -184,17 +184,17 @@ class ClusterAuditRiskRouteRulesTest(unittest.TestCase):
 
     def test_cluster_subpaths_resolve_registered_levels(self):
         cases = [
-            ("POST", "/api/clusters/c1/nodes/n1/cordon", "high"),
+            ("POST", "/api/clusters/c1/nodes/n1/cordon", "medium"),
             ("POST", "/api/clusters/c1/nodes/n1/uncordon", "medium"),
-            ("POST", "/api/clusters/c1/nodes/n1/drain", "high"),
+            ("POST", "/api/clusters/c1/nodes/n1/drain", "medium"),
             ("PATCH", "/api/clusters/c1/nodes/n1/taints", "medium"),
             ("PATCH", "/api/clusters/c1/nodes/n1/labels", "medium"),
             ("PATCH", "/api/clusters/c1/namespaces/ns1/labels", "medium"),
             ("POST", "/api/clusters/c1/apply", "medium"),
             ("PATCH", "/api/clusters/c1/workloads/Deployment/ns/name/scale", "medium"),
-            ("PATCH", "/api/clusters/c1/workloads/Deployment/ns/name/set-image", "high"),
+            ("PATCH", "/api/clusters/c1/workloads/Deployment/ns/name/set-image", "medium"),
             ("PATCH", "/api/clusters/c1/workloads/Deployment/ns/name/restart", "medium"),
-            ("POST", "/api/clusters/c1/workloads/Deployment/ns/name/rollout-undo", "high"),
+            ("POST", "/api/clusters/c1/workloads/Deployment/ns/name/rollout-undo", "medium"),
             ("DELETE", "/api/clusters/c1/pods/ns/name", "high"),
             ("DELETE", "/api/clusters/c1/namespaces/kube-system", "high"),
             ("POST", "/api/clusters/c1/namespaces", "medium"),

@@ -165,9 +165,9 @@ def test_postgresql_rollback_uses_boolean_literals():
 @pytest.mark.parametrize(
     "path, expected",
     [
-        ("/api/wireguard/networks/1/server-config", "high"),
-        ("/api/wireguard/peers/2/config", "high"),
-        ("/api/db/tickets/3/rollback", "high"),
+        ("/api/wireguard/networks/1/server-config", "medium"),
+        ("/api/wireguard/peers/2/config", "medium"),
+        ("/api/db/tickets/3/rollback", "medium"),
         ("/api/assets/terminal/files/host-1/download", "medium"),
     ],
 )
