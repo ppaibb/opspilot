@@ -1,7 +1,7 @@
 """
 证书管理模型
 """
-from sqlalchemy import Column, Integer, String
+from sqlalchemy import Column, Integer, String, Text
 from app.db.database import Base
 
 
@@ -34,6 +34,11 @@ class CertificateRecord(Base):
     last_renew_attempt_at = Column(String(30), default="", comment="最近一次自动续签触发时间（失败重试冷却用）")
     last_error = Column(String(1000), default="", comment="最近错误")
     deploy_targets = Column(String(255), default="", comment="分发目标（预留）")
+    # 部署目标档案 JSON：最近一次成功派发的完整部署参数（主机列表/路径/脚本、
+    # 云厂商与凭证、K8s 集群与 Secret），续期成功后按此档案自动重部署。
+    # 与 deploy_targets（255 字摘要串、编辑时会清零、host 路从不写）不同，
+    # 本列只由部署派发写入，编辑证书不碰，是续期重部署的唯一可信来源。
+    deploy_profile_json = Column(Text, default="", comment="部署目标档案 JSON")
     remark = Column(String(255), default="", comment="备注")
     created_at = Column(String(30), default="", comment="创建时间")
     updated_at = Column(String(30), default="", comment="更新时间")

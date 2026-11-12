@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   CERT_STATUS_BADGE_BG, CERT_STATUS_BADGE_PULSE, EXPIRY_TONE_COLOR,
   certStatusBadgeBg, expiryDisplay, formatIssuer, formatKeyType,
-  matchProviderFilter, matchStatusFilter,
+  isRenewDisabled, matchProviderFilter, matchStatusFilter, renewDisabledReason,
 } from './certTableMeta'
 
 describe('formatKeyType', () => {
@@ -99,5 +99,28 @@ describe('matchStatusFilter', () => {
     expect(matchStatusFilter('issued', 'issued')).toBe(true)
     expect(matchStatusFilter('failed', 'issued')).toBe(false)
     expect(matchStatusFilter(undefined, 'issued')).toBe(false)
+  })
+})
+
+describe('isRenewDisabled / renewDisabledReason', () => {
+  it('已吊销禁用续签（与后端 409 校验一致）', () => {
+    expect(isRenewDisabled('revoked', 'aliyun', 'letsencrypt')).toBe(true)
+    expect(renewDisabledReason('revoked', 'aliyun', 'letsencrypt')).toBe(
+      '已吊销证书不可续签，如需重新签发请先删除该记录',
+    )
+  })
+  it('已签发/即将到期/已过期可续签', () => {
+    expect(isRenewDisabled('issued', 'aliyun', 'letsencrypt')).toBe(false)
+    expect(isRenewDisabled('expiring', 'aliyun', 'letsencrypt')).toBe(false)
+    expect(isRenewDisabled('expired', 'tencent', 'letsencrypt')).toBe(false)
+    expect(renewDisabledReason('issued', 'aliyun', 'letsencrypt')).toBe('手动触发续期')
+  })
+  it('进行中与手动上传仍禁用', () => {
+    expect(isRenewDisabled('renewing', 'aliyun', 'letsencrypt')).toBe(true)
+    expect(isRenewDisabled('issuing', 'aliyun', 'letsencrypt')).toBe(true)
+    expect(isRenewDisabled('issued', 'custom', 'custom')).toBe(true)
+    expect(renewDisabledReason('issued', 'custom', 'custom')).toBe(
+      '手动上传的证书没有 ACME 账号，无法自动续期',
+    )
   })
 })

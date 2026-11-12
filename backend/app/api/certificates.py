@@ -1061,8 +1061,17 @@ def run_issue_job(cert_id: str, renew: bool = False, reserved: bool = False, use
         if not cert:
             return
 
+        if renew and (cert.status or "").strip().lower() == "revoked":
+            # 已吊销证书不可续签：续签入口已拦，这里是纵深防御（自动循环/直接调用）。
+            # 必须在改状态之前返回：后面的开头清 last_error 会抹掉吊销原因，
+            # 成功分支还会把 status 无条件置回 issued，等于复活吊销证书。
+            append_cert_log(cert_id, "已吊销证书跳过续签：如需重新签发请先删除该记录", "WARNING")
+            logger.warning("[Cert Renew] 已吊销证书 %s 跳过续签", cert_id)
+            return
+
         cert.status = "renewing" if renew else "issuing"
-        cert.last_error = ""
+        # 注意：这里不再清空 last_error。吊销原因、上一轮失败原因都是审计留痕，
+        # 只有成功签发新证时才清（成功分支）；失败时由 set_issue_failed 写新原因。
         cert.updated_at = now_ts()
         db.commit()
         append_cert_log(cert_id, "开始执行证书任务" + ("（续签）" if renew else "（签发）"))
@@ -1277,6 +1286,15 @@ def run_issue_job(cert_id: str, renew: bool = False, reserved: bool = False, use
                     )
                 except Exception:
                     pass
+        # 续期成功：按部署目标档案自动触发一次重部署（手动续签与自动续期
+        # 都走 run_issue_job，所以这里一个触发点即覆盖两条路；首次签发
+        # renew=False 不触发）。无档案的证书静默跳过；重部署本身永不反噬
+        # 已经成功的续期（trigger 内部兜底不抛异常）。
+        if renew:
+            try:
+                trigger_auto_redeploy(cert_id, user_id)
+            except Exception:
+                logger.exception("[Cert Auto Redeploy] 证书 %s 续期成功后触发重部署异常", cert_id)
     except Exception as e:
         cert = db.query(CertificateRecord).filter(CertificateRecord.cert_id == cert_id).first()
         if cert:
@@ -1568,6 +1586,8 @@ def renew_certificate(
     row = db.query(CertificateRecord).filter(CertificateRecord.cert_id == cert_id).first()
     if not row:
         raise HTTPException(status_code=404, detail="证书不存在")
+    if (row.status or "").strip().lower() == "revoked":
+        raise HTTPException(status_code=409, detail="已吊销证书不可续签，如需重新签发请先删除该记录")
     account_id = str(row.account_id or "").strip()
     if not account_id:
         raise HTTPException(status_code=400, detail="证书未绑定签发账户，无法续签")
@@ -1620,6 +1640,9 @@ def batch_renew_certificates(
         row = db.query(CertificateRecord).filter(CertificateRecord.cert_id == cert_id).first()
         if not row:
             failed.append({"id": cert_id, "reason": "证书不存在"})
+            continue
+        if (row.status or "").strip().lower() == "revoked":
+            failed.append({"id": cert_id, "reason": "已吊销证书不可续签，如需重新签发请先删除该记录"})
             continue
         account_id = str(row.account_id or "").strip()
         if not account_id:
@@ -1917,8 +1940,181 @@ def _deploy_cert_to_host(
             logger.debug("关闭部署 SSH 客户端失败", exc_info=True)
 
 
-def run_deploy_job(cert_id: str, deploy_id: str, params: dict, user_id: int | None = None) -> None:
-    """证书部署后台任务：逐目标执行、逐行写日志、结束写历史记录终态。"""
+def build_deploy_profile(target_type: str, params: dict) -> dict:
+    """从一次部署派发的规范化参数拼部署目标档案（续期重部署的唯一来源）。
+
+    只收录重部署必需的字段：host 路是主机列表 + 证书/私钥路径 + 后置脚本，
+    云路是厂商 + 凭证 + 产品 + 域名/实例，k8s 路是集群 + 命名空间 + Secret 名。
+    """
+    target_type = (target_type or "host").strip().lower()
+    if target_type == "cloud":
+        return {
+            "target_type": "cloud",
+            "cloud_provider": (params.get("cloud_provider") or "aliyun"),
+            "cloud_account_id": (params.get("cloud_account_id") or ""),
+            "cloud_service": (params.get("cloud_service") or ""),
+            "domain_instance": (params.get("domain_instance") or ""),
+        }
+    if target_type == "k8s":
+        return {
+            "target_type": "k8s",
+            "cluster_id": (params.get("cluster_id") or ""),
+            "namespace": (params.get("namespace") or "default"),
+            "secret_name": (params.get("secret_name") or ""),
+        }
+    return {
+        "target_type": "host",
+        "asset_ids": [str(item) for item in (params.get("asset_ids") or []) if str(item or "").strip()],
+        "cert_dest_path": (params.get("cert_dest_path") or ""),
+        "key_dest_path": (params.get("key_dest_path") or ""),
+        "post_script": (params.get("post_script") or ""),
+    }
+
+
+def deploy_profile_targets_summary(profile: dict) -> str:
+    """档案 → 部署历史 targets 摘要（与 deploy_certificate 的 targets 同口径）。"""
+    target_type = (profile.get("target_type") or "host").strip().lower()
+    if target_type == "cloud":
+        return f"{str(profile.get('cloud_provider') or 'aliyun').upper()} CDN/ALB"
+    if target_type == "k8s":
+        return f"k8s:{profile.get('cluster_id') or ''}/{profile.get('namespace') or 'default'}/{profile.get('secret_name') or ''}"
+    return ", ".join(profile.get("asset_ids") or [])
+
+
+def load_deploy_profile(row: CertificateRecord) -> dict | None:
+    """读证书行的部署目标档案；无档案或档案损坏/缺关键字段时返回 None。"""
+    raw = (getattr(row, "deploy_profile_json", None) or "").strip()
+    if not raw:
+        return None
+    try:
+        profile = json.loads(raw)
+    except Exception:
+        logger.warning("[Cert Auto Redeploy] 证书 %s 部署目标档案 JSON 损坏，无法解析", row.cert_id)
+        return None
+    if not isinstance(profile, dict):
+        return None
+    target_type = str(profile.get("target_type") or "").strip().lower()
+    if target_type == "host":
+        asset_ids = [str(item) for item in (profile.get("asset_ids") or []) if str(item or "").strip()]
+        if not asset_ids or not (profile.get("cert_dest_path") or "").strip():
+            return None
+        profile["asset_ids"] = asset_ids
+        return profile
+    if target_type == "cloud":
+        if not (profile.get("cloud_account_id") or "").strip():
+            return None
+        return profile
+    if target_type == "k8s":
+        if not (profile.get("cluster_id") or "").strip() or not (profile.get("secret_name") or "").strip():
+            return None
+        return profile
+    return None
+
+
+def _notify_auto_redeploy_failure(
+    db: Session, cert: CertificateRecord, *, user_id: int | None, status: str, deploy_id: str
+) -> None:
+    """自动重部署终态失败/部分失败时通知（续期成功了但线上没换证，必须让人知道）。"""
+    recipients: list[User] = []
+    if user_id:
+        owner = db.query(User).filter(User.id == user_id).first()
+        if owner:
+            recipients.append(owner)
+    if not recipients:
+        recipients = db.query(User).filter(User.role == "admin").all()
+    title = "证书续期后自动重部署部分失败" if status == "partial" else "证书续期后自动重部署失败"
+    detail = f"（部署记录 {deploy_id}）" if deploy_id else "（未生成部署记录）"
+    for recipient in recipients:
+        try:
+            create_notification(
+                db,
+                data=NotificationCreate(
+                    user_id=recipient.id,
+                    type="warning" if status == "partial" else "error",
+                    category="certificate",
+                    title=title,
+                    content=f"{cert.primary_domain} 证书已续期，但自动重部署{status}{detail}，请在部署历史中查看并手动处理",
+                    link="/assets/certificates",
+                    resource_id=cert.cert_id,
+                ),
+            )
+        except Exception:
+            logger.debug("Failed to send auto-redeploy failure notification for cert %s", cert.cert_id)
+
+
+def trigger_auto_redeploy(cert_id: str, user_id: int | None = None, *, run_async: bool = True) -> dict | None:
+    """续期成功后按部署目标档案自动触发一次重部署。
+
+    无档案的证书（从未部署过）直接跳过，不报错、不触发部署；档案损坏或缺
+    关键字段时记日志并通知（档案本身出了问题，不能当无事发生）；档案有效时
+    建一条 triggered_by="auto-renew" 的部署历史记录并走现有 run_deploy_job
+    后台链路。云路仍是"仅记录"语义：run_deploy_job 会把历史记为 recorded。
+    本函数永不抛异常——重部署失败绝不能反噬已经成功的续期。
+    """
+    db = SessionLocal()
+    try:
+        row = db.query(CertificateRecord).filter(CertificateRecord.cert_id == cert_id).first()
+        if not row:
+            return None
+        profile = load_deploy_profile(row)
+        if profile is None:
+            raw = (getattr(row, "deploy_profile_json", None) or "").strip()
+            if raw:
+                # 有档案但读不出来：不是"没部署过"，是数据坏了，必须通知。
+                append_cert_log(cert_id, "自动重部署未触发：部署目标档案无效，请重新部署一次以重建档案", "WARNING")
+                _notify_auto_redeploy_failure(db, row, user_id=user_id, status="failed", deploy_id="")
+                logger.warning("[Cert Auto Redeploy] 证书 %s 部署目标档案无效，跳过自动重部署", cert_id)
+            else:
+                append_cert_log(cert_id, "无部署目标档案，跳过自动重部署")
+                logger.info("[Cert Auto Redeploy] 证书 %s 无部署目标档案，跳过自动重部署", cert_id)
+            return None
+        target_type = str(profile.get("target_type") or "host").strip().lower()
+        targets = deploy_profile_targets_summary(profile)[:500]
+        deploy_id = uuid.uuid4().hex
+        record = CertificateDeployment(
+            deploy_id=deploy_id,
+            cert_id=cert_id,
+            target_type=target_type,
+            targets=targets,
+            status="running",
+            results_json="[]",
+            triggered_by="auto-renew",
+            started_at=now_ts(),
+            finished_at="",
+        )
+        db.add(record)
+        db.commit()
+        append_cert_log(cert_id, f"续期成功，自动重部署已触发 [{target_type}]，目标：{targets or '-'}")
+        logger.info("[Cert Auto Redeploy] 证书 %s 续期成功，自动重部署 %s 已触发", cert_id, deploy_id)
+        if run_async:
+            threading.Thread(
+                target=run_deploy_job,
+                args=(cert_id, deploy_id, profile, user_id),
+                kwargs={"auto_redeploy": True},
+                daemon=True,
+            ).start()
+        else:
+            run_deploy_job(cert_id, deploy_id, profile, user_id, auto_redeploy=True)
+        return {"deploy_id": deploy_id, "target_type": target_type}
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("[Cert Auto Redeploy] 证书 %s 自动重部署触发异常: %s", cert_id, exc)
+        try:
+            append_cert_log(cert_id, f"自动重部署触发异常：{exc}", "ERROR")
+        except Exception:
+            pass
+        return None
+    finally:
+        db.close()
+
+
+def run_deploy_job(cert_id: str, deploy_id: str, params: dict, user_id: int | None = None, *, auto_redeploy: bool = False) -> None:
+    """证书部署后台任务：逐目标执行、逐行写日志、结束写历史记录终态。
+
+    auto_redeploy=True 时表示本次部署由续期成功自动触发：终态为 failed /
+    partial 时额外给触发用户（无则全体管理员）发站内通知——续期成功但线上
+    没换证是静默失效，必须让人知道；success / recorded 不发（续期成功通知
+    已覆盖，云路 recorded 本就是预期的诚实状态）。
+    """
     from app.models.asset import Asset
 
     db = SessionLocal()
@@ -2000,6 +2196,12 @@ def run_deploy_job(cert_id: str, deploy_id: str, params: dict, user_id: int | No
         row.updated_at = now_ts()
         db.commit()
         append_cert_log(cert_id, f"证书部署结束：目标 {len(results)} 个，成功 {success_count} 个，状态 {status}")
+        if auto_redeploy and status in {"failed", "partial"}:
+            # 续期成功触发的重部署失败/部分失败：必须通知，不能静默。
+            try:
+                _notify_auto_redeploy_failure(db, row, user_id=user_id, status=status, deploy_id=deploy_id)
+            except Exception:
+                logger.debug("自动重部署失败通知发送失败 %s", deploy_id, exc_info=True)
     except Exception:
         logger.exception("[Cert Deploy] 部署任务 %s 收尾异常", deploy_id)
         try:
@@ -2060,7 +2262,14 @@ def deploy_certificate(
         if not cred:
             raise HTTPException(status_code=400, detail="指定的云凭证不存在")
         targets = f"{provider.upper()} CDN/ALB ({cred.name})"
-        params: dict = {"cloud_provider": provider, "cloud_account_id": cred.cred_id}
+        # cloud_service / domain_instance 后端云分支目前不消费，但要原样存进
+        # 部署目标档案（否则档案丢信息、也与用户提交的不一致）。
+        params: dict = {
+            "cloud_provider": provider,
+            "cloud_account_id": cred.cred_id,
+            "cloud_service": (payload.cloud_service or "").strip(),
+            "domain_instance": (payload.domain_instance or "").strip(),
+        }
     elif target_type == "k8s":
         cluster_id = (payload.cluster_id or "").strip()
         namespace = (payload.namespace or "default").strip() or "default"
@@ -2119,6 +2328,14 @@ def deploy_certificate(
 
         targets = ", ".join(asset_ids)
         params = {"asset_ids": asset_ids, "cert_dest_path": cert_dest_path, "key_dest_path": key_dest_path, "post_script": post_script}
+
+    # 部署目标档案：成功派发即写下来，供续期成功后自动重部署复用。
+    # 只由部署写入，编辑证书不碰；deploy_targets 同步写一份摘要（host 路
+    # 此前从不写，导致"上次部署到哪"无处可查）。
+    profile = build_deploy_profile(target_type, params)
+    row.deploy_profile_json = json.dumps(profile, ensure_ascii=False)
+    row.deploy_targets = (targets or "")[:255]
+    row.updated_at = now_ts()
 
     deploy_id = uuid.uuid4().hex
     record = CertificateDeployment(
@@ -2316,6 +2533,15 @@ def run_certificates_auto_renew_cycle() -> None:
             "%Y-%m-%d %H:%M:%S"
         )
         for cert in certs:
+            if (cert.status or "").strip().lower() == "revoked":
+                # 已吊销证书不可续签：吊销动作本身会关 auto_renew，正常情况下
+                # 走不到这里；但 auto_renew 可能被手动改回 yes，这里再拦一道，
+                # 避免吊销证书被自动循环复活。
+                logger.info(
+                    "[Cert Auto Renew] 证书 %s (%s) 已吊销，跳过自动续签",
+                    cert.primary_domain, cert.cert_id,
+                )
+                continue
             status = calc_certificate_status(cert.not_after or "", int(cert.renew_before_days or 30), cert.status or "pending")
             if status in {"expiring", "expired"}:
                 # 自动签发只支持已实现 ACME DNS-01 插件的厂商（见 ACME_PROVIDER_PLUGINS

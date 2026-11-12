@@ -27,6 +27,7 @@ from app.api.monitoring.constants import (
     ALERT_RULE_TEMPLATES,
     ALERT_SEVERITIES,
     AUTH_TYPES,
+    CERT_EXPIRY_RULE_ID,
     CONFIG_KEY,
     DEFAULT_ALERT_RULES,
     DEFAULT_TIMEOUT_SECONDS,
@@ -225,7 +226,23 @@ def read_monitoring_rules(db: Session) -> tuple[list[dict[str, Any]], str]:
         if isinstance(r, dict) and r.get("name") == "OpsPilotTargetDown" and r.get("expr") == "up == 1":
             r["expr"] = "up == 0"
             need_save = True
-            
+
+    # 证书到期规则是后补的默认规则：只加 DEFAULT_ALERT_RULES 不够，已持久化
+    # 过规则的存量环境读到的永远是库里那份，永远缺这条，扫描器事件也就永远
+    # 无规则可配。库里缺失时按默认项补一条并存回（与上面 up == 1 的自动纠
+    # 正同一模式）；用户若在页面上删了它，下次读取会重新补回——这是内置
+    # 合成规则，删了等于断掉证书到期提醒，故不允许通过删除长期缺失。
+    if not any(isinstance(r, dict) and str(r.get("id") or "") == CERT_EXPIRY_RULE_ID for r in rules):
+        defaults_by_id = {
+            str(item.get("id") or ""): item
+            for item in DEFAULT_ALERT_RULES
+            if isinstance(item, dict)
+        }
+        builtin = defaults_by_id.get(CERT_EXPIRY_RULE_ID)
+        if builtin is not None:
+            rules.append(dict(builtin))
+            need_save = True
+
     if need_save:
         try:
             content = json.dumps({"rules": rules}, ensure_ascii=False)
