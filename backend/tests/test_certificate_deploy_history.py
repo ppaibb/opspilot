@@ -42,7 +42,7 @@ class _FakeBackgroundTasks:
 
 class _FakeChannel:
     def recv_exit_status(self):
-        return 0
+        return _FakeSSHClient.post_script_exit_status
 
 
 class _FakeStdout(io.BytesIO):
@@ -75,6 +75,7 @@ class _FakeSSHClient:
     """可配置成 connect 失败的假 SSH 客户端。"""
 
     fail_connect = False
+    post_script_exit_status = 0
     last_instance = None
 
     def __init__(self):
@@ -276,6 +277,26 @@ def test_run_deploy_job_host_partial_one_ok_one_missing(db, monkeypatch):
     assert data["total_count"] == 2
 
 
+def test_run_deploy_job_host_post_script_failure_is_failure(db, monkeypatch):
+    _install_fake_ssh(monkeypatch)
+    _FakeSSHClient.post_script_exit_status = 1
+    try:
+        result, tasks = _submit_host(db, monkeypatch, asset_ids=("HOST-1",))
+        func, args, _kwargs = tasks.tasks[0]
+        func(*args)
+        record = _deploy_record(db, result["deploy_id"])
+        # 后置脚本（如 reload nginx）非零退出：证书未生效，该台记失败、历史记 failed
+        assert record.status == "failed"
+        data = serialize_deployment(record)
+        assert data["success_count"] == 0
+        assert data["results"][0]["success"] is False
+        assert "后置脚本执行失败(Code 1)" in data["results"][0]["message"]
+        log = _log_text(db)
+        assert "部署主机 HOST-1：失败" in log
+    finally:
+        _FakeSSHClient.post_script_exit_status = 0
+
+
 def test_run_deploy_job_k8s_success_and_failure(db, monkeypatch):
     # 成功
     monkeypatch.setattr(
@@ -317,12 +338,18 @@ def test_run_deploy_job_cloud_records_without_calling_provider(db):
     func, args, _kwargs = tasks.tasks[0]
     func(*args)
     record = _deploy_record(db, result["deploy_id"])
-    assert record.status == "success"
+    # 云路只记录目标、未调用云厂商接口：历史必须记 recorded（未推送），不是 success
+    assert record.status == "recorded"
     assert record.targets == "ALIYUN CDN/ALB (阿里云-闫东)"
     data = serialize_deployment(record)
-    # 如实记录：没调云厂商接口，不许写"推送成功"
+    # 如实记录：没调云厂商接口，不许写"推送成功"；逐目标结果也不许算成功
     assert "未调用云厂商接口" in data["results"][0]["message"]
+    assert "未推送" in data["results"][0]["message"]
     assert "推送成功" not in data["results"][0]["message"]
+    assert data["results"][0]["success"] is False
+    assert data["results"][0]["recorded"] is True
+    assert data["success_count"] == 0
+    assert data["total_count"] == 1
     # deploy_targets 更新行为不变：云路仍写证书行
     row = db.query(CertificateRecord).filter(CertificateRecord.cert_id == "CERT-1").first()
     assert row.deploy_targets == "ALIYUN CDN/ALB (阿里云-闫东)"

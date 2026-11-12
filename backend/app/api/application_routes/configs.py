@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from .shared import *  # noqa: F401,F403
 from app.core.security import require_risk_ack
+from app.services.credential_usage import sync_credential_usage
 
 router = APIRouter()
 
@@ -124,6 +125,8 @@ def create_application_config(
         **data,
     )
     db.add(row)
+    # 新配置项即引用该凭证：同步 used_by，否则删凭证保护看不到这条引用。
+    sync_credential_usage(db, {row.credential_ref})
     _add_config_revision(
         db=db,
         current_user=current_user,
@@ -355,6 +358,8 @@ def update_application_config(
     for key, value in data.items():
         setattr(row, key, value)
     row.updated_at = _now_str()
+    # 换绑凭证：新旧两条引用的 used_by 都要重算，否则旧凭证删不掉/新凭证可误删。
+    sync_credential_usage(db, {old_data["credential_ref"], row.credential_ref})
     _add_config_revision(
         db=db,
         current_user=current_user,
@@ -409,7 +414,10 @@ def delete_application_config(
         old_credential_ref=row.credential_ref or "",
         remark=row.remark or "",
     )
+    # 删配置项即释放引用：同步后该凭证的 used_by 才会降下来。
+    old_credential_ref = row.credential_ref or ""
     db.delete(row)
+    sync_credential_usage(db, {old_credential_ref})
     db.commit()
     return {"success": True}
 
@@ -561,6 +569,8 @@ def rollback_application_config(
     row.value_type = target_value_type
     row.credential_ref = target_credential_ref or ""
     row.updated_at = _now_str()
+    # 回滚可能换绑凭证：新旧两条引用的 used_by 都要重算。
+    sync_credential_usage(db, {old_credential_ref or "", target_credential_ref or ""})
     
     # 记录回滚操作到版本历史
     _add_config_revision(

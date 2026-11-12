@@ -4,7 +4,7 @@ import type { CertificateDeployment, CertificateDeploymentResult } from '@/types
 /** 部署历史列表在存在进行中记录时的轮询间隔（毫秒） */
 export const CERT_DEPLOY_POLL_INTERVAL_MS = 3000
 
-/** 部署状态 → 展示文案：running 进行中、success 成功、partial 部分成功、failed 失败 */
+/** 部署状态 → 展示文案：running 进行中、success 成功、partial 部分成功、failed 失败、recorded 仅记录未推送 */
 export function deployStatusText(status?: string | null): string {
   switch ((status ?? '').trim().toLowerCase()) {
     case 'running':
@@ -15,6 +15,9 @@ export function deployStatusText(status?: string | null): string {
       return '部分成功'
     case 'failed':
       return '失败'
+    case 'recorded':
+      // 云路只记录推送目标、未调用云厂商接口：不是成功，也不是失败
+      return '仅记录，未推送'
     default:
       return status?.trim() ? status.trim() : '—'
   }
@@ -31,6 +34,8 @@ export function deployStatusTagColor(status?: string | null): string {
       return 'warning'
     case 'failed':
       return 'error'
+    case 'recorded':
+      return 'warning'
     default:
       return 'default'
   }

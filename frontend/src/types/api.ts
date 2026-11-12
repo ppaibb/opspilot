@@ -552,21 +552,22 @@ export interface CertificateDeployResponse {
   deploy_id: string
 }
 
-/** 单条部署目标结果（每台主机 / 每个目标） */
+/** 单条部署目标结果（每台主机 / 每个目标）；recorded 表示云路仅记录目标、未推送 */
 export interface CertificateDeploymentResult {
   target: string
   asset_id?: string
   success: boolean
+  recorded?: boolean
   message: string
 }
 
-/** 部署历史记录：running/success/partial/failed */
+/** 部署历史记录：running/success/partial/failed/recorded（recorded=云路仅记录目标，未推送） */
 export interface CertificateDeployment {
   deploy_id: string
   cert_id: string
   target_type: 'host' | 'cloud' | 'k8s' | string
   targets: string
-  status: 'running' | 'success' | 'partial' | 'failed' | string
+  status: 'running' | 'success' | 'partial' | 'failed' | 'recorded' | string
   results: CertificateDeploymentResult[]
   success_count: number
   total_count: number

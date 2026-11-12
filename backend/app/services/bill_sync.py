@@ -20,7 +20,11 @@ from typing import Any, Iterable
 
 from sqlalchemy.orm import Session
 
-from app.core.crypto import decrypt_secret
+from app.core.crypto import (
+    CredentialDecryptionError,
+    CredentialEncryptionConfigError,
+    decrypt_secret,
+)
 from app.db.database import SessionLocal
 from app.models.credential import Credential
 from app.models.finance import BillSyncRun, CloudAccount, CloudBill
@@ -110,7 +114,13 @@ def load_account_keys(db: Session, account: CloudAccount) -> tuple[str, str, str
     cred = db.query(Credential).filter(Credential.cred_id == account.credential_ref).first()
     if not cred:
         return "", "", "绑定的凭证不存在或已被删除"
-    raw = decrypt_secret(cred.content or "")
+    try:
+        raw = decrypt_secret(cred.content or "")
+    except CredentialDecryptionError:
+        # 凭证密文已损坏：转业务错误字符串（调用方按 err 分支处理），不要 500 拖垮账单同步。
+        return "", "", "引用的凭证已损坏，需重新录入"
+    except CredentialEncryptionConfigError:
+        return "", "", "凭证加密配置异常，请联系管理员"
     ak, sk = parse_access_key_content(raw)
     if len(ak) < 10 or len(sk) < 10:
         return "", "", "凭证内容无法解析出 AccessKey/SecretKey"

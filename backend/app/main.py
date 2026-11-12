@@ -1,5 +1,6 @@
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 # 环境变量配置已交由 app.core.config 接管
 import re
 from urllib.parse import unquote
@@ -80,7 +81,12 @@ from app.models.collector import (
     CollectorRegistrationToken,
     CollectorRelease,
 )
-from app.core.crypto import encrypt_secret, validate_credential_encryption_settings
+from app.core.crypto import (
+    CredentialDecryptionError,
+    CredentialEncryptionConfigError,
+    encrypt_secret,
+    validate_credential_encryption_settings,
+)
 
 
 def migrate_asset_passwords():
@@ -220,6 +226,24 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan
 )
+
+
+@app.exception_handler(CredentialDecryptionError)
+def credential_decryption_error_handler(request: Request, exc: CredentialDecryptionError):
+    """单条历史脏密文不再 500：422 + 固定文案，不带密文细节。"""
+    return JSONResponse(
+        status_code=422,
+        content={"detail": "凭证密文已损坏，需重新录入"},
+    )
+
+
+@app.exception_handler(CredentialEncryptionConfigError)
+def credential_encryption_config_error_handler(request: Request, exc: CredentialEncryptionConfigError):
+    """凭证主密钥缺失/不安全是服务端配置问题：503，不带密钥细节。"""
+    return JSONResponse(
+        status_code=503,
+        content={"detail": "凭证加密配置异常，请联系管理员"},
+    )
 
 # 配置 CORS，允许前端直接向后端发送跨域请求 (兜底非代理访问)
 app.add_middleware(

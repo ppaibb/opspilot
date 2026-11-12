@@ -22,7 +22,11 @@ from app.db.database import get_db
 from app.models.credential import Credential
 from app.models.user import User
 from app.core.security import get_current_user, require_risk_ack
-from app.core.crypto import decrypt_secret, encrypt_secret
+from app.core.crypto import (
+    CredentialDecryptionError,
+    decrypt_secret,
+    encrypt_secret,
+)
 from app.services.credential_access import (
     credential_visible_to_user,
     parse_allowed_roles,
@@ -421,7 +425,14 @@ def batch_export_credentials(
                 failed.append({"cred_id": cred_id, "reason": "当前权限组未被授权使用该凭证"})
                 continue
 
-            content, _media_type, extension = _build_export_payload(cred)
+            try:
+                content, _media_type, extension = _build_export_payload(cred)
+            except CredentialDecryptionError:
+                # 单条坏凭证只记 failed 继续导出其余项，不再让整个 ZIP 接口 500；
+                # failed 兜底此前形同虚设（解密在 _build_export_payload 内抛错）。
+                # 主密钥配置错误是全局问题，不在这里吞掉，由 main.py 全局 handler 转 503。
+                failed.append({"cred_id": cred_id, "reason": "凭证密文已损坏，需重新录入"})
+                continue
             filename = _deduplicate_export_filename(
                 _safe_export_filename(cred.name, cred.cred_id, extension),
                 filename_counter,

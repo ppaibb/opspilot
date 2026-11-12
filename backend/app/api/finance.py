@@ -39,6 +39,7 @@ from app.services.bill_sync import (
     verify_account_credentials,
 )
 from app.services.credential_access import filter_credentials_for_user
+from app.services.credential_usage import sync_credential_usage
 
 router = APIRouter()
 
@@ -150,6 +151,8 @@ def create_cloud_account(
         created_at=format_app_datetime(now_dt()),
     )
     db.add(account)
+    # 云账号新增即引用该凭证：同步 used_by，否则删凭证保护看不到这条引用。
+    sync_credential_usage(db, {payload.credential_ref})
     db.commit()
     db.refresh(account)
 
@@ -174,6 +177,7 @@ def update_cloud_account(
     if not name:
         raise HTTPException(status_code=422, detail="账号名称不能为空")
     credential_changed = account.credential_ref != payload.credential_ref
+    old_credential_ref = account.credential_ref
     account.name = name
     account.credential_ref = payload.credential_ref
     account.enabled = 1 if payload.enabled else 0
@@ -181,6 +185,8 @@ def update_cloud_account(
         account.status = "pending"
         account.status_message = ""
         _verify_and_update(db, account)
+    # 换绑凭证：新旧两条引用的 used_by 都要重算，否则旧凭证删不掉/新凭证可误删。
+    sync_credential_usage(db, {old_credential_ref, payload.credential_ref})
     db.commit()
     db.refresh(account)
     return _serialize_account(db, account)
@@ -199,7 +205,10 @@ def delete_cloud_account(
         raise HTTPException(status_code=404, detail="云账号不存在")
     db.query(CloudBill).filter(CloudBill.account_id == account_id).delete(synchronize_session=False)
     db.query(BillSyncRun).filter(BillSyncRun.account_id == account_id).delete(synchronize_session=False)
+    old_credential_ref = account.credential_ref
     db.delete(account)
+    # 删账号即释放引用：同步后该凭证的 used_by 才会降下来。
+    sync_credential_usage(db, {old_credential_ref})
     db.commit()
     return {"detail": "云账号及其账单数据已删除"}
 
