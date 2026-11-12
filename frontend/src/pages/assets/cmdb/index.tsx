@@ -11,6 +11,7 @@ const TYPE_LABEL: Record<string, string> = {
   vm: '虚拟机',
   domain: '域名',
   certificate: '证书',
+  credential: '凭据',
 }
 
 const TYPE_COLOR: Record<string, string> = {
@@ -19,6 +20,17 @@ const TYPE_COLOR: Record<string, string> = {
   vm: '#722ed1',
   domain: '#fa8c16',
   certificate: '#eb2f96',
+  credential: '#13c2c2',
+}
+
+const KIND_LABEL: Record<string, string> = {
+  binds: '绑定关系',
+  issued_for: '签发给',
+  acme_account: 'ACME 账号',
+  dns_account: 'DNS 账号',
+  ssh_credential: 'SSH 凭证',
+  deployed_to: '已部署到',
+  app_credential: '应用凭证',
 }
 
 interface CmdbNode {
@@ -46,11 +58,21 @@ interface CmdbGraph {
   total_edges: number
 }
 
+interface CmdbNeighbor {
+  type: string
+  id: string
+  label: string
+  status?: string
+  kind?: string
+  direction?: 'in' | 'out'
+}
+
 interface CmdbImpact {
   node: CmdbNode
   apps: CmdbNode[]
   resources: CmdbNode[]
   owners: string[]
+  neighbors?: CmdbNeighbor[]
   impact_summary?: {
     app_count: number
     owner_count: number
@@ -94,8 +116,11 @@ export default function CmdbPage() {
     return {
       tooltip: {
         // 节点业务字段在 data.raw（CmdbNode），data 本体只有 id/name/category 等图形字段
-        formatter: (p: { dataType?: string; data?: { raw?: CmdbNode; name?: string } }) => {
-          if (p.dataType === 'edge') return '绑定关系'
+        formatter: (p: { dataType?: string; data?: { raw?: CmdbNode; name?: string; kind?: string } }) => {
+          if (p.dataType === 'edge') {
+            const kind = p.data?.kind
+            return (kind ? KIND_LABEL[kind] ?? kind : '绑定关系')
+          }
           const d = p.data?.raw
           if (!d) return ''
           const lines = [`${TYPE_LABEL[d.type] ?? d.type}：${d.label}`]
@@ -128,7 +153,7 @@ export default function CmdbPage() {
             itemStyle: { color: TYPE_COLOR[n.type] ?? '#888' },
             raw: n,
           })),
-          links: graph.edges.map((e) => ({ source: e.source, target: e.target })),
+          links: graph.edges.map((e) => ({ source: e.source, target: e.target, kind: e.kind })),
         },
       ],
     }
@@ -169,7 +194,7 @@ export default function CmdbPage() {
         {isLoading ? (
           <Flex justify="center" align="center" style={{ height: 520 }}><Spin /></Flex>
         ) : !graph || graph.nodes.length === 0 ? (
-          <Empty description="暂无关联数据（先在应用详情里绑定主机/域名/证书）" style={{ padding: 80 }} />
+          <Empty description="暂无资产数据（先录入主机/域名/证书/凭据，或在应用详情里绑定资产）" style={{ padding: 80 }} />
         ) : (
           <ReactECharts
             option={option}
@@ -232,6 +257,27 @@ export default function CmdbPage() {
                         <Space>
                           {a.environment ? <Tag>{a.environment}</Tag> : null}
                           {a.owner ? <Tag color="geekblue">{a.owner}</Tag> : null}
+                        </Space>
+                      </Flex>
+                    </Card>
+                  ))}
+                </Flex>
+              )}
+              <div style={{ margin: '12px 0 8px', fontWeight: 500 }}>关联资产</div>
+              {!impact.neighbors || impact.neighbors.length === 0 ? (
+                <Empty description="暂无资产间关联" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+              ) : (
+                <Flex vertical gap={8}>
+                  {impact.neighbors.map((n) => (
+                    <Card key={`${n.type}:${n.id}`} size="small">
+                      <Flex justify="space-between" align="center">
+                        <span>{n.label}</span>
+                        <Space>
+                          <Tag>{TYPE_LABEL[n.type] ?? n.type}</Tag>
+                          <span style={{ color: '#888', fontSize: 12 }}>
+                            {n.kind ? KIND_LABEL[n.kind] ?? n.kind : '-'}
+                          </span>
+                          <span style={{ color: '#888' }}>{n.direction === 'in' ? '←' : '→'}</span>
                         </Space>
                       </Flex>
                     </Card>
