@@ -9,10 +9,10 @@ import type { TableRowSelection } from 'antd/es/table/interface'
 import type { MenuProps } from 'antd'
 import {
   PlusOutlined, SearchOutlined,
-  DeleteOutlined, EditOutlined,
-  PoweroffOutlined, SyncOutlined, CopyOutlined,
+  DeleteOutlined,
+  SyncOutlined, CopyOutlined,
   HddOutlined, CheckCircleOutlined, StopOutlined, ThunderboltOutlined,
-  MoreOutlined,
+  DownOutlined,
 } from '@ant-design/icons'
 import { vmsApi } from '@/api'
 import { riskTicketConfig } from '@/api/client'
@@ -158,7 +158,7 @@ export default function VmsPage() {
     { title: '内存(GB)', dataIndex: 'memory_gb', width: 90, render: (v: number) => v ? `${v} GB` : '-' },
     { title: '磁盘(GB)', dataIndex: 'system_disk_gb', width: 90, render: (v: number) => v ? `${v} GB` : '-' },
     {
-      title: '操作', key: 'action', width: 120, fixed: 'right',
+      title: '操作', key: 'action', width: 200, fixed: 'right',
       render: (_: unknown, r) => {
         const moreItems: MenuProps['items'] = [
           { key: 'stop', icon: <StopOutlined />, label: '关机', danger: r.status === 'running' },
@@ -180,19 +180,23 @@ export default function VmsPage() {
           }
         }
         return (
-          <Space size={4}>
+          <Space size={6}>
             <Tooltip title={r.status === 'running' ? '运行中' : '开机'}>
               <Button
-                size="small" type="text" icon={<PoweroffOutlined />}
+                size="small" color="green" variant="solid"
                 disabled={r.status === 'running'}
                 onClick={() => confirm('vms:poweroff', (ticket) => powerMut.mutate({ id: r.id, action: 'start', ticket }), '确认要执行电源操作（开机）？')}
-              />
+              >
+                开机
+              </Button>
             </Tooltip>
-            <Tooltip title="编辑">
-              <Button size="small" type="text" icon={<EditOutlined />} onClick={() => openDrawer(r)} />
-            </Tooltip>
+            <Button size="small" color="blue" variant="solid" onClick={() => openDrawer(r)}>
+              编辑
+            </Button>
             <Dropdown menu={{ items: moreItems, onClick: onMore }} trigger={['click']}>
-              <Button size="small" type="text" icon={<MoreOutlined />} />
+              <Button size="small" color="blue" variant="solid">
+                更多 <DownOutlined />
+              </Button>
             </Dropdown>
           </Space>
         )
@@ -321,7 +325,7 @@ export default function VmsPage() {
           dataSource={filtered}
           loading={isLoading}
           size="middle"
-          scroll={{ x: 1250 }}
+          scroll={{ x: 1330 }}
           pagination={{ defaultPageSize: 20, showSizeChanger: true, showTotal: (t) => `共 ${t} 台虚拟机` }}
         />
 

@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Alert, App, Button, Drawer, Flex, Form, Input, InputNumber, Popconfirm, Select, Space, Switch, Table, Tag, Tooltip } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
-import { DeleteOutlined, EditOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons'
+import { PlusOutlined, ReloadOutlined } from '@ant-design/icons'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { domainsApi } from '@/api'
 import { riskTicketConfig } from '@/api/client'
@@ -64,13 +64,13 @@ export default function DNSRecordsDrawer({ domain, providers, onClose }: {
     { title: 'TTL', dataIndex: 'ttl', width: 80, render: (value: number) => value === 1 && spec?.supports_proxy ? '自动' : value },
     ...(spec?.supports_proxy ? [{ title: '代理', dataIndex: 'proxied', width: 70, render: (value: boolean | null) => value ? '开启' : '关闭' }] : []),
     ...(spec?.supports_priority ? [{ title: 'MX优先级', dataIndex: 'priority', width: 95, render: (value: number | null) => value ?? '-' }] : []),
-    ...(canManage ? [{ title: '操作', key: 'action', width: 115, render: (_: unknown, row: DomainDNSRecordResponse) => (
-      <Space>
+    ...(canManage ? [{ title: '操作', key: 'action', width: 130, render: (_: unknown, row: DomainDNSRecordResponse) => (
+      <Space size={6}>
         <Tooltip title={row.read_only ? '该记录只读' : '编辑'}>
-          <Button aria-label="编辑解析记录" size="small" icon={<EditOutlined />} disabled={row.read_only || deleteMutation.isPending} onClick={() => openForm(row)} />
+          <Button aria-label="编辑解析记录" size="small" color="blue" variant="solid" disabled={row.read_only || deleteMutation.isPending} onClick={() => openForm(row)}>编辑</Button>
         </Tooltip>
         <Popconfirm title="删除该云端解析记录？" disabled={row.read_only} onConfirm={() => confirm('domains:delete', (ticket) => deleteMutation.mutate({ id: row.id, ticket }))}>
-          <Button aria-label="删除解析记录" size="small" danger icon={<DeleteOutlined />} disabled={row.read_only} loading={deleteMutation.isPending && deleteMutation.variables?.id === row.id} />
+          <Button aria-label="删除解析记录" size="small" color="red" variant="solid" disabled={row.read_only} loading={deleteMutation.isPending && deleteMutation.variables?.id === row.id}>删除</Button>
         </Popconfirm>
       </Space>
     ) }] : []),
@@ -90,7 +90,7 @@ export default function DNSRecordsDrawer({ domain, providers, onClose }: {
             {canManage && <Button type="primary" icon={<PlusOutlined />} onClick={() => openForm(null)}>新增解析记录</Button>}
           </Space>
         </Flex>
-        <Table rowKey="id" size="small" dataSource={filtered} loading={records.isLoading} columns={columns} pagination={{ defaultPageSize: 15 }} scroll={{ x: 850 }} />
+        <Table rowKey="id" size="small" dataSource={filtered} loading={records.isLoading} columns={columns} pagination={{ defaultPageSize: 15 }} scroll={{ x: 870 }} />
       </Flex>
       <Drawer title={editing ? '编辑解析记录' : '新增解析记录'} open={formOpen} width={520} onClose={() => setFormOpen(false)}
         closable={!saveMutation.isPending} maskClosable={!saveMutation.isPending}

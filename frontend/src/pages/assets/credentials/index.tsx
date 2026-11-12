@@ -1,15 +1,15 @@
 import { useState, useCallback, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
-  Table, Button, Space, Input, Tag, Drawer, Form, Select, App, Tooltip,
+  Table, Button, Space, Input, Tag, Drawer, Form, Select, App,
   Modal, Radio, Flex, Typography, DatePicker, Dropdown,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import type { MenuProps } from 'antd'
 import {
-  PlusOutlined, SearchOutlined, DeleteOutlined, EditOutlined,
+  PlusOutlined, SearchOutlined, DeleteOutlined,
   KeyOutlined, ExportOutlined, DownloadOutlined,
-  SafetyCertificateOutlined, MoreOutlined,
+  SafetyCertificateOutlined, DownOutlined,
 } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import { credentialsApi } from '@/api'
@@ -302,7 +302,7 @@ export default function CredentialsPage() {
       },
     },
     {
-      title: '操作', key: 'action', width: 110, fixed: 'right',
+      title: '操作', key: 'action', width: 140, fixed: 'right',
       render: (_: unknown, r) => {
         const isSshKey = r.type === 'SSH Key'
         const moreItems: MenuProps['items'] = [
@@ -323,12 +323,14 @@ export default function CredentialsPage() {
           }
         }
         return (
-          <Space size={4}>
-            <Tooltip title="编辑">
-              <Button size="small" type="primary" icon={<EditOutlined />} onClick={() => openDrawer(r)} />
-            </Tooltip>
+          <Space size={6}>
+            <Button size="small" color="blue" variant="solid" onClick={() => openDrawer(r)}>
+              编辑
+            </Button>
             <Dropdown menu={{ items: moreItems, onClick: onMore }} trigger={['click']}>
-              <Button size="small" type="text" icon={<MoreOutlined />} />
+              <Button size="small" color="blue" variant="solid">
+                更多 <DownOutlined />
+              </Button>
             </Dropdown>
           </Space>
         )
@@ -380,7 +382,7 @@ export default function CredentialsPage() {
         dataSource={filtered}
         loading={isLoading}
         size="middle"
-        scroll={{ x: 1400 }}
+        scroll={{ x: 1430 }}
         pagination={{ defaultPageSize: 20, showSizeChanger: true, showTotal: (t) => `共 ${t} 条凭证` }}
       />
 

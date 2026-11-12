@@ -125,7 +125,7 @@ export function GrantsTab({ instances }: { instances: DbInstance[] }) {
     {
       title: '操作', key: 'ops', width: 80,
       render: (_v, r) => (canManage && r.status === 'active' ? (
-        <Button size="small" danger disabled={revokeMutation.isPending && revokeMutation.variables === r.id}
+        <Button size="small" color="red" variant="solid" disabled={revokeMutation.isPending && revokeMutation.variables === r.id}
           onClick={() => confirmRevoke(r)}>
           吊销
         </Button>

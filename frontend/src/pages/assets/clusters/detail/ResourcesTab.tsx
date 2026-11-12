@@ -2,12 +2,13 @@ import { useState } from 'react'
 import { useInfiniteQuery, useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Card, Table, Button, Space, Tag, Typography, Flex, Alert, Drawer, Modal, App,
-  Select, Tooltip, Empty, Spin, Input, Popconfirm,
+  Select, Tooltip, Empty, Spin, Input, Popconfirm, Dropdown,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
+import type { MenuProps } from 'antd'
 import {
-  ReloadOutlined, FileTextOutlined, DeploymentUnitOutlined, EyeOutlined,
-  WarningOutlined, DeleteOutlined,
+  ReloadOutlined, DeploymentUnitOutlined,
+  WarningOutlined, DownOutlined,
 } from '@ant-design/icons'
 import axios from 'axios'
 import { clusterDetailApi, clusterOpsApi } from '@/api'
@@ -145,35 +146,47 @@ export default function ResourcesTab({ clusterId, namespaces }: { clusterId: str
     { title: '详情', dataIndex: 'detail', ellipsis: true, render: (v: string) => v || '-' },
     { title: '创建', dataIndex: 'age', width: 105 },
     {
-      title: '操作', key: 'ops', width: 160, fixed: 'right',
-      render: (_, record) => (
-        <Space size={2}>
-          <Tooltip title="查看 YAML">
-            <Button size="small" type="text" icon={<FileTextOutlined />} onClick={() => setYamlView(record)} />
-          </Tooltip>
-          {kind === 'PVC' && (
-            <Tooltip title="扩容">
-              <Button size="small" type="text" icon={<DeploymentUnitOutlined />}
-                disabled={!canManage} onClick={() => { setResizeTarget(record); setNewSize('10Gi') }} />
+      title: '操作', key: 'ops', width: 260, fixed: 'right',
+      render: (_, record) => {
+        const moreItems: MenuProps['items'] = [
+          ...(kind === 'PVC' ? [{ key: 'resize', icon: <DeploymentUnitOutlined />, label: '扩容', disabled: !canManage }] : []),
+          { key: 'events', icon: <WarningOutlined />, label: '事件' },
+        ]
+        const onMore: MenuProps['onClick'] = ({ key }) => {
+          if (key === 'resize') { setResizeTarget(record); setNewSize('10Gi') }
+          if (key === 'events') setEventsView(record)
+        }
+        return (
+          <Space size={6}>
+            <Tooltip title="查看 YAML">
+              <Button size="small" color="blue" variant="solid" onClick={() => setYamlView(record)}>
+                YAML
+              </Button>
             </Tooltip>
-          )}
-          <Tooltip title={kind === 'Ingress' ? 'TLS / 事件' : '关联资源'}>
-            <Button size="small" type="text" icon={<EyeOutlined />} onClick={() => setRelatedView(record)} />
-          </Tooltip>
-          <Tooltip title="事件">
-            <Button size="small" type="text" icon={<WarningOutlined />} onClick={() => setEventsView(record)} />
-          </Tooltip>
-          <Popconfirm
-            title={`删除 ${record.name}？`} description="删除后不可恢复。"
-            okText="删除" okButtonProps={{ danger: true }} cancelText="取消"
-            onConfirm={() => riskConfirm.confirm('clusters:delete', (ticket) => deleteMutation.mutate({ item: record, ticket }),
-              `将删除 ${kind} ${namespace === '_all' ? '' : `${namespace}/`}${record.name}，删除后不可恢复`)}
-            disabled={!canManage}
-          >
-            <Button size="small" type="text" danger icon={<DeleteOutlined />} disabled={!canManage} />
-          </Popconfirm>
-        </Space>
-      ),
+            <Tooltip title={kind === 'Ingress' ? 'TLS / 事件' : '关联资源'}>
+              <Button size="small" color="blue" variant="solid" onClick={() => setRelatedView(record)}>
+                关联
+              </Button>
+            </Tooltip>
+            <Popconfirm
+              title={`删除 ${record.name}？`} description="删除后不可恢复。"
+              okText="删除" okButtonProps={{ danger: true }} cancelText="取消"
+              onConfirm={() => riskConfirm.confirm('clusters:delete', (ticket) => deleteMutation.mutate({ item: record, ticket }),
+                `将删除 ${kind} ${namespace === '_all' ? '' : `${namespace}/`}${record.name}，删除后不可恢复`)}
+              disabled={!canManage}
+            >
+              <Button size="small" color="red" variant="solid" disabled={!canManage}>
+                删除
+              </Button>
+            </Popconfirm>
+            <Dropdown menu={{ items: moreItems, onClick: onMore }} trigger={['click']}>
+              <Button size="small" color="blue" variant="solid">
+                更多 <DownOutlined />
+              </Button>
+            </Dropdown>
+          </Space>
+        )
+      },
     },
   ]
 
@@ -202,7 +215,7 @@ export default function ResourcesTab({ clusterId, namespaces }: { clusterId: str
         loading={isLoading}
         rowClassName={(r) => focusRowClass(focus, kind, r.namespace || '', r.name)}
         pagination={{ pageSize: 20, showSizeChanger: false, showTotal: (t) => `共 ${t} 个` }}
-        scroll={{ x: 940 }}
+        scroll={{ x: 1040 }}
       />
       {hasNextPage && (
         <Flex justify="center" style={{ marginTop: 10 }}>

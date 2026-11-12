@@ -6,7 +6,7 @@ import {
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import {
-  ReloadOutlined, PlusOutlined, TagsOutlined, DeleteOutlined,
+  ReloadOutlined, PlusOutlined,
 } from '@ant-design/icons'
 import { clusterDetailApi, clusterOpsApi } from '@/api'
 import { riskTicketConfig } from '@/api/client'
@@ -95,16 +95,16 @@ export default function NamespacesTab({ clusterId }: { clusterId: string }) {
     { title: '状态', dataIndex: 'status', width: 100, render: (v: string) => statusTag(v) },
     { title: '创建时间', dataIndex: 'age', width: 120 },
     {
-      title: '操作', key: 'ops', width: 110,
+      title: '操作', key: 'ops', width: 140,
       render: (_: unknown, r) => {
         // 核心命名空间后端 403 硬拒，前端先禁用按钮并说明原因，避免连点两次确认后被拒。
         const protectedNs = PROTECTED_NAMESPACES.includes(r.name)
         return (
-          <Space size={2}>
-            <Tooltip title="编辑标签">
-              <Button size="small" type="text" icon={<TagsOutlined />}
-                disabled={!canManage} onClick={() => setLabelsTarget(r.name)} />
-            </Tooltip>
+          <Space size={6}>
+            <Button size="small" color="blue" variant="solid"
+              disabled={!canManage} onClick={() => setLabelsTarget(r.name)}>
+              编辑标签
+            </Button>
             <Popconfirm
               title={`删除命名空间 ${r.name}？`}
               description="其下全部资源（Pod/Service/配置等）将被级联删除，不可恢复！"
@@ -114,8 +114,10 @@ export default function NamespacesTab({ clusterId }: { clusterId: string }) {
               disabled={!canManage || protectedNs}
             >
               <Tooltip title={protectedNs ? '集群核心命名空间，禁止删除' : '删除（级联）'}>
-                <Button size="small" type="text" danger icon={<DeleteOutlined />}
-                  disabled={!canManage || protectedNs} />
+                <Button size="small" color="red" variant="solid"
+                  disabled={!canManage || protectedNs}>
+                  删除
+                </Button>
               </Tooltip>
             </Popconfirm>
           </Space>

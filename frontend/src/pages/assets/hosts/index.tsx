@@ -24,7 +24,7 @@ import type { TableRowSelection } from 'antd/es/table/interface'
 import type { MenuProps } from 'antd'
 import {
   PlusOutlined, SearchOutlined, DeleteOutlined, EditOutlined,
-  ApiOutlined, SyncOutlined, CodeOutlined, LoadingOutlined, MoreOutlined,
+  ApiOutlined, SyncOutlined, LoadingOutlined, DownOutlined,
   LineChartOutlined, FileTextOutlined, FolderOutlined, DesktopOutlined, DownloadOutlined,
   CloudSyncOutlined, CloudOutlined, InfoCircleOutlined, KeyOutlined,
   CheckCircleOutlined, CloseCircleOutlined, ExclamationCircleOutlined,
@@ -808,7 +808,7 @@ export default function HostsPage() {
       },
     },
     {
-      title: '操作', key: 'action', width: 110, fixed: 'right', align: 'right',
+      title: '操作', key: 'action', width: 180, fixed: 'right', align: 'right',
       render: (_: unknown, r) => {
         const moreItems: MenuProps['items'] = [
           // 云账单 × CMDB 联动：云实例（i-xxx）可查费用，自建主机打开后是空态提示。
@@ -834,15 +834,19 @@ export default function HostsPage() {
         }
         const offline = r.type !== 'healthy'
         return (
-          <Space size={4}>
+          <Space size={6}>
             <Tooltip title={offline ? '主机离线，无法连接终端' : '终端'}>
-              <Button size="small" type="text" icon={<CodeOutlined />} disabled={offline} onClick={() => { setTermAsset(r); setTermModalOpen(true) }} />
+              <Button size="small" color="green" variant="solid" disabled={offline} onClick={() => { setTermAsset(r); setTermModalOpen(true) }}>
+                终端
+              </Button>
             </Tooltip>
-            <Tooltip title="编辑">
-              <Button size="small" type="text" icon={<EditOutlined />} onClick={() => openDrawer(r)} />
-            </Tooltip>
+            <Button size="small" color="blue" variant="solid" onClick={() => openDrawer(r)}>
+              编辑
+            </Button>
             <Dropdown menu={{ items: moreItems, onClick: onMore }} trigger={['click']}>
-              <Button size="small" type="text" icon={<MoreOutlined />} />
+              <Button size="small" color="blue" variant="solid">
+                更多 <DownOutlined />
+              </Button>
             </Dropdown>
           </Space>
         )
@@ -978,7 +982,7 @@ export default function HostsPage() {
           dataSource={filtered}
           loading={loadingPaged || isFetching}
           size="middle"
-          scroll={{ x: 1070 }}
+          scroll={{ x: 1140 }}
           locale={{
             emptyText: (
               <Empty
@@ -1677,7 +1681,7 @@ export default function HostsPage() {
                         resetHostKeyMut.mutate(asset.id)
                       }}
                     >
-                      <Button size="small" danger disabled={!asset}>清除</Button>
+                      <Button size="small" color="red" variant="solid" disabled={!asset}>清除</Button>
                     </Popconfirm>
                   )
                 },

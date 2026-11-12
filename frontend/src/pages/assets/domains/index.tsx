@@ -7,9 +7,9 @@ import {
 import type { ColumnsType } from 'antd/es/table'
 import type { MenuProps } from 'antd'
 import {
-  PlusOutlined, SearchOutlined, DeleteOutlined, EditOutlined,
+  PlusOutlined, SearchOutlined, DeleteOutlined,
   GlobalOutlined, CheckCircleOutlined, ExclamationCircleOutlined,
-  ClockCircleOutlined, ProfileOutlined, SafetyCertificateOutlined, MoreOutlined,
+  ClockCircleOutlined, ProfileOutlined, SafetyCertificateOutlined, DownOutlined,
 } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import { domainsApi, credentialsApi } from '@/api'
@@ -203,7 +203,7 @@ export default function DomainsPage() {
     },
     { title: '备注', dataIndex: 'remark', ellipsis: true, render: (v: string) => v || '-' },
     {
-      title: '操作', key: 'action', width: 100, fixed: 'right',
+      title: '操作', key: 'action', width: 140, fixed: 'right',
       render: (_: unknown, r) => {
         if (!canManage) return null
         const moreItems: MenuProps['items'] = [
@@ -220,12 +220,14 @@ export default function DomainsPage() {
           }
         }
         return (
-          <Space size={4}>
-            <Tooltip title="编辑">
-              <Button size="small" type="primary" icon={<EditOutlined />} onClick={() => openDrawer(r)} />
-            </Tooltip>
+          <Space size={6}>
+            <Button size="small" color="blue" variant="solid" onClick={() => openDrawer(r)}>
+              编辑
+            </Button>
             <Dropdown menu={{ items: moreItems, onClick: onMore }} trigger={['click']}>
-              <Button size="small" type="text" icon={<MoreOutlined />} />
+              <Button size="small" color="blue" variant="solid">
+                更多 <DownOutlined />
+              </Button>
             </Dropdown>
           </Space>
         )
@@ -317,7 +319,7 @@ export default function DomainsPage() {
           dataSource={filtered}
           loading={isLoading}
           size="middle"
-          scroll={{ x: 1200 }}
+          scroll={{ x: 1240 }}
           pagination={{ defaultPageSize: 20, showSizeChanger: true, showTotal: (t) => `共 ${t} 个域名` }}
         />
       </Flex>
