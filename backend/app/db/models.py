@@ -18,6 +18,7 @@ from app.models.application import (  # noqa: F401
 from app.models.asset import Asset, DomainDNSRecord, DomainRecord  # noqa: F401
 from app.models.audit import AuditLog  # noqa: F401
 from app.models.certificate import CertificateRecord  # noqa: F401
+from app.models.certificate_deployment import CertificateDeployment  # noqa: F401
 from app.models.cluster import Cluster  # noqa: F401
 from app.models.collector import (  # noqa: F401
     CollectorAgent,

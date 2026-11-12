@@ -11,7 +11,7 @@ import {
   CloudUploadOutlined, SyncOutlined, StopOutlined, SendOutlined,
   CheckCircleOutlined, ClockCircleOutlined, DownOutlined,
   HddOutlined, CloudOutlined, ClusterOutlined, DeploymentUnitOutlined,
-  FileTextOutlined,
+  FileTextOutlined, HistoryOutlined,
 } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import { certificatesApi, assetsApi, credentialsApi, clustersApi, domainsApi } from '@/api'
@@ -22,10 +22,14 @@ import { downloadBlob } from '@/utils/download'
 import GroupSidebar from '@/components/GroupSidebar'
 import type {
   CertificateResponse, CertificateLogsResponse, CertificateIssueRequest, CertificateUploadRequest,
-  CertificateDeployRequest, CertificateAccountItem, AssetResponse, CredentialResponse, ClusterResponse,
+  CertificateDeployRequest, CertificateDeployResponse, CertificateDeployment, CertificateAccountItem, AssetResponse, CredentialResponse, ClusterResponse,
   DomainResponse,
 } from '@/types/api'
 import { filterCertAccountsByDomain } from './certAccountFilter'
+import {
+  CERT_DEPLOY_POLL_INTERVAL_MS, deployStatusTagColor, deployStatusText,
+  deploySuccessCount, deployTargetTypeText, hasRunningDeployment,
+} from './certDeployHistory'
 import {
   CERT_LIST_POLL_INTERVAL_MS, CERT_LOG_POLL_INTERVAL_MS,
   isCertLogErrorLine, isTransientCertStatus, shouldPollCertList,
@@ -76,6 +80,9 @@ export default function CertificatesPage() {
   // 签发日志抽屉：打开的证书（null 表示关闭）
   const [logCert, setLogCert] = useState<CertificateResponse | null>(null)
   const logContainerRef = useRef<HTMLDivElement | null>(null)
+
+  // 部署历史抽屉：打开的证书（null 表示关闭）
+  const [historyCert, setHistoryCert] = useState<CertificateResponse | null>(null)
 
   // 编辑证书：复用申请抽屉的编辑态，只改可编辑字段（名称、SAN、自动续期、提前续期天数、备注），不动签发参数
   const [editingCert, setEditingCert] = useState<CertificateResponse | null>(null)
@@ -134,11 +141,23 @@ export default function CertificatesPage() {
   // 取列表里的最新状态（列表轮询会刷新它），列表里还没有时用打开时的快照
   const logCertLive = (logCertId ? certs.find((c) => (c.cert_id || c.id) === logCertId) : undefined) ?? logCert
   const logCertStatus = logCertLive?.status ?? ''
+  // 部署历史：历史抽屉或日志抽屉打开时拉取；有进行中记录时轮询，终态停止
+  const historyCertId = historyCert ? (historyCert.cert_id || historyCert.id || '') : ''
+  const activeDeployCertId = historyCertId || logCertId
+  const { data: deployments = [] } = useQuery<CertificateDeployment[]>({
+    queryKey: ['certificate-deployments', activeDeployCertId],
+    queryFn: () => certificatesApi.deployments(activeDeployCertId),
+    enabled: !!activeDeployCertId,
+    refetchInterval: (query) =>
+      (hasRunningDeployment(query.state.data ?? []) ? CERT_DEPLOY_POLL_INTERVAL_MS : false),
+  })
+  // 日志抽屉轮询条件：证书签发进行中，或该证书有部署进行中（部署日志写进同一文件）
+  const logDeployRunning = !!logCertId && activeDeployCertId === logCertId && hasRunningDeployment(deployments)
   const { data: logData, isLoading: isLogLoading } = useQuery<CertificateLogsResponse>({
     queryKey: ['certificate-logs', logCertId],
     queryFn: () => certificatesApi.logs(logCertId),
     enabled: !!logCertId,
-    refetchInterval: isTransientCertStatus(logCertStatus) ? CERT_LOG_POLL_INTERVAL_MS : false,
+    refetchInterval: (isTransientCertStatus(logCertStatus) || logDeployRunning) ? CERT_LOG_POLL_INTERVAL_MS : false,
   })
   const logLines = useMemo(() => logData?.lines ?? [], [logData])
   // 有新日志行时滚到底
@@ -243,10 +262,14 @@ export default function CertificatesPage() {
 
   const deployMut = useMutation({
     mutationFn: ({ id, data }: { id: string; data: CertificateDeployRequest }) => certificatesApi.deploy(id, data),
-    onSuccess: (res: { message?: string }) => {
+    onSuccess: (res: CertificateDeployResponse, variables: { id: string; data: CertificateDeployRequest }) => {
       queryClient.invalidateQueries({ queryKey: ['certificates'] })
+      queryClient.invalidateQueries({ queryKey: ['certificate-deployments'] })
       setDeployDrawerOpen(false)
-      message.success(res?.message || '部署任务已成功派发执行')
+      message.success(res?.message || '部署任务已提交，后台执行中')
+      // 提交后直接打开该证书的日志抽屉看进度（与签发提交后自动打开同一模式）
+      const target = certs.find((c) => (c.cert_id || c.id) === variables.id) ?? deployCert
+      if (target) setLogCert(target)
     },
     onError: (err: unknown) => {
       message.error((err as { response?: { data?: { detail?: string } } })?.response?.data?.detail || '部署任务下发失败')
@@ -493,6 +516,7 @@ export default function CertificatesPage() {
         const moreItems: MenuProps['items'] = [
           { key: 'logs', icon: <FileTextOutlined />, label: '查看签发日志' },
           { key: 'deploy', icon: <DeploymentUnitOutlined />, label: '部署任务' },
+          { key: 'deploy-history', icon: <HistoryOutlined />, label: '部署历史' },
           { key: 'revoke', icon: <StopOutlined />, label: '吊销证书', danger: true },
           { key: 'delete', icon: <DeleteOutlined />, label: '删除', danger: true },
         ]
@@ -501,6 +525,8 @@ export default function CertificatesPage() {
             setLogCert(r)
           } else if (key === 'deploy') {
             openDeployDrawer(r)
+          } else if (key === 'deploy-history') {
+            setHistoryCert(r)
           } else if (key === 'revoke') {
             confirm('certificates:revoke', (ticket) => revokeMut.mutate({ id: targetId, ticket }))
           } else if (key === 'delete') {
@@ -792,6 +818,70 @@ export default function CertificatesPage() {
               <div key={i} style={isCertLogErrorLine(line) ? { color: '#ff4d4f' } : undefined}>{line}</div>
             ))}
           </div>
+        )}
+      </Drawer>
+
+      {/* ── 部署历史抽屉 ── */}
+      <Drawer
+        title={`部署历史 · ${historyCert?.primary_domain || ''}`}
+        open={!!historyCert}
+        onClose={() => setHistoryCert(null)}
+        width={720}
+      >
+        {deployments.length === 0 ? (
+          <div style={{ color: '#8c8c8c' }}>暂无部署记录</div>
+        ) : (
+          <Table<CertificateDeployment>
+            rowKey={(r) => r.deploy_id}
+            dataSource={deployments}
+            size="middle"
+            pagination={{ defaultPageSize: 10, showTotal: (total, range) => `显示 ${range[0]} 到第 ${range[1]} 条，总共 ${total} 条` }}
+            expandable={{
+              expandedRowRender: (r) => (
+                <div>
+                  <div style={{ color: '#8c8c8c', fontSize: 12, marginBottom: 8 }}>
+                    触发人：{r.triggered_by || '-'} ｜ 开始：{r.started_at || '-'} ｜ 结束：{r.finished_at || '-'}
+                  </div>
+                  {r.results.length === 0 ? (
+                    <div style={{ color: '#8c8c8c' }}>暂无逐目标结果</div>
+                  ) : (
+                    r.results.map((item, i) => (
+                      <Flex key={i} align="center" gap={8} style={{ padding: '4px 0' }}>
+                        <Tag color={item.success ? 'success' : 'error'}>{item.success ? '成功' : '失败'}</Tag>
+                        <span style={{ minWidth: 120 }}>{item.target || item.asset_id || '-'}</span>
+                        <span style={{ color: '#595959', fontSize: 12 }}>{item.message}</span>
+                      </Flex>
+                    ))
+                  )}
+                </div>
+              ),
+            }}
+            columns={[
+              {
+                title: '时间', dataIndex: 'started_at', width: 150,
+                render: (v: string) => (v && dayjs(v).isValid() ? dayjs(v).format('YYYY-MM-DD HH:mm') : v || '-'),
+              },
+              {
+                title: '目标', width: 240,
+                render: (_: unknown, r) => (
+                  <div>
+                    <div>{deployTargetTypeText(r.target_type)}：{r.targets || '-'}</div>
+                  </div>
+                ),
+              },
+              {
+                title: '状态', dataIndex: 'status', width: 90,
+                render: (s: string) => <Tag color={deployStatusTagColor(s)}>{deployStatusText(s)}</Tag>,
+              },
+              {
+                title: '成功', width: 80,
+                render: (_: unknown, r) => {
+                  const { success, total } = deploySuccessCount(r.results)
+                  return total > 0 ? `${success}/${total}` : '-'
+                },
+              },
+            ]}
+          />
         )}
       </Drawer>
 

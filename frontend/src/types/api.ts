@@ -545,6 +545,36 @@ export interface CertificateDeployRequest {
   [key: string]: unknown
 }
 
+/** 部署接口异步返回：只含提交结果，执行进度看部署历史与签发日志 */
+export interface CertificateDeployResponse {
+  success: boolean
+  message: string
+  deploy_id: string
+}
+
+/** 单条部署目标结果（每台主机 / 每个目标） */
+export interface CertificateDeploymentResult {
+  target: string
+  asset_id?: string
+  success: boolean
+  message: string
+}
+
+/** 部署历史记录：running/success/partial/failed */
+export interface CertificateDeployment {
+  deploy_id: string
+  cert_id: string
+  target_type: 'host' | 'cloud' | 'k8s' | string
+  targets: string
+  status: 'running' | 'success' | 'partial' | 'failed' | string
+  results: CertificateDeploymentResult[]
+  success_count: number
+  total_count: number
+  triggered_by: string
+  started_at: string
+  finished_at: string
+}
+
 export interface CertificateAccountItem {
   account_id: string
   account_name: string

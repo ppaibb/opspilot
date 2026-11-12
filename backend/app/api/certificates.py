@@ -40,6 +40,7 @@ from app.core.security import get_current_user, require_permissions, require_ris
 from app.db.database import SessionLocal, get_db
 from app.models.audit import AuditLog
 from app.models.certificate import CertificateRecord
+from app.models.certificate_deployment import CertificateDeployment
 from app.models.credential import Credential
 from app.models.resource_group_member import RESOURCE_TYPE_CERT, ResourceGroupMember
 from app.models.user import User
@@ -1006,6 +1007,29 @@ def serialize_certificate(row: CertificateRecord) -> dict:
     }
 
 
+def serialize_deployment(row: CertificateDeployment) -> dict:
+    try:
+        results = json.loads(row.results_json or "[]")
+        if not isinstance(results, list):
+            results = []
+    except Exception:
+        results = []
+    success_count = sum(1 for item in results if isinstance(item, dict) and item.get("success"))
+    return {
+        "deploy_id": row.deploy_id or "",
+        "cert_id": row.cert_id or "",
+        "target_type": row.target_type or "host",
+        "targets": row.targets or "",
+        "status": row.status or "running",
+        "results": results,
+        "success_count": success_count,
+        "total_count": len(results),
+        "triggered_by": row.triggered_by or "",
+        "started_at": row.started_at or "",
+        "finished_at": row.finished_at or "",
+    }
+
+
 def extract_dns01_challenge(authzr: messages.AuthorizationResource):
     for challb in authzr.body.challenges:
         if isinstance(challb.chall, challenges.DNS01):
@@ -1756,26 +1780,224 @@ def _deploy_cert_to_k8s(
     }
 
 
+def _deploy_cert_to_cloud(
+    row: CertificateRecord,
+    provider: str,
+    cred: Credential,
+) -> dict:
+    """云路只记录推送目标，不调用云厂商接口（本次不实现真的云推送）。"""
+    deploy_msg = (
+        f"已记录云平台证书推送目标 [{provider.upper()}]（凭证：{cred.name}），"
+        "本次未调用云厂商接口，请在云控制台确认证书已更新。"
+    )
+    append_cert_log(row.cert_id, deploy_msg)
+    row.deploy_targets = f"{provider.upper()} CDN/ALB ({cred.name})"
+    row.updated_at = now_ts()
+    return {
+        "success": True,
+        "message": deploy_msg,
+        "results": [
+            {
+                "target": f"{provider}-cdn",
+                "success": True,
+                "message": deploy_msg,
+            }
+        ],
+    }
+
+
+def _deploy_cert_to_host(
+    db: Session,
+    row: CertificateRecord,
+    asset,
+    cert_content: str,
+    key_content: str,
+    cert_dest_path: str,
+    key_dest_path: str,
+    post_script: str,
+    current_user: User | None,
+) -> dict:
+    """单台主机 SSH/SFTP 分发，返回逐台结果（失败进结果，不抛异常）。"""
+    from app.api.assets import decode_asset_password, ensure_asset_credential_access, get_credential_content
+    from app.services.ssh_client import pin_and_connect
+    import paramiko
+    import io
+    import os
+    import shlex
+
+    asset_id = str(asset.instance_id or "")
+    try:
+        pwd = decode_asset_password(asset)
+        ensure_asset_credential_access(db, asset, current_user)
+        pkey_content = get_credential_content(db, asset.credential_ref, current_user) if asset.credential_ref else ""
+    except HTTPException as exc:
+        return {"asset_id": asset_id, "target": asset_id, "success": False, "message": str(exc.detail)}
+
+    client = paramiko.SSHClient()
+    try:
+        pin_and_connect(client, asset.ip, int(asset.ssh_port or 22), db=db)
+        if pkey_content:
+            pkey = None
+            for key_cls in (paramiko.RSAKey, paramiko.Ed25519Key, paramiko.ECDSAKey):
+                try:
+                    pkey = key_cls.from_private_key(io.StringIO(pkey_content))
+                    break
+                except Exception:
+                    continue
+            client.connect(hostname=asset.ip, port=int(asset.ssh_port or 22), username=asset.ssh_user or "root", pkey=pkey, timeout=5.0)
+        else:
+            client.connect(hostname=asset.ip, port=int(asset.ssh_port or 22), username=asset.ssh_user or "root", password=pwd, timeout=5.0)
+
+        sftp = client.open_sftp()
+        cert_dir = os.path.dirname(cert_dest_path)
+        key_dir = os.path.dirname(key_dest_path)
+        client.exec_command(f"mkdir -p {shlex.quote(cert_dir)}")
+        client.exec_command(f"mkdir -p {shlex.quote(key_dir)}")
+        with sftp.file(cert_dest_path, 'w') as f:
+            f.write(cert_content)
+        with sftp.file(key_dest_path, 'w') as f:
+            f.write(key_content)
+        sftp.close()
+
+        out_msg = "已分发证书。"
+        if post_script:
+            _, stdout, stderr = client.exec_command(post_script, timeout=15.0)
+            out = (stdout.read() or b"").decode(errors="ignore").strip()
+            err = (stderr.read() or b"").decode(errors="ignore").strip()
+            exit_code = stdout.channel.recv_exit_status()
+            if exit_code == 0:
+                out_msg += f" 后置脚本执行成功: {out[:100]}"
+            else:
+                out_msg += f" 后置脚本执行失败(Code {exit_code}): {err[:100]}"
+        return {"asset_id": asset_id, "target": asset_id, "success": True, "message": out_msg}
+    except HTTPException as exc:
+        return {"asset_id": asset_id, "target": asset_id, "success": False, "message": str(exc.detail)}
+    except Exception as e:
+        return {"asset_id": asset_id, "target": asset_id, "success": False, "message": f"部署失败: {e}"}
+    finally:
+        try:
+            client.close()
+        except Exception:
+            # 关闭失败不影响已记录的逐台结果
+            logger.debug("关闭部署 SSH 客户端失败", exc_info=True)
+
+
+def run_deploy_job(cert_id: str, deploy_id: str, params: dict, user_id: int | None = None) -> None:
+    """证书部署后台任务：逐目标执行、逐行写日志、结束写历史记录终态。"""
+    from app.models.asset import Asset
+
+    db = SessionLocal()
+    try:
+        record = db.query(CertificateDeployment).filter(CertificateDeployment.deploy_id == deploy_id).first()
+        row = db.query(CertificateRecord).filter(CertificateRecord.cert_id == cert_id).first()
+        if not record or not row:
+            return
+        target_type = (record.target_type or "host").strip().lower()
+        append_cert_log(cert_id, f"开始执行证书部署 [{target_type}]，目标：{record.targets or '-'}")
+        results: list[dict] = []
+        try:
+            if target_type == "cloud":
+                cred = db.query(Credential).filter(Credential.cred_id == (params.get("cloud_account_id") or "")).first()
+                if not cred:
+                    results = [{"target": "cloud", "success": False, "message": "指定的云凭证不存在"}]
+                else:
+                    results = _deploy_cert_to_cloud(row, (params.get("cloud_provider") or "aliyun"), cred)["results"]
+            elif target_type == "k8s":
+                try:
+                    results = _deploy_cert_to_k8s(
+                        row,
+                        (params.get("cluster_id") or ""),
+                        (params.get("namespace") or "default"),
+                        (params.get("secret_name") or ""),
+                    )["results"]
+                except HTTPException as exc:
+                    results = [{
+                        "target": f"{params.get('cluster_id')}/{params.get('namespace')}/{params.get('secret_name')}",
+                        "success": False,
+                        "message": str(exc.detail),
+                    }]
+            else:
+                files_ok = False
+                cert_content = ""
+                key_content = ""
+                try:
+                    cert_content = Path(row.fullchain_path or row.cert_path).read_text(encoding="utf-8")
+                    key_content = Path(row.key_path).read_text(encoding="utf-8")
+                    files_ok = True
+                except Exception as e:
+                    results = [{"target": "", "success": False, "message": f"读取证书文件失败: {e}"}]
+                if files_ok:
+                    current_user = db.query(User).filter(User.id == user_id).first() if user_id else None
+                    for asset_id in params.get("asset_ids") or []:
+                        asset = db.query(Asset).filter(Asset.instance_id == asset_id).first()
+                        if not asset:
+                            result = {"asset_id": asset_id, "target": asset_id, "success": False, "message": "主机未找到"}
+                        else:
+                            result = _deploy_cert_to_host(
+                                db, row, asset, cert_content, key_content,
+                                params.get("cert_dest_path") or "", params.get("key_dest_path") or "",
+                                params.get("post_script") or "", current_user,
+                            )
+                        results.append(result)
+                        append_cert_log(
+                            cert_id,
+                            f"部署主机 {asset_id}：{'成功' if result.get('success') else '失败'}——{result.get('message') or ''}",
+                        )
+        except Exception as e:
+            logger.exception("[Cert Deploy] 部署任务 %s 执行异常", deploy_id)
+            results.append({"target": "", "success": False, "message": f"部署任务异常: {e}"})
+        if not results:
+            results = [{"target": "", "success": False, "message": "无有效部署目标"}]
+        success_count = sum(1 for item in results if item.get("success"))
+        if success_count == len(results):
+            status = "success"
+        elif success_count > 0:
+            status = "partial"
+        else:
+            status = "failed"
+        record.status = status
+        record.results_json = json.dumps(results, ensure_ascii=False)
+        record.finished_at = now_ts()
+        row.updated_at = now_ts()
+        db.commit()
+        append_cert_log(cert_id, f"证书部署结束：目标 {len(results)} 个，成功 {success_count} 个，状态 {status}")
+    except Exception:
+        logger.exception("[Cert Deploy] 部署任务 %s 收尾异常", deploy_id)
+        try:
+            db.rollback()
+            record = db.query(CertificateDeployment).filter(CertificateDeployment.deploy_id == deploy_id).first()
+            if record and record.status == "running":
+                record.status = "failed"
+                record.finished_at = now_ts()
+                db.commit()
+        except Exception:
+            # 收尾兜底本身失败时不再重试，避免后台任务抛错刷屏
+            logger.debug("部署任务收尾兜底失败", exc_info=True)
+    finally:
+        db.close()
+
+
 @router.post("/{cert_id}/deploy")
 def deploy_certificate(
     cert_id: str,
     payload: CertificateDeployRequest,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
     _=Depends(require_permissions("action.assets.certificates.manage")),
 ):
     """
-    证书一键部署分发接口（支持主机 SSH/SFTP + Nginx 重载 与 云厂商 CDN/ALB API 推送）。
+    证书一键部署分发接口（支持主机 SSH/SFTP + Nginx 重载、云厂商 CDN/ALB 推送目标记录、K8s TLS Secret 三路）。
+
+    异步接口：校验通过后先建一条 running 部署历史记录，再把真正的主机 SSH /
+    k8s Secret / 云路执行交给后台任务，立即返回 {success, message, deploy_id}。
+    执行进度逐行写进证书日志文件，终态写进部署历史表。
 
     说明：
-    1. 当 target_type == 'cloud' 时：校验云账号 Key 凭证合法性，触发云厂商证书 API 推送更新；
+    1. 当 target_type == 'cloud' 时：只校验云账号凭证合法性并记录推送目标，
+       不调用云厂商接口（本次不实现真的云推送），历史记录如实写明；
     2. 当 target_type == 'host' 时：使用 Paramiko SSH 打开 SFTP 通道将证书与私钥上传至指定绝对路径，并执行后置重载命令。
     """
-    from app.models.asset import Asset
-    from app.api.assets import decode_asset_password, ensure_asset_credential_access, get_credential_content
-    import paramiko
-    import io
-
     row = db.query(CertificateRecord).filter(CertificateRecord.cert_id == cert_id).first()
     if not row:
         raise HTTPException(status_code=404, detail="证书不存在")
@@ -1783,6 +2005,7 @@ def deploy_certificate(
         raise HTTPException(status_code=400, detail="证书尚未签发完成，无法部署")
 
     target_type = (payload.target_type or "host").strip().lower()
+    triggered_by = getattr(current_user, "username", "") or str(getattr(current_user, "id", ""))
 
     if target_type == "cloud":
         provider = (payload.cloud_provider or "aliyun").strip().lower()
@@ -1796,21 +2019,9 @@ def deploy_certificate(
         )
         if not cred:
             raise HTTPException(status_code=400, detail="指定的云凭证不存在")
-
-        deploy_msg = f"已通过云平台 API ({provider.upper()}) 提交证书替换推送请求。"
-        append_cert_log(row.cert_id, f"执行云平台证书自动推送 [{provider}] (凭证: {cred.name})。")
-        row.deploy_targets = f"{provider.upper()} CDN/ALB ({cred.name})"
-        row.updated_at = now_ts()
-        db.commit()
-        return {
-            "success": True,
-            "message": deploy_msg,
-            "results": [
-                {"target": f"{provider}-cdn", "status": "success", "message": "云厂商 API 证书推送成功"}
-            ]
-        }
-
-    if target_type == "k8s":
+        targets = f"{provider.upper()} CDN/ALB ({cred.name})"
+        params: dict = {"cloud_provider": provider, "cloud_account_id": cred.cred_id}
+    elif target_type == "k8s":
         cluster_id = (payload.cluster_id or "").strip()
         namespace = (payload.namespace or "default").strip() or "default"
         secret_name = (payload.secret_name or "").strip()
@@ -1818,130 +2029,110 @@ def deploy_certificate(
             raise HTTPException(status_code=400, detail="请选择目标 Kubernetes 集群")
         if not secret_name:
             raise HTTPException(status_code=400, detail="请填写 TLS Secret 名称")
-        result = _deploy_cert_to_k8s(row, cluster_id, namespace, secret_name)
-        db.commit()
-        return result
-
-    asset_ids = list(dict.fromkeys(
-        [str(item or "").strip() for item in (list(payload.asset_ids) + list(payload.host_ids)) if str(item or "").strip()]
-    ))
-    if not asset_ids:
-        raise HTTPException(status_code=400, detail="请选择至少一台目标主机")
-    if len(asset_ids) > 20:
-        raise HTTPException(status_code=400, detail="单次最多部署 20 台主机")
-
-    def validate_deploy_path(raw_path: str, label: str) -> str:
-        """校验证书部署目标路径，避免空路径、相对路径和换行注入。"""
-        text = str(raw_path or "").strip()
-        if not text:
-            raise HTTPException(status_code=400, detail=f"{label}不能为空")
-        if "\x00" in text or "\n" in text or "\r" in text:
-            raise HTTPException(status_code=400, detail=f"{label}包含非法字符")
-        if not text.startswith("/"):
-            raise HTTPException(status_code=400, detail=f"{label}必须是绝对路径")
-        if text.endswith("/"):
-            raise HTTPException(status_code=400, detail=f"{label}必须包含文件名")
-        return text
-
-    raw_cert_path = payload.cert_path or payload.cert_dest_path or "/etc/nginx/ssl/cert.pem"
-    raw_key_path = payload.key_path or payload.key_dest_path or "/etc/nginx/ssl/privkey.pem"
-    raw_post_script = payload.reload_cmd or payload.post_script or "systemctl reload nginx"
-
-    cert_dest_path = validate_deploy_path(raw_cert_path, "证书目标路径")
-    key_dest_path = validate_deploy_path(raw_key_path, "私钥目标路径")
-    post_script = str(raw_post_script or "").strip()
-    if "\x00" in post_script:
-        raise HTTPException(status_code=400, detail="后置命令包含非法字符")
-    if len(post_script) > 500:
-        raise HTTPException(status_code=400, detail="后置命令不能超过 500 个字符")
-
-    cert_content = ""
-    key_content = ""
-    try:
-        cert_content = Path(row.fullchain_path or row.cert_path).read_text(encoding="utf-8")
-        key_content = Path(row.key_path).read_text(encoding="utf-8")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"读取证书文件失败: {e}")
-
-    results = []
-    success_count = 0
-
-    for asset_id in asset_ids:
-        asset = db.query(Asset).filter(Asset.instance_id == asset_id).first()
-        if not asset:
-            results.append({"asset_id": asset_id, "success": False, "message": "主机未找到"})
-            continue
-            
-        pwd = decode_asset_password(asset)
         try:
-            ensure_asset_credential_access(db, asset, current_user)
-            pkey_content = get_credential_content(db, asset.credential_ref, current_user) if asset.credential_ref else ""
-        except HTTPException as exc:
-            results.append({"asset_id": asset_id, "success": False, "message": str(exc.detail)})
-            continue
-        
-        # 建立 SSH 客户端（主机指纹 TOFU+钉扎校验；拦截消息经下方"部署失败"透传）
-        from app.services.ssh_client import pin_and_connect
-
-        client = paramiko.SSHClient()
-        pin_and_connect(client, asset.ip, int(asset.ssh_port or 22), db=db)
-        try:
-            if pkey_content:
-                pkey = None
-                for key_cls in (paramiko.RSAKey, paramiko.Ed25519Key, paramiko.ECDSAKey):
-                    try:
-                        pkey = key_cls.from_private_key(io.StringIO(pkey_content))
-                        break
-                    except Exception:
-                        continue
-                client.connect(hostname=asset.ip, port=int(asset.ssh_port or 22), username=asset.ssh_user or "root", pkey=pkey, timeout=5.0)
-            else:
-                client.connect(hostname=asset.ip, port=int(asset.ssh_port or 22), username=asset.ssh_user or "root", password=pwd, timeout=5.0)
-            
-            # 使用 SFTP 上传文件
-            sftp = client.open_sftp()
-            
-            # 创建目标目录
-            import os
-            import shlex
-            cert_dir = os.path.dirname(cert_dest_path)
-            key_dir = os.path.dirname(key_dest_path)
-            client.exec_command(f"mkdir -p {shlex.quote(cert_dir)}")
-            client.exec_command(f"mkdir -p {shlex.quote(key_dir)}")
-            
-            # 写入证书
-            with sftp.file(cert_dest_path, 'w') as f:
-                f.write(cert_content)
-            with sftp.file(key_dest_path, 'w') as f:
-                f.write(key_content)
-                
-            sftp.close()
-            
-            # 执行后置脚本
-            out_msg = "已分发证书。"
-            if post_script:
-                _, stdout, stderr = client.exec_command(post_script, timeout=15.0)
-                out = (stdout.read() or b"").decode(errors="ignore").strip()
-                err = (stderr.read() or b"").decode(errors="ignore").strip()
-                exit_code = stdout.channel.recv_exit_status()
-                if exit_code == 0:
-                    out_msg += f" 后置脚本执行成功: {out[:100]}"
-                else:
-                    out_msg += f" 后置脚本执行失败(Code {exit_code}): {err[:100]}"
-                    
-            results.append({"asset_id": asset_id, "success": True, "message": out_msg})
-            success_count += 1
+            Path(row.fullchain_path or row.cert_path).read_text(encoding="utf-8")
+            Path(row.key_path).read_text(encoding="utf-8")
         except Exception as e:
-            results.append({"asset_id": asset_id, "success": False, "message": f"部署失败: {e}"})
-        finally:
-            try:
-                client.close()
-            except Exception:
-                pass
+            raise HTTPException(status_code=500, detail=f"读取证书文件失败: {e}")
+        targets = f"k8s:{cluster_id}/{namespace}/{secret_name}"
+        params = {"cluster_id": cluster_id, "namespace": namespace, "secret_name": secret_name}
+    else:
+        target_type = "host"
+        asset_ids = list(dict.fromkeys(
+            [str(item or "").strip() for item in (list(payload.asset_ids) + list(payload.host_ids)) if str(item or "").strip()]
+        ))
+        if not asset_ids:
+            raise HTTPException(status_code=400, detail="请选择至少一台目标主机")
+        if len(asset_ids) > 20:
+            raise HTTPException(status_code=400, detail="单次最多部署 20 台主机")
 
-    append_cert_log(row.cert_id, f"执行了证书自动分发，目标 {len(asset_ids)} 台主机，成功 {success_count} 台。")
-    return {"success": True, "message": f"成功向 {success_count} 台主机分发证书", "results": results}
+        def validate_deploy_path(raw_path: str, label: str) -> str:
+            """校验证书部署目标路径，避免空路径、相对路径和换行注入。"""
+            text = str(raw_path or "").strip()
+            if not text:
+                raise HTTPException(status_code=400, detail=f"{label}不能为空")
+            if "\x00" in text or "\n" in text or "\r" in text:
+                raise HTTPException(status_code=400, detail=f"{label}包含非法字符")
+            if not text.startswith("/"):
+                raise HTTPException(status_code=400, detail=f"{label}必须是绝对路径")
+            if text.endswith("/"):
+                raise HTTPException(status_code=400, detail=f"{label}必须包含文件名")
+            return text
 
+        raw_cert_path = payload.cert_path or payload.cert_dest_path or "/etc/nginx/ssl/cert.pem"
+        raw_key_path = payload.key_path or payload.key_dest_path or "/etc/nginx/ssl/privkey.pem"
+        raw_post_script = payload.reload_cmd or payload.post_script or "systemctl reload nginx"
+
+        cert_dest_path = validate_deploy_path(raw_cert_path, "证书目标路径")
+        key_dest_path = validate_deploy_path(raw_key_path, "私钥目标路径")
+        post_script = str(raw_post_script or "").strip()
+        if "\x00" in post_script:
+            raise HTTPException(status_code=400, detail="后置命令包含非法字符")
+        if len(post_script) > 500:
+            raise HTTPException(status_code=400, detail="后置命令不能超过 500 个字符")
+
+        try:
+            Path(row.fullchain_path or row.cert_path).read_text(encoding="utf-8")
+            Path(row.key_path).read_text(encoding="utf-8")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"读取证书文件失败: {e}")
+
+        targets = ", ".join(asset_ids)
+        params = {"asset_ids": asset_ids, "cert_dest_path": cert_dest_path, "key_dest_path": key_dest_path, "post_script": post_script}
+
+    deploy_id = uuid.uuid4().hex
+    record = CertificateDeployment(
+        deploy_id=deploy_id,
+        cert_id=cert_id,
+        target_type=target_type,
+        targets=targets[:500],
+        status="running",
+        results_json="[]",
+        triggered_by=triggered_by,
+        started_at=now_ts(),
+        finished_at="",
+    )
+    db.add(record)
+    db.commit()
+    append_cert_log(cert_id, f"已提交证书部署任务 [{target_type}]，目标：{targets}")
+    background_tasks.add_task(run_deploy_job, cert_id, deploy_id, params, current_user.id if current_user else None)
+    return {"success": True, "message": "部署任务已提交，后台执行中，可在部署历史中查看进度", "deploy_id": deploy_id}
+
+
+@router.get("/{cert_id}/deployments")
+def list_certificate_deployments(
+    cert_id: str,
+    db: Session = Depends(get_db),
+):
+    row = db.query(CertificateRecord).filter(CertificateRecord.cert_id == cert_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="证书不存在")
+    rows = (
+        db.query(CertificateDeployment)
+        .filter(CertificateDeployment.cert_id == cert_id)
+        .order_by(CertificateDeployment.id.desc())
+        .all()
+    )
+    return [serialize_deployment(item) for item in rows]
+
+
+@router.get("/{cert_id}/deployments/{deploy_id}")
+def get_certificate_deployment(
+    cert_id: str,
+    deploy_id: str,
+    db: Session = Depends(get_db),
+):
+    row = db.query(CertificateRecord).filter(CertificateRecord.cert_id == cert_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="证书不存在")
+    record = (
+        db.query(CertificateDeployment)
+        .filter(CertificateDeployment.cert_id == cert_id, CertificateDeployment.deploy_id == deploy_id)
+        .first()
+    )
+    if not record:
+        raise HTTPException(status_code=404, detail="部署记录不存在")
+    return serialize_deployment(record)
 
 
 @router.get("/{cert_id}/logs")
