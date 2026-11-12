@@ -387,11 +387,11 @@ export default function CertificatesPage() {
 
   const columns: ColumnsType<CertificateResponse> = [
     {
-      title: '证书名称', dataIndex: 'name', width: 160, fixed: 'left',
+      title: '证书名称', dataIndex: 'name', width: 140, fixed: 'left',
       render: (v: string, r) => v || r.primary_domain || '-',
     },
     {
-      title: '绑定域名', dataIndex: 'primary_domain', width: 200,
+      title: '绑定域名', dataIndex: 'primary_domain', width: 180,
       render: (v: string, r) => (
         <div>
           <div>{v || '-'}</div>
@@ -402,7 +402,7 @@ export default function CertificatesPage() {
       ),
     },
     {
-      title: '证书信息', width: 190,
+      title: '证书信息', width: 170,
       render: (_: unknown, r) => (
         <div>
           <div>签名算法：{formatKeyType(r.key_type)}</div>
@@ -411,7 +411,7 @@ export default function CertificatesPage() {
       ),
     },
     {
-      title: '证书账户', dataIndex: 'account_name', width: 150,
+      title: '证书账户', dataIndex: 'account_name', width: 120,
       render: (v: string, r) => (
         <span>
           <SafetyCertificateOutlined style={{ color: '#8c8c8c', marginRight: 6 }} />
@@ -420,7 +420,7 @@ export default function CertificatesPage() {
       ),
     },
     {
-      title: '状态', dataIndex: 'status', width: 110,
+      title: '状态', dataIndex: 'status', width: 90,
       render: (s: string, r: CertificateResponse) => {
         // 未知状态回落原文，不能默认 revoked（会把签发中/失败误显示成已吊销）
         const text = STATUS_MAP[s]?.text ?? s ?? '-'
@@ -452,21 +452,21 @@ export default function CertificatesPage() {
       },
     },
     {
-      title: '签发时间', dataIndex: 'not_before', width: 110,
+      title: '签发时间', dataIndex: 'not_before', width: 100,
       render: (v: string) => {
         if (!v || !dayjs(v).isValid()) return '-'
         return dayjs(v).format('YYYY-MM-DD')
       },
     },
     {
-      title: '到期时间', dataIndex: 'not_after', width: 110,
+      title: '到期时间', dataIndex: 'not_after', width: 100,
       render: (v: string) => {
         const { text, tone } = expiryDisplay(daysLeft(v))
         return <span style={{ color: EXPIRY_TONE_COLOR[tone], fontWeight: 600 }}>{text}</span>
       },
     },
     {
-      title: '自动续期', dataIndex: 'auto_renew', width: 90,
+      title: '自动续期', dataIndex: 'auto_renew', width: 80,
       render: (v: boolean, r) => {
         const targetId = r.cert_id || r.id || ''
         // 手动上传（custom）证书无 ACME 账号，续期必然失败——禁用开关并说明
@@ -484,7 +484,7 @@ export default function CertificatesPage() {
       },
     },
     {
-      title: '操作', key: 'action', width: 300, fixed: 'right',
+      title: '操作', key: 'action', width: 260, fixed: 'right',
       render: (_: unknown, r) => {
         const targetId = r.cert_id || r.id || ''
         const isTransient = ['pending', 'issuing', 'renewing'].includes(r.status)
@@ -649,7 +649,7 @@ export default function CertificatesPage() {
           dataSource={filtered}
           loading={isLoading}
           size="middle"
-          scroll={{ x: 1600 }}
+          scroll={{ x: 1300 }}
           rowClassName={(_, index) => (index % 2 === 1 ? 'cert-row-alt' : '')}
           pagination={{ defaultPageSize: 20, showSizeChanger: true, showTotal: (total, range) => `显示 ${range[0]} 到第 ${range[1]} 条，总共 ${total} 条` }}
         />
