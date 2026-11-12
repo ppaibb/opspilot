@@ -137,12 +137,14 @@ class RiskChallengeIssuerContract(unittest.TestCase):
 
         2026-10-08 巡检前 cordon/drain/set-image 等整族动作未注册 → 回落 low →
         前端不弹确认、审计记 low，一次误点就把生产节点标记不可调度 / 驱逐全部 Pod。
+        2026-11-10 重评：cordon/drain/set-image/rollout-undo 均可逆
+        （uncordon / 重部署 / 回退），按“high 只留不可逆”一律 medium。
         """
-        self.assertEqual(challenge({"action_key": "clusters:cordon"}, self.db)["risk_level"], "high")
-        self.assertEqual(challenge({"action_key": "clusters:drain"}, self.db)["risk_level"], "high")
+        self.assertEqual(challenge({"action_key": "clusters:cordon"}, self.db)["risk_level"], "medium")
+        self.assertEqual(challenge({"action_key": "clusters:drain"}, self.db)["risk_level"], "medium")
         self.assertEqual(challenge({"action_key": "clusters:uncordon"}, self.db)["risk_level"], "medium")
-        self.assertEqual(challenge({"action_key": "clusters:set-image"}, self.db)["risk_level"], "high")
-        self.assertEqual(challenge({"action_key": "clusters:rollout-undo"}, self.db)["risk_level"], "high")
+        self.assertEqual(challenge({"action_key": "clusters:set-image"}, self.db)["risk_level"], "medium")
+        self.assertEqual(challenge({"action_key": "clusters:rollout-undo"}, self.db)["risk_level"], "medium")
 
     def test_challenge_without_any_key_is_422(self):
         with self.assertRaises(HTTPException) as ctx:

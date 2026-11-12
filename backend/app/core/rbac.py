@@ -687,40 +687,47 @@ ROLE_TEMPLATE_CONFIG_KEY = "rbac_role_templates"
 # 1. 以 (权限键, 动作标识) 复合键为粒度，同一权限键下不同操作可有不同等级；
 # 2. 未注册的操作默认为 low，无需额外确认；
 # 3. 前端通过 /api/rbac/risk-levels 读取并缓存，后端硬编码不允许前端篡改。
+# 4. 分级规则（2026-11-10 重评）：high 只留效果不可逆的操作——硬删除
+#    （记录删了找不回来）、吊销（撤不回）及同类不可逆破坏；读、下载、导出、
+#    连接、执行、部署、重启、关机这类可恢复或可重做的操作一律 medium 或 low。
+#    同类操作拉齐，不留自相矛盾的分级。
 
 ACTION_RISK_LEVELS: dict[tuple[str, str], str] = {
-    ("action.assets.credentials.export", "export"): "high",
-    ("module.wireguard.manage", "download_config"): "high",
-    ("action.db.execute", "download_rollback"): "high",
+    # 导出/下载类：密钥与数据一旦离库即无法收回（泄露面见边界清单），但操作
+    # 本身只是读出、可重做，按重评规则一律 medium，不再弹高危确认框。
+    ("action.assets.credentials.export", "export"): "medium",
+    ("module.wireguard.manage", "download_config"): "medium",
+    ("action.db.execute", "download_rollback"): "medium",
     ("action.assets.hosts.connect", "download_file"): "medium",
     ("action.assets.certificates.manage", "revoke"): "high",
-    ("action.assets.certificates.download", "download"): "high",
+    ("action.assets.certificates.download", "download"): "medium",
     ("action.assets.certificates.manage", "deploy"): "low",
-    ("action.assets.certificates.manage", "delete"): "medium",
-    ("action.assets.hosts.manage", "batch_delete"): "medium",
-    ("action.assets.hosts.connect", "exec"): "high",
-    ("action.assets.hosts.connect", "exec_session"): "high",
-    ("action.assets.hosts.monitoring", "uninstall_collector"): "high",
+    # 硬删除（db.delete 且无软删除/回收站，证书还删磁盘目录）→ high。
+    ("action.assets.certificates.manage", "delete"): "high",
+    ("action.assets.hosts.manage", "batch_delete"): "high",
+    # SSH 连接/终端：只是建立可重开的会话，本身可重做 → medium。
+    ("action.assets.hosts.connect", "exec"): "medium",
+    ("action.assets.hosts.connect", "exec_session"): "medium",
+    # 卸载采集器可重装 → medium。
+    ("action.assets.hosts.monitoring", "uninstall_collector"): "medium",
     ("action.assets.vms.power", "poweroff"): "medium",
     ("action.assets.vms.power", "restart"): "medium",
-    ("action.assets.vms.manage", "delete"): "medium",
+    # 硬删除：PVE 虚机 purge=1 销毁 + 记录删除 → high。
+    ("action.assets.vms.manage", "delete"): "high",
     ("action.assets.clusters.manage", "apply"): "medium",
     ("action.assets.clusters.manage", "edit"): "medium",
     ("action.assets.clusters.manage", "restart"): "medium",
     ("action.assets.clusters.manage", "pause"): "medium",
     ("action.assets.clusters.manage", "delete"): "high",
-    # 集群运维动作（2026-10-08 巡检补注册）：此前整族动作未登记 → 回落 low →
-    # 前端不弹确认、后端不索票，一次误点就把生产节点标记为不可调度/驱逐全部 Pod。
-    # 等级按「对运行中业务的影响」分级：
-    # - high：改变集群对工作负载的承载能力（cordon 停止调度、drain 驱逐 Pod、
-    #   set-image 触发滚动更新、rollout-undo 回退版本）
-    # - medium：可预期但影响面较小的状态变更（恢复调度、重启、暂停/挂起、
-    #   手动触发定时任务、污点、PVC 扩容不可逆）
-    ("action.assets.clusters.manage", "cordon"): "high",
+    # 集群运维动作（2026-10-08 巡检补注册；2026-11-10 重评降级）：
+    # 旧分级按「对运行中业务的影响」把改变承载能力的动作定为 high；按新规则
+    # high 只留不可逆操作，而 cordon/drain/set-image/rollout-undo 均可逆
+    # （uncordon / 重部署 / 回退），一律 medium；其余集群项保持 medium。
+    ("action.assets.clusters.manage", "cordon"): "medium",
     ("action.assets.clusters.manage", "uncordon"): "medium",
-    ("action.assets.clusters.manage", "drain"): "high",
-    ("action.assets.clusters.manage", "set-image"): "high",
-    ("action.assets.clusters.manage", "rollout-undo"): "high",
+    ("action.assets.clusters.manage", "drain"): "medium",
+    ("action.assets.clusters.manage", "set-image"): "medium",
+    ("action.assets.clusters.manage", "rollout-undo"): "medium",
     ("action.assets.clusters.manage", "suspend_cronjob"): "medium",
     ("action.assets.clusters.manage", "trigger_cronjob"): "medium",
     ("action.assets.clusters.manage", "patch_taints"): "medium",
@@ -736,18 +743,32 @@ ACTION_RISK_LEVELS: dict[tuple[str, str], str] = {
     ("action.assets.clusters.manage", "scale"): "medium",
     ("action.assets.clusters.manage", "create_namespace"): "medium",
     ("action.assets.clusters.manage", "exec_session"): "medium",
-    ("action.assets.domains.manage", "delete"): "medium",
+    # 硬删除：域名记录 + 名下全部 DNS 记录一并删除，无回收站 → high。
+    ("action.assets.domains.manage", "delete"): "high",
     ("action.tools.scripts.execute", "execute"): "medium",
+    # 变更执行：仅有的两个自动执行器就是硬删除主机/证书（host.delete、
+    # certificate.delete），其余类型执行即变更落地；保持 high。
     ("action.change.execute", "execute"): "high",
+    # DB 执行：工单 SQL 可含 DELETE/UPDATE/ALTER（含仅 warn 的 ALTER DROP
+    # COLUMN），默认规则虽拦 DROP/TRUNCATE 但级别可由管理员调低，且执行时
+    # 不重审、回滚快照失败也不阻塞；可造成不可逆数据丢失，保持 high。
     ("action.db.execute", "execute"): "high",
-    ("action.apps.manage", "batch_delete_components"): "medium",
-    ("action.apps.control", "control_component"): "high",
+    # 硬删除：组件登记行 db.delete，无软删除；底层进程虽不受影响、可重扫
+    # 回登记，但被删的登记对象本身找不回来，与主机批量删除拉齐 → high。
+    ("action.apps.manage", "batch_delete_components"): "high",
+    # 应用控制只收白名单生命周期动作（start/stop/restart/status），不收
+    # 任意命令，启停可逆 → medium。
+    ("action.apps.control", "control_component"): "medium",
     ("module.dashboard", "clear_notifications"): "medium",
     ("action.settings.users.manage", "disable"): "medium",
     # 删除用户（2026-10-05 新增端点）：不可恢复且影响登录主体，高危
     ("action.settings.users.manage", "delete"): "high",
+    # 以下两条无对应后端接口与 require_risk_ack 守卫（孤儿条目：通知渠道
+    # 与系统配置实际走整体保存接口，删一项即保存一份更短的列表、可重建）：
+    # 按“可恢复留 medium”留 medium，见重评边界清单；不要无据升 high。
     ("action.settings.system.manage", "delete"): "medium",
     ("action.monitoring.channels.manage", "delete"): "medium",
+    # 硬删除：云账号 + 名下全部账单明细与同步记录一并清空 → high。
     ("action.finance.accounts.manage", "delete"): "high",
     ("action.finance.accounts.manage", "create"): "medium",
 }
