@@ -484,6 +484,11 @@ export interface CertificateResponse {
   updated_at?: string
 }
 
+export interface CertificateLogsResponse {
+  cert_id: string
+  lines: string[]
+}
+
 export interface CertificateIssueRequest {
   name?: string
   primary_domain: string

@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Table, Button, Space, Input, Tag, Drawer, Form, Select, App, Tooltip,
-  Badge, Progress, Flex, Card, Statistic, Row, Col, Switch, Tabs, Radio, Dropdown,
+  Badge, Progress, Flex, Card, Statistic, Row, Col, Switch, Tabs, Radio, Dropdown, Spin,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import type { MenuProps } from 'antd'
@@ -11,7 +11,7 @@ import {
   CloudUploadOutlined, SyncOutlined, StopOutlined, SendOutlined,
   CheckCircleOutlined, ClockCircleOutlined, DownloadOutlined,
   HddOutlined, CloudOutlined, ClusterOutlined, DeploymentUnitOutlined,
-  MoreOutlined,
+  MoreOutlined, FileTextOutlined,
 } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import { certificatesApi, assetsApi, credentialsApi, clustersApi, domainsApi } from '@/api'
@@ -21,11 +21,15 @@ import { useCrudResource } from '@/hooks/useCrudResource'
 import { downloadBlob } from '@/utils/download'
 import GroupSidebar from '@/components/GroupSidebar'
 import type {
-  CertificateResponse, CertificateIssueRequest, CertificateUploadRequest,
+  CertificateResponse, CertificateLogsResponse, CertificateIssueRequest, CertificateUploadRequest,
   CertificateDeployRequest, CertificateAccountItem, AssetResponse, CredentialResponse, ClusterResponse,
   DomainResponse,
 } from '@/types/api'
 import { filterCertAccountsByDomain } from './certAccountFilter'
+import {
+  CERT_LIST_POLL_INTERVAL_MS, CERT_LOG_POLL_INTERVAL_MS,
+  isCertLogErrorLine, isTransientCertStatus, shouldPollCertList,
+} from './certIssueLog'
 
 const STATUS_MAP: Record<string, { text: string; color: string }> = {
   valid:    { text: '有效',     color: 'success' },
@@ -58,6 +62,10 @@ export default function CertificatesPage() {
   const [deployDrawerOpen, setDeployDrawerOpen] = useState(false)
   const [deployCert, setDeployCert] = useState<CertificateResponse | null>(null)
   const [deployTab, setDeployTab] = useState<'host' | 'cloud' | 'k8s'>('host')
+
+  // 签发日志抽屉：打开的证书（null 表示关闭）
+  const [logCert, setLogCert] = useState<CertificateResponse | null>(null)
+  const logContainerRef = useRef<HTMLDivElement | null>(null)
 
   // 抽屉表单里的 san_domains 是逗号/换行分隔的文本，提交时再转成 string[]
   type IssueFormValues = Omit<CertificateIssueRequest, 'san_domains'> & { san_domains?: string }
@@ -102,7 +110,28 @@ export default function CertificatesPage() {
   const { data: certs = [], isLoading } = useQuery<CertificateResponse[]>({
     queryKey: ['certificates', groupFilter],
     queryFn: () => certificatesApi.list({ group_id: groupFilter ?? undefined }),
+    // 有证书处于签发中/续期中时轮询，状态自己翻过去；无进行中任务时不轮询
+    refetchInterval: (query) =>
+      (shouldPollCertList((query.state.data ?? []).map((c) => c.status)) ? CERT_LIST_POLL_INTERVAL_MS : false),
   })
+
+  // 签发日志：抽屉打开时拉取；证书处于进行中状态时轮询，终态停止
+  const logCertId = logCert ? (logCert.cert_id || logCert.id || '') : ''
+  // 取列表里的最新状态（列表轮询会刷新它），列表里还没有时用打开时的快照
+  const logCertLive = (logCertId ? certs.find((c) => (c.cert_id || c.id) === logCertId) : undefined) ?? logCert
+  const logCertStatus = logCertLive?.status ?? ''
+  const { data: logData, isLoading: isLogLoading } = useQuery<CertificateLogsResponse>({
+    queryKey: ['certificate-logs', logCertId],
+    queryFn: () => certificatesApi.logs(logCertId),
+    enabled: !!logCertId,
+    refetchInterval: isTransientCertStatus(logCertStatus) ? CERT_LOG_POLL_INTERVAL_MS : false,
+  })
+  const logLines = useMemo(() => logData?.lines ?? [], [logData])
+  // 有新日志行时滚到底
+  useEffect(() => {
+    const el = logContainerRef.current
+    if (el && logLines.length > 0) el.scrollTop = el.scrollHeight
+  }, [logLines])
 
   const { deleteMut } = useCrudResource<CertificateIssueRequest, string>({
     queryKey: ['certificates'],
@@ -176,10 +205,12 @@ export default function CertificatesPage() {
 
   const issueMut = useMutation({
     mutationFn: (data: CertificateIssueRequest) => certificatesApi.issue(data),
-    onSuccess: () => {
+    onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['certificates'] })
       setDrawerOpen(false)
       message.success('已提交签发请求')
+      // 提交后直接打开该证书的日志抽屉看进度
+      if (data && (data.cert_id || data.id)) setLogCert(data)
     },
     onError: (err: unknown) => message.error(extractAxiosDetail(err) ?? '签发失败，请检查域名和 DNS 校验账号'),
   })
@@ -326,10 +357,19 @@ export default function CertificatesPage() {
     },
     {
       title: '状态', dataIndex: 'status', width: 100,
-      render: (s: string) => {
+      render: (s: string, r: CertificateResponse) => {
         // 未知状态回落原文，不能默认 revoked（会把签发中/失败误显示成已吊销）
         const item = STATUS_MAP[s] ?? { text: s || '-', color: 'default' }
-        return <Badge status={item.color as 'success' | 'processing' | 'warning' | 'error' | 'default'} text={item.text} />
+        const badge = <Badge status={item.color as 'success' | 'processing' | 'warning' | 'error' | 'default'} text={item.text} />
+        // 进行中/失败/已签发可点开签发日志；pending 是新建记录的初始状态，同样可点
+        if (['pending', 'issuing', 'renewing', 'failed', 'issued'].includes(s)) {
+          return (
+            <Tooltip title="查看签发日志">
+              <span style={{ cursor: 'pointer' }} onClick={() => setLogCert(r)}>{badge}</span>
+            </Tooltip>
+          )
+        }
+        return badge
       },
     },
     {
@@ -379,11 +419,14 @@ export default function CertificatesPage() {
       render: (_: unknown, r) => {
         const targetId = r.cert_id || r.id || ''
         const moreItems: MenuProps['items'] = [
+          { key: 'logs', icon: <FileTextOutlined />, label: '查看签发日志' },
           { key: 'revoke', icon: <StopOutlined />, label: '吊销证书', danger: true },
           { key: 'delete', icon: <DeleteOutlined />, label: '删除', danger: true },
         ]
         const onMore: MenuProps['onClick'] = ({ key }) => {
-          if (key === 'revoke') {
+          if (key === 'logs') {
+            setLogCert(r)
+          } else if (key === 'revoke') {
             confirm('certificates:revoke', (ticket) => revokeMut.mutate({ id: targetId, ticket }))
           } else if (key === 'delete') {
             modal.confirm({
@@ -577,6 +620,40 @@ export default function CertificatesPage() {
               <Input.TextArea rows={6} placeholder="-----BEGIN RSA PRIVATE KEY-----" />
             </Form.Item>
           </Form>
+        )}
+      </Drawer>
+
+      {/* ── 签发日志抽屉 ── */}
+      <Drawer
+        title={`签发日志 · ${logCertLive?.primary_domain || ''}`}
+        open={!!logCert}
+        onClose={() => setLogCert(null)}
+        width={640}
+      >
+        {logCertLive && (
+          <Flex align="center" gap={8} style={{ marginBottom: 12 }}>
+            <Badge
+              status={(STATUS_MAP[logCertStatus]?.color ?? 'default') as 'success' | 'processing' | 'warning' | 'error' | 'default'}
+              text={STATUS_MAP[logCertStatus]?.text ?? logCertStatus}
+            />
+            {logCertStatus === 'failed' && logCertLive.last_error && (
+              <span style={{ color: '#ff4d4f', fontSize: 12 }}>{logCertLive.last_error}</span>
+            )}
+          </Flex>
+        )}
+        {isLogLoading ? (
+          <Spin />
+        ) : logLines.length === 0 ? (
+          <div style={{ color: '#8c8c8c' }}>暂无日志</div>
+        ) : (
+          <div
+            ref={logContainerRef}
+            style={{ maxHeight: 'calc(100vh - 240px)', overflow: 'auto', fontFamily: 'monospace', fontSize: 12, whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}
+          >
+            {logLines.map((line, i) => (
+              <div key={i} style={isCertLogErrorLine(line) ? { color: '#ff4d4f' } : undefined}>{line}</div>
+            ))}
+          </div>
         )}
       </Drawer>
 
